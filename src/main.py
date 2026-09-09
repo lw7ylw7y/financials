@@ -2,38 +2,19 @@
 
 Fetches the latest value for each configured indicator, tags it with its
 category, skips values already seen (no duplicate processing), and never
-lets one indicator's failure stop the others. Minimal load/save of
-data/indicators.json lives here for now; Story 2 owns the full historical
-query API on top of this same file.
+lets one indicator's failure stop the others. Persistence and querying
+live in storage.py (Story 2).
 """
 
-import json
 import logging
-import os
 from datetime import datetime, timezone
 
 from fetch_fred import FredApiError, fetch_latest_observation
 from indicators_config import INDICATORS
-
-DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "indicators.json")
+from storage import load_state, save_state, trim_history
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
-
-
-def load_state(path: str = DATA_PATH) -> dict:
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"indicators": {}}
-
-
-def save_state(state: dict, path: str = DATA_PATH) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(state, f, indent=2)
-        f.write("\n")
 
 
 def run_ingestion(state: dict, fetch_fn=fetch_latest_observation) -> dict:
@@ -58,13 +39,26 @@ def run_ingestion(state: dict, fetch_fn=fetch_latest_observation) -> dict:
         stored = state["indicators"].get(key, {})
         history = stored.get("history", [])
         last_entry = history[-1] if history else None
-        unchanged = (
-            last_entry is not None
-            and last_entry["date"] == observation["date"]
-            and last_entry["value"] == observation["value"]
-        )
 
-        if unchanged:
+        # "New" means a strictly newer date than what's already stored —
+        # not just "different from the last entry". A same-or-older date
+        # (a stale/cached response, or a same-date revision) must never
+        # be written: Story 2 requires history is never overwritten, and
+        # an out-of-order append would corrupt the chronological record.
+        is_new = last_entry is None or observation["date"] > last_entry["date"]
+
+        if not is_new:
+            is_identical = last_entry is not None and (
+                observation["date"] == last_entry["date"]
+                and observation["value"] == last_entry["value"]
+            )
+            if last_entry is not None and not is_identical:
+                logger.warning(
+                    "ignoring non-newer observation indicator=%s incoming=%s stored=%s",
+                    key,
+                    observation,
+                    last_entry,
+                )
             results[key] = {
                 "status": "unchanged",
                 "date": observation["date"],
@@ -84,7 +78,7 @@ def run_ingestion(state: dict, fetch_fn=fetch_latest_observation) -> dict:
             "category": config["category"],
             "fred_series_id": config["fred_series_id"],
             "fred_release_id": config.get("fred_release_id"),
-            "history": history + [new_entry],
+            "history": trim_history(history + [new_entry]),
             "next_release_date": stored.get("next_release_date"),
         }
         results[key] = {

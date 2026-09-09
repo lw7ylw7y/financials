@@ -47,12 +47,18 @@ graph TD
 ├── docs/
 │   └── index.html               # generated dashboard (Story 5/6), served via GitHub Pages
 ├── src/
-│   ├── main.py                  # orchestrator
+│   ├── main.py                  # orchestrator — ingestion loop (Story 1)
 │   ├── fetch_fred.py            # FRED API client
+│   ├── indicators_config.py     # indicator → FRED series/category mapping
+│   ├── storage.py               # load/save/query/trim indicators.json (Story 2)
 │   ├── post_release.py          # Story 4 logic
 │   ├── interpret.py             # Claude API call for AI summary/read
 │   ├── send_email.py            # Gmail SMTP wrapper
 │   └── render_dashboard.py      # Story 5/6 — builds docs/index.html
+├── tests/
+│   ├── test_fetch_fred.py
+│   ├── test_ingestion.py
+│   └── test_storage.py
 └── README.md
 ```
 
@@ -84,7 +90,9 @@ graph TD
 ```
 
 Notes:
-- `history` grows every run a new value is detected; never mutated retroactively
+- `history` grows every run a genuinely new value is detected; never mutated retroactively
+- "New" is decided by date, not equality: an incoming observation is only appended if its date is strictly newer than the last stored entry's date. A same-or-older date — a stale/cached FRED response, or a same-date revision — is ignored and logged as a warning rather than appended, so a transient bad response can never corrupt the chronological order or create a duplicate-date entry
+- `history` is capped to a rolling 12-month window (`storage.trim_history`); entries older than 12 months before the current date are pruned on each append
 - Daily-updated series like the yield curve spread have no fixed "release," so `fred_release_id`/`next_release_date` are null and Story 6's countdown simply skips them — only genuinely scheduled releases (jobs report, CPI, etc.) get a countdown
 
 ## 4. FRED Series Mapping (v1 indicators)
@@ -163,7 +171,8 @@ Stored as GitHub Actions repository secrets (never committed to the repo):
 ## 10. Error Handling & Idempotency Summary
 
 - Per-indicator try/catch in `fetch_fred.py` — one bad fetch logs and continues, doesn't halt the run (Story 1)
-- `history` comparisons prevent duplicate post-release emails on repeated runs within the same cycle (Story 1)
+- Date-recency check (not equality) in `main.run_ingestion` prevents duplicate post-release emails on repeated runs within the same cycle, and also rejects a same-or-older-dated observation (stale/cached API response, same-date revision) instead of appending it out of order (Story 1, Story 2)
+- `storage.trim_history` prunes entries older than a rolling 12-month window on every append, keeping `indicators.json` from growing unbounded (Story 2)
 - AI interpretation failure degrades gracefully to raw-data-only email (Story 4)
 - All errors logged to the GitHub Actions run log (visible in the Actions tab) for debugging — no separate logging service needed at this scale
 

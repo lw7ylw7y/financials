@@ -19,6 +19,7 @@
 - Mock FRED response → correct value/date parsed and returned
 - One indicator's mocked call raises an exception → other 7 still process, error is logged with indicator name + timestamp
 - Re-running with an unchanged value → no duplicate processing triggered (per Story 1 AC)
+- An older-dated or same-date-but-revised value (simulating a stale/cached FRED response) is ignored, not appended, and logged as a warning — only a strictly newer date is treated as new (found while building Story 2; fixed in `main.py`'s dedup check alongside it)
 - Each returned indicator record carries the correct category tag
 
 ---
@@ -27,17 +28,20 @@
 
 | Task | Estimate |
 |---|---|
-| 2.1 `load_state()` / `save_state()` for `data/indicators.json` | 1h |
+| 2.1 `load_state()` / `save_state()` for `data/indicators.json` — extracted into `storage.py` | 1h |
 | 2.2 Append-only history write (never overwrite existing entries) | 1h |
 | 2.3 Query helper: get history by indicator + optional date range | 1h |
-| 2.4 Tests (below) | 1.5h |
-| **Subtotal** | **4.5h** |
+| 2.4 `trim_history()` — prune entries older than a rolling 12-month window on every append | 1h |
+| 2.5 Tests (below) | 2h |
+| **Subtotal** | **6h** |
 
 **Tests**
 - Write → reload from disk → data matches (persistence survives a fresh process)
 - Writing a new value never mutates or removes prior history entries
 - Query helper returns correct subset for a given date range
 - Corrupted/missing JSON file on first run → initializes cleanly rather than crashing
+- `trim_history()` keeps entries within the 12-month window and drops entries older than it, with an inclusive cutoff boundary
+- `trim_history()` does not mutate its input list
 
 ---
 
@@ -136,13 +140,13 @@
 | Area | Hours |
 |---|---|
 | Story 1 — Ingestion | 6.5h |
-| Story 2 — Storage | 4.5h |
+| Story 2 — Storage | 6h |
 | Story 3 — Release Calendar | 3h |
 | Story 4 — Post-Release Email + AI | 10.5h |
 | Story 5 — Table View | 4.5h |
 | Story 6 — Next-Indicator Preview | 2h |
 | Cross-Cutting / Integration | 4h |
-| **Total** | **~35h** |
+| **Total** | **~36.5h** |
 
 ## Suggested Build Order
 Dependency-driven, not just priority-driven — Stories 1-3 are prerequisites for everything else:

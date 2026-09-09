@@ -13,11 +13,11 @@
 **Indicators covered:** initial jobless claims, yield curve spread (10yr–2yr), building permits, nonfarm payrolls, industrial production, Fed funds rate, CPI, unemployment rate.
 
 **Acceptance Criteria**
-- [ ] System fetches current values for all 8 indicators from the FRED API on a recurring schedule
-- [ ] Each indicator is tagged with its category (leading / coincident / lagging)
-- [ ] A failed fetch for one indicator does not block ingestion of the others
-- [ ] Fetch failures are logged with enough detail to debug (indicator, timestamp, error)
-- [ ] Newly fetched values that match the already-stored latest value do not trigger duplicate processing (no-op if unchanged)
+- [x] System fetches current values for all 8 indicators from the FRED API on a recurring schedule
+- [x] Each indicator is tagged with its category (leading / coincident / lagging)
+- [x] A failed fetch for one indicator does not block ingestion of the others
+- [x] Fetch failures are logged with enough detail to debug (indicator, timestamp, error)
+- [x] A fetched value is only treated as new — and only then persisted — if its release date is strictly newer than the already-stored latest date; a value with the same or an older date (e.g. a stale/cached API response, or a same-date revision) is a no-op and is logged as such rather than appended
 
 ---
 
@@ -25,10 +25,11 @@
 **As** the app owner, **I want** every fetched indicator value stored with its date, **so that** I can see trends over time instead of just the latest number.
 
 **Acceptance Criteria**
-- [ ] Every ingested value is persisted with: indicator name, category, value, and the date it applies to (not just the date it was fetched)
-- [ ] Historical values are never overwritten — each new release adds a new record
-- [ ] Data is queryable by indicator and by date range (needed for Story 5's table view and Story 4's "compare to prior reading")
-- [ ] Storage survives app/server restarts (persistent, not in-memory only)
+- [x] Every ingested value is persisted with: indicator name, category, value, and the date it applies to (not just the date it was fetched)
+- [x] Historical values are never overwritten — each new release adds a new record
+- [x] Data is queryable by indicator and by date range (needed for Story 5's table view and Story 4's "compare to prior reading")
+- [x] Storage survives app/server restarts (persistent, not in-memory only)
+- [x] History is retained for a rolling 12-month window; entries older than 12 months are pruned automatically so the store doesn't grow unbounded with readings too old to be useful for a trend view
 
 ---
 

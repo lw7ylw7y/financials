@@ -1,12 +1,11 @@
 import os
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from fetch_fred import FredApiError
-from main import load_state, run_ingestion, save_state
+from main import run_ingestion
 
 FIXTURES = {
     "ICSA": {"date": "2026-09-04", "value": 235000.0},
@@ -83,29 +82,90 @@ class TestRunIngestion(unittest.TestCase):
             len(state["indicators"]["initial_jobless_claims"]["history"]), 1
         )
 
-    def test_state_persists_across_processes(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            path = os.path.join(tmp_dir, "indicators.json")
-            fetch_fn = fake_fetch_factory(FIXTURES)
+    def test_older_date_than_stored_is_ignored_not_appended(self):
+        # Simulates a stale/cached FRED response returning an older
+        # observation than what's already on file.
+        responses = dict(FIXTURES)
+        responses["ICSA"] = {"date": "2026-08-28", "value": 220000.0}
+        state = {
+            "indicators": {
+                "initial_jobless_claims": {
+                    "name": "Initial Jobless Claims",
+                    "category": "leading",
+                    "history": [
+                        {
+                            "date": "2026-09-04",
+                            "value": 235000.0,
+                            "fetched_at": "2026-09-04T12:00:00Z",
+                        }
+                    ],
+                }
+            }
+        }
+        fetch_fn = fake_fetch_factory(responses)
 
-            state = load_state(path)
-            run_ingestion(state, fetch_fn=fetch_fn)
-            save_state(state, path)
+        results = run_ingestion(state, fetch_fn=fetch_fn)
 
-            reloaded = load_state(path)
+        self.assertEqual(results["initial_jobless_claims"]["status"], "unchanged")
+        history = state["indicators"]["initial_jobless_claims"]["history"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["date"], "2026-09-04")
 
-            self.assertEqual(
-                reloaded["indicators"]["initial_jobless_claims"]["history"][0]["value"],
-                235000.0,
-            )
+    def test_same_date_different_value_is_ignored_not_appended(self):
+        # A same-date revision must not create a second entry for that
+        # date — Story 2 requires history is never overwritten, and this
+        # keeps at most one record per release date.
+        responses = dict(FIXTURES)
+        responses["ICSA"] = {"date": "2026-09-04", "value": 236000.0}
+        state = {
+            "indicators": {
+                "initial_jobless_claims": {
+                    "name": "Initial Jobless Claims",
+                    "category": "leading",
+                    "history": [
+                        {
+                            "date": "2026-09-04",
+                            "value": 235000.0,
+                            "fetched_at": "2026-09-04T12:00:00Z",
+                        }
+                    ],
+                }
+            }
+        }
+        fetch_fn = fake_fetch_factory(responses)
 
-    def test_missing_state_file_initializes_cleanly(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            path = os.path.join(tmp_dir, "does_not_exist.json")
+        results = run_ingestion(state, fetch_fn=fetch_fn)
 
-            state = load_state(path)
+        self.assertEqual(results["initial_jobless_claims"]["status"], "unchanged")
+        history = state["indicators"]["initial_jobless_claims"]["history"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["value"], 235000.0)
 
-            self.assertEqual(state, {"indicators": {}})
+    def test_newer_date_is_appended(self):
+        responses = dict(FIXTURES)
+        responses["ICSA"] = {"date": "2026-09-11", "value": 240000.0}
+        state = {
+            "indicators": {
+                "initial_jobless_claims": {
+                    "name": "Initial Jobless Claims",
+                    "category": "leading",
+                    "history": [
+                        {
+                            "date": "2026-09-04",
+                            "value": 235000.0,
+                            "fetched_at": "2026-09-04T12:00:00Z",
+                        }
+                    ],
+                }
+            }
+        }
+        fetch_fn = fake_fetch_factory(responses)
+
+        results = run_ingestion(state, fetch_fn=fetch_fn)
+
+        self.assertEqual(results["initial_jobless_claims"]["status"], "updated")
+        history = state["indicators"]["initial_jobless_claims"]["history"]
+        self.assertEqual([e["date"] for e in history], ["2026-09-04", "2026-09-11"])
 
 
 if __name__ == "__main__":
