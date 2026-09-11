@@ -25,6 +25,17 @@ provides:
 History is append-only — a new reading is always added, never overwrites
 a prior entry.
 
+## Story 3 — Release Calendar Tracking
+
+`fetch_fred.fetch_next_release_date(release_id)` calls FRED's
+release/dates endpoint and returns the earliest scheduled date on or
+after today for a given release. `main.update_release_calendar(state)`
+refreshes `next_release_date` for every indicator that has a
+`fred_release_id` (continuously-updated series like the yield curve
+spread don't have one and are skipped); it's called from `main()`
+alongside ingestion, overwriting the stored value rather than
+appending — it's a single current value, not a history.
+
 ### Run it
 
 ```

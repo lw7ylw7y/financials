@@ -37,9 +37,9 @@
 **As** the app owner, **I want** the system to know the scheduled release date for each indicator, **so that** it can show what's coming next.
 
 **Acceptance Criteria**
-- [ ] System retrieves scheduled release dates for all 8 indicators from FRED's release calendar
+- [x] System retrieves scheduled release dates for all 8 indicators from FRED's release calendar
 - [ ] Calendar data refreshes regularly enough to catch date changes/postponements
-- [ ] Each indicator's next scheduled release date is queryable (needed for Story 6)
+- [x] Each indicator's next scheduled release date is queryable (needed for Story 6)
 
 ---
 

@@ -1,15 +1,16 @@
-"""Story 1 orchestrator — pull every v1 indicator from FRED.
+"""Story 1/3 orchestrator — pull every v1 indicator's value and release date from FRED.
 
 Fetches the latest value for each configured indicator, tags it with its
 category, skips values already seen (no duplicate processing), and never
-lets one indicator's failure stop the others. Persistence and querying
-live in storage.py (Story 2).
+lets one indicator's failure stop the others. Also refreshes each
+indicator's next scheduled release date (Story 3). Persistence and
+querying live in storage.py (Story 2).
 """
 
 import logging
 from datetime import datetime, timezone
 
-from fetch_fred import FredApiError, fetch_latest_observation
+from fetch_fred import FredApiError, fetch_latest_observation, fetch_next_release_date
 from indicators_config import INDICATORS
 from storage import load_state, save_state, trim_history
 
@@ -92,9 +93,50 @@ def run_ingestion(state: dict, fetch_fn=fetch_latest_observation) -> dict:
     return results
 
 
+def update_release_calendar(state: dict, fetch_fn=fetch_next_release_date) -> dict:
+    """Refresh next_release_date for every indicator with a fred_release_id.
+
+    Continuously-updated series (fred_release_id is None, e.g. the yield
+    curve spread) have no discrete release to track and are skipped —
+    Story 6's countdown simply excludes them. Overwrites
+    next_release_date in place rather than appending, since it's a
+    single current value, not a history.
+    """
+    state.setdefault("indicators", {})
+    results = {}
+
+    for key, config in INDICATORS.items():
+        release_id = config.get("fred_release_id")
+        if release_id is None:
+            continue
+
+        try:
+            next_date = fetch_fn(release_id)
+        except FredApiError as e:
+            logger.error("release date fetch failed indicator=%s error=%s", key, e)
+            results[key] = {"status": "error", "error": str(e)}
+            continue
+
+        indicator = state["indicators"].setdefault(
+            key,
+            {
+                "name": config["name"],
+                "category": config["category"],
+                "fred_series_id": config["fred_series_id"],
+                "fred_release_id": release_id,
+                "history": [],
+            },
+        )
+        indicator["next_release_date"] = next_date
+        results[key] = {"status": "updated", "next_release_date": next_date}
+
+    return results
+
+
 def main() -> dict:
     state = load_state()
     results = run_ingestion(state)
+    calendar_results = update_release_calendar(state)
     save_state(state)
 
     updated = sum(1 for r in results.values() if r["status"] == "updated")
@@ -105,6 +147,18 @@ def main() -> dict:
         updated,
         unchanged,
         errors,
+    )
+
+    calendar_updated = sum(
+        1 for r in calendar_results.values() if r["status"] == "updated"
+    )
+    calendar_errors = sum(
+        1 for r in calendar_results.values() if r["status"] == "error"
+    )
+    logger.info(
+        "release calendar refresh complete: %d updated, %d errors",
+        calendar_updated,
+        calendar_errors,
     )
     return results
 
