@@ -35,18 +35,21 @@ Indicator set (unchanged from our earlier discussion), organized into categories
 
 All of the above are available via FRED, so v1 can run on a single free data source with no scraping or paid vendor needed.
 
-### 3.1 Post-Release Email with AI Interpretation (Priority 1)
-- Sent when a new indicator value is published
-- Includes: the new value, how it compares to the prior reading/trend, a plain-English explanation of what changed and why it matters, and a directional opinion (bullish / bearish / neutral)
+v1's entire product surface is a single digest email — there is no webpage/dashboard/visual layer in v1. The three items below (3.1-3.3) are content sections of that one email, not separate features:
+
+### 3.1 Digest Email with Holistic AI Interpretation (Priority 1)
+- Sent whenever at least one indicator publishes a new value — one email per triggering run, not one per indicator
+- AI interpretation reasons across all 8 indicators' recent history together (not just the one(s) that changed), so it can connect indicators to each other
+- Includes: a plain-English explanation of what changed and why it matters, and one overall directional opinion (bullish / bearish / neutral)
 - **Guardrail:** framed as informational commentary based on indicator trends, not personalized financial advice — labeled as such in the email
 
-### 3.2 Indicator Table (Priority 2)
+### 3.2 Indicator Table (Priority 2, in the same email)
 - A table (not full charts yet — that's a fast-follow polish item) showing each indicator's current value and recent history, grouped by leading/coincident/lagging/valuation
-- Backed by a running historical store per indicator (a rolling 12-month window of values, not just the latest), so a trend view is possible once we build the visual layer — older readings are pruned since they're no longer useful for a trend view
+- Backed by a running historical store per indicator (a rolling 12-month window of values, not just the latest) — older readings are pruned since they're no longer useful for a trend view
 
-### 3.3 Next-Indicator Preview (Priority 3)
+### 3.3 Next-Indicator Preview (Priority 3, in the same email)
 - Shows what's coming next and when (e.g. "CPI releases in 3 days"), pulled from an economic release calendar (FRED release calendar or BLS release schedule)
-- Surfaced in the indicator table only — no standalone pre-release email in v1 (not needed for macro indicators; may revisit for ticker price alerts later, see Section 4.2)
+- Surfaced in the digest email's table — no standalone pre-release email in v1 (not needed for macro indicators; may revisit for ticker price alerts later, see Section 4.2)
 
 ## 4. Fast-Follow (v1.1, right after v1 ships) — Ticker Dashboard & Alerts
 

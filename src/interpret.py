@@ -1,15 +1,16 @@
-"""Gemini API call for post-release plain-English interpretation (Story 4).
+"""Gemini API call for the digest email's holistic AI interpretation (Story 4).
 
 Uses gemini-3.8-flash, a free-tier model (per ai.google.dev/gemini-api/docs/pricing),
 since this is a short, well-specified commentary task with low request
 volume — well within the free tier's daily/per-minute limits.
 
-Per Section 6 of v1_technical_design.md: reasons from a 12-reading
-historical window (not just the single prior value) plus, where
-applicable, a pre-computed named-heuristic value (heuristics.py), and
-returns a short plain-English summary plus a bullish/bearish/neutral
-directional read. Deliberately excludes the AI's own past interpretations
-from the input, to avoid anchoring on earlier reads.
+Per Section 6 of v1_technical_design.md: one call per digest email,
+reasoning across *all 8* indicators' 12-reading historical windows
+together (not one call per updated indicator) plus, where applicable,
+pre-computed named-heuristic values (heuristics.py), and returns a short
+plain-English summary plus one overall bullish/bearish/neutral
+directional read. Deliberately excludes the AI's own past
+interpretations from the input, to avoid anchoring on earlier reads.
 """
 
 import logging
@@ -27,17 +28,21 @@ MAX_ATTEMPTS = 4  # 1 initial call + 3 retries, per HttpRetryOptions.attempts
 SYSTEM_PROMPT = """You are a macroeconomic commentator writing for a long-term, \
 buy-and-hold individual investor who is not a professional trader.
 
-You will be given a newly released economic indicator value, its category \
-(leading, coincident, or lagging), its most recent historical readings, and \
-sometimes a pre-computed named-heuristic value (e.g. the Sahm Rule, or a \
-yield curve inversion streak) — use that computed value as given, don't \
-recompute it yourself.
+You will be given all 8 tracked economic indicators (grouped as leading, \
+coincident, or lagging), each with its recent historical readings, which \
+one(s) published a new value this run, and sometimes a pre-computed \
+named-heuristic value (e.g. the Sahm Rule, or a yield curve inversion \
+streak) — use that computed value as given, don't recompute it yourself.
 
-Reason from the historical window and any computed heuristic, not just the \
-single most recent change — distinguish a real multi-month trend from a \
-one-off noisy blip. Explain in plain English, in 2-4 sentences, what \
-changed and why it matters for a long-term buy-and-hold investor. Then give \
-a directional read of exactly one of "bullish", "bearish", or "neutral".
+Reason across all 8 indicators together, not just the one(s) that just \
+updated — connect indicators to each other where relevant (e.g. \
+unemployment ticking up while inflation cools), and reason from each \
+one's historical window, not just its single most recent change, to \
+distinguish a real multi-month trend from a one-off noisy blip. Explain \
+in plain English, in 3-6 sentences, what changed and why it matters for a \
+long-term buy-and-hold investor. Then give ONE overall directional read \
+of exactly one of "bullish", "bearish", or "neutral" for the picture as a \
+whole — not one per indicator.
 """
 
 
@@ -60,34 +65,45 @@ def _format_heuristic(heuristic: dict | None) -> str:
     return "\n".join(f"- {key}: {value}" for key, value in heuristic.items())
 
 
-def build_user_prompt(
-    indicator: dict, history_window: list[dict], heuristic: dict | None
-) -> str:
-    latest = history_window[-1]
+def build_user_prompt(indicators_context: list[dict], updated_keys: list[str]) -> str:
+    """`indicators_context`: one entry per indicator with data to report —
+    {"key", "name", "category", "history_window", "heuristic"}. `updated_keys`
+    names which of those published a new value this run.
+    """
+    updated_names = [
+        ind["name"] for ind in indicators_context if ind["key"] in updated_keys
+    ]
+
+    sections = []
+    for ind in indicators_context:
+        marker = " — NEW VALUE THIS RUN" if ind["key"] in updated_keys else ""
+        sections.append(
+            f"### {ind['name']} ({ind['category']}){marker}\n"
+            f"Recent readings (oldest to newest, up to the last 12):\n"
+            f"{_format_history(ind['history_window'])}\n"
+            f"Computed heuristic values:\n"
+            f"{_format_heuristic(ind['heuristic'])}"
+        )
+
     return (
-        f"Indicator: {indicator['name']}\n"
-        f"Category: {indicator['category']}\n"
-        f"New value: {latest['value']} as of {latest['date']}\n\n"
-        f"Recent readings (oldest to newest, up to the last 12):\n"
-        f"{_format_history(history_window)}\n\n"
-        f"Computed heuristic values:\n"
-        f"{_format_heuristic(heuristic)}"
+        f"Indicators with a new value this run: {', '.join(updated_names) or '(none)'}\n\n"
+        + "\n\n".join(sections)
     )
 
 
 def interpret(
-    indicator: dict,
-    history_window: list[dict],
-    heuristic: dict | None = None,
+    indicators_context: list[dict],
+    updated_keys: list[str],
     client: genai.Client | None = None,
 ) -> dict:
     """Return {"summary": str, "directional_read": "bullish"|"bearish"|"neutral"}.
 
     Raises InterpretationError on any API failure, missing credentials, or
-    unusable response, so callers (post_release.py) can degrade gracefully
-    to a raw-data-only email rather than blocking on a broken AI call.
+    unusable response, so the caller (post_release.py) can degrade
+    gracefully to a table-and-countdown-only digest rather than blocking
+    on a broken AI call.
     """
-    prompt = build_user_prompt(indicator, history_window, heuristic)
+    prompt = build_user_prompt(indicators_context, updated_keys)
 
     try:
         client = client or genai.Client(

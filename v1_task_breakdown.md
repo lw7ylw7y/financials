@@ -61,59 +61,44 @@
 
 ---
 
-## Story 4 — Post-Release Email with AI Interpretation
+## Story 4/5/6 — Digest Email (Holistic AI + Table + Countdown)
 
-| Task | Estimate |
+One email, one module (`post_release.py`) — not three separately-shipped
+features. All done: `interpret.py`'s Gemini call now reasons holistically
+across all 8 indicators in one call per run (not per indicator),
+`post_release.py` builds the table (Story 5) and countdown (Story 6),
+and the send itself is throttled to a weekly rollup (added after real
+end-to-end testing showed daily-updating indicators, e.g. the yield
+curve spread, would otherwise trigger an email on nearly every 6-hour
+ingestion check) — sent only when something's updated since the last
+digest AND at least a week has passed since then.
+
+| Task | Status |
 |---|---|
-| 4.1 New-value diff detection (latest fetch vs. last `history` entry) | 1h |
-| 4.2 `interpret.py` — Claude API call: prompt construction with 12-reading window | 2.5h |
-| 4.3 Sahm Rule calculation (unemployment) | 1h |
-| 4.4 Yield curve inversion streak calculation | 1h |
-| 4.5 Email template (subject + body, per Section 7) | 1h |
-| 4.6 `send_email.py` — Gmail SMTP wrapper | 1h |
-| 4.7 Graceful degradation: catch AI failure, send raw-data-only email | 0.5h |
-| 4.8 Tests (below) | 2.5h |
-| **Subtotal** | **10.5h** |
+| 4.1 New-value diff detection across all indicators (which updated this run) | done |
+| 4.2 `interpret.py` — holistic Gemini call across all 8 indicators' 12-reading windows | done |
+| 4.3 Sahm Rule calculation (unemployment) | done |
+| 4.4 Yield curve inversion streak calculation | done |
+| 4.9 Weekly send throttle — `last_digest_sent_at` persisted in `data/indicators.json`; gate on updates-since-last-digest (by `fetched_at`, not just "this run") AND a 7-day minimum interval | done |
+| 5.1 Table builder — group indicators into Leading/Coincident/Lagging, pull latest/prior value + date from `history` | done |
+| 6.1 Days-until-release calculation from `next_release_date`, highlight the single soonest release | done |
+| 4.5/7.x Digest email template (subject + body: AI summary → table → countdown, per Section 7 of tech design) | done |
+| 4.6 `send_email.py` — Gmail SMTP wrapper | done |
+| 4.7 Graceful degradation: catch AI failure, send table+countdown without the AI section | done |
+| 4.8/5.3/6.3 Tests (below) | done |
 
 **Tests**
-- New value differs from last stored entry → email is triggered; unchanged value → no email
-- Mocked Claude API success → summary + directional read appear correctly in email body
-- Mocked Claude API failure/timeout → email still sends, AI section omitted, raw data present
-- Disclaimer line is present in every AI-included email
+- At least one updated indicator since the last digest, and ≥7 days elapsed → one digest email is sent; either condition failing → no email sent
+- An update that happened several ingestion ticks before the 7-day gate opens is still included in the eventual digest, not dropped for not having updated in the specific run that crossed the interval
+- The very first digest ever (no `last_digest_sent_at` on file) sends immediately, without waiting a week
+- Sending a digest updates `last_digest_sent_at`
+- Mocked Gemini success → holistic summary + one overall directional read appear correctly in the email body, informed by all 8 indicators' history, not just the updated one(s)
+- Mocked Gemini failure (after retries) → email still sends, AI section omitted, table + countdown present
+- Disclaimer line is present whenever the AI section is included
 - Sahm Rule value computed correctly against a known sample series
 - Yield curve inversion streak counts consecutive negative readings correctly, resets on a positive reading
-
----
-
-## Story 5 — Indicator Table View
-
-| Task | Estimate |
-|---|---|
-| 5.1 `render_dashboard.py` — group indicators into Leading/Coincident/Lagging | 1h |
-| 5.2 HTML/CSS template generation (static, no JS framework) | 2h |
-| 5.3 Tests (below) | 1.5h |
-| **Subtotal** | **4.5h** |
-
-**Tests**
-- Rendered HTML contains all 8 indicators under correct category headers
-- Each row shows latest value, latest date, and prior value correctly pulled from `history`
-- Re-running after a new value is ingested regenerates the table with updated numbers (no stale cache)
-- Rendered page requires no login/auth to view (static file, no gating logic)
-
----
-
-## Story 6 — Next-Indicator Preview
-
-| Task | Estimate |
-|---|---|
-| 6.1 Days-until-release calculation from `next_release_date` | 0.5h |
-| 6.2 Highlight single soonest upcoming release distinctly in the table | 0.5h |
-| 6.3 Tests (below) | 1h |
-| **Subtotal** | **2h** |
-
-**Tests**
-- Countdown math is correct for a known date (e.g. release in exactly 3 days → "in 3 days")
-- Indicators with `next_release_date: null` are excluded from the countdown, not shown as errors
+- Email body contains all 8 indicators under correct category headers, each with latest value, latest date, and prior value pulled from `history`
+- Countdown math is correct for a known date (e.g. release in exactly 3 days → "in 3 days"); indicators with `next_release_date: null` are excluded, not shown as errors
 - The single nearest release across all 8 indicators is correctly identified when release dates are mixed
 
 ---
@@ -123,31 +108,35 @@
 | Task | Estimate |
 |---|---|
 | Workflow YAML (`.github/workflows/indicator-check.yml`) — schedule trigger, checkout, run, commit-back | 1h |
-| Secrets setup checklist walkthrough (Section 9/11 of tech design) | 0.5h |
+| Secrets setup checklist walkthrough (Section 8/10 of tech design) | 0.5h |
 | Git commit-and-push step from within the workflow | 1h |
-| End-to-end dry run against real FRED + Gmail + Claude API (not mocks) | 1.5h |
-| **Subtotal** | **4h** |
+| **Subtotal (remaining)** | **2.5h** |
+
+End-to-end dry run against real FRED + Gemini + Gmail (not mocks) is
+**done** — verified manually against live APIs, including a real backfill
+and a real delivered email. Note: that manual verification predates the
+digest reshape (it exercised the earlier per-indicator-email design) —
+worth one more live run against the current digest email before calling
+Story 4/5/6 fully closed out.
 
 **Tests**
 - Full workflow run on a manual trigger (`workflow_dispatch`) completes without error against live APIs
-- Workflow correctly commits and pushes updated `indicators.json` and `docs/index.html`
+- Workflow correctly commits and pushes updated `indicators.json`
 - Scheduled trigger fires at the expected cron time (verified via Actions run history after 24h)
 
 ---
 
 ## Total Estimate
 
-| Area | Hours |
-|---|---|
-| Story 1 — Ingestion | 6.5h |
-| Story 2 — Storage | 6h |
-| Story 3 — Release Calendar | 3h |
-| Story 4 — Post-Release Email + AI | 10.5h |
-| Story 5 — Table View | 4.5h |
-| Story 6 — Next-Indicator Preview | 2h |
-| Cross-Cutting / Integration | 4h |
-| **Total** | **~36.5h** |
+| Area | Hours | Status |
+|---|---|---|
+| Story 1 — Ingestion | 6.5h | done |
+| Story 2 — Storage | 6h | done |
+| Story 3 — Release Calendar | 3h | done |
+| Story 4/5/6 — Digest Email (AI + table + countdown) | 10.5h | done |
+| Cross-Cutting / Integration | 2.5h remaining | not started |
+| **Total** | **~36.5h originally, ~2.5h remaining** | |
 
 ## Suggested Build Order
 Dependency-driven, not just priority-driven — Stories 1-3 are prerequisites for everything else:
-1. Story 1 (Ingestion) → 2. Story 2 (Storage) → 3. Story 3 (Release Calendar) → 4. Story 4 (Email + AI) → 5. Story 5 (Table) → 6. Story 6 (Countdown) → Cross-Cutting integration/workflow wiring last, once the underlying script works standalone
+1. Story 1 (Ingestion) → 2. Story 2 (Storage) → 3. Story 3 (Release Calendar) → 4. Story 4/5/6 (Digest email: holistic AI + table + countdown) → Cross-Cutting integration/workflow wiring last, once the underlying script works standalone

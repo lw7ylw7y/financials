@@ -1,13 +1,18 @@
-"""Story 1/3/4 orchestrator — ingest FRED data, refresh the release
-calendar, and send post-release AI-interpreted emails.
+"""Story 1/3/4/5/6 orchestrator — ingest FRED data, refresh the release
+calendar, and send the one digest email.
 
 Fetches the latest value for each configured indicator, tags it with its
 category, skips values already seen (no duplicate processing), and never
 lets one indicator's failure stop the others. Also refreshes each
-indicator's next scheduled release date (Story 3) and, for every
-genuinely new value, sends a post-release email with an AI-generated
-interpretation (Story 4). Persistence and querying live in storage.py
-(Story 2).
+indicator's next scheduled release date (Story 3) — before building the
+digest, so its countdown (Story 6) reflects the latest calendar data.
+Ingestion and the calendar refresh run every scheduled check (every 6
+hours); the digest email itself is throttled separately by
+post_release.run_post_release to a weekly rollup (sent only when
+something's changed since the last digest AND at least a week has
+passed), since several indicators update daily and would otherwise
+trigger near-constant emails. Persistence and querying live in
+storage.py (Story 2).
 """
 
 import logging
@@ -140,8 +145,8 @@ def update_release_calendar(state: dict, fetch_fn=fetch_next_release_date) -> di
 def main() -> dict:
     state = load_state()
     results = run_ingestion(state)
-    post_release_results = run_post_release(state, results)
     calendar_results = update_release_calendar(state)
+    digest_result = run_post_release(state)
     save_state(state)
 
     updated = sum(1 for r in results.values() if r["status"] == "updated")
@@ -152,20 +157,6 @@ def main() -> dict:
         updated,
         unchanged,
         errors,
-    )
-
-    sent = sum(
-        1
-        for r in post_release_results.values()
-        if r["status"] in ("sent", "sent_without_ai")
-    )
-    email_errors = sum(
-        1 for r in post_release_results.values() if r["status"] == "error"
-    )
-    logger.info(
-        "post-release notification complete: %d sent, %d errors",
-        sent,
-        email_errors,
     )
 
     calendar_updated = sum(
@@ -179,6 +170,11 @@ def main() -> dict:
         calendar_updated,
         calendar_errors,
     )
+
+    if digest_result["status"] == "skipped":
+        logger.info("digest email: skipped (%s)", digest_result["reason"])
+    else:
+        logger.info("digest email: %s", digest_result["status"])
     return results
 
 

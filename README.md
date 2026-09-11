@@ -36,21 +36,43 @@ spread don't have one and are skipped); it's called from `main()`
 alongside ingestion, overwriting the stored value rather than
 appending — it's a single current value, not a history.
 
-## Story 4 — Post-Release Email with AI Interpretation
+## Story 4/5/6 — The Digest Email (AI Interpretation, Table, Countdown)
 
-For every indicator `run_ingestion` marks `"updated"`, `post_release.run_post_release`
-builds a value diff (new/prior value, date, absolute and % change), asks
-Gemini (`gemini-3.8-flash`, a free-tier model — chosen since this is a
-short, low-volume commentary task well within the free tier's limits) for
-a plain-English summary + bullish/bearish/neutral directional read
-(`interpret.py`, using a 12-reading history window plus a pre-computed
-heuristic — Sahm Rule for unemployment, inversion streak for the yield
-curve spread; both in `heuristics.py`), and sends the result via Gmail
-SMTP (`send_email.py`). If the AI call fails, the email still sends with
-just the raw data — the AI section (and its disclaimer line) is simply
-omitted. A failed send for one indicator is logged and doesn't block the
-others. Requires `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL`,
-and `GEMINI_API_KEY` env vars to actually send.
+v1's only product surface is one email — there is no webpage/dashboard.
+Ingestion (`run_ingestion`) runs on every scheduled check (every 6
+hours) regardless, keeping `data/indicators.json` fresh, but the digest
+email itself is throttled to a **weekly rollup**
+(`post_release.run_post_release`): sent only when at least one indicator
+has a new value *since the last digest* (tracked via
+`last_digest_sent_at`, persisted alongside `indicators` in
+`data/indicators.json`) **and** at least 7 days have passed since then.
+Several indicators (e.g. the yield curve spread) update daily and would
+otherwise trigger near-constant emails; an update that lands between
+digests is still included once the weekly gate opens, not dropped for
+having happened outside the specific run that crossed the interval. The
+digest contains:
+
+- **Story 4 — AI summary:** one holistic Gemini call (`interpret.py`,
+  `gemini-3.8-flash` — a free-tier model, chosen since this is a
+  short, low-volume commentary task well within the free tier's limits)
+  reasoning across *all 8* indicators' 12-reading history windows
+  together, not one call per updated indicator — so it can connect
+  indicators to each other (e.g. "unemployment ticked up while CPI
+  cooled") rather than commenting on each in isolation. Uses a
+  pre-computed heuristic where applicable — Sahm Rule for unemployment,
+  inversion streak for the yield curve spread (`heuristics.py`) — and
+  retries up to 3 times (via the SDK's built-in `HttpRetryOptions`) on
+  transient failures like a `503`. If the AI call still fails, the email
+  sends anyway without the AI section (and its disclaimer line).
+- **Story 5 — table:** every indicator's latest/prior value and date,
+  grouped by Leading/Coincident/Lagging (`post_release.build_table`).
+- **Story 6 — countdown:** days until each indicator's next release
+  (Story 3's `next_release_date`), with the single soonest release
+  called out distinctly (`post_release.build_countdown`).
+
+Sent via Gmail SMTP (`send_email.py`). Requires `GMAIL_ADDRESS`,
+`GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL`, and `GEMINI_API_KEY` env vars to
+actually send.
 
 ### Run it
 
@@ -58,7 +80,7 @@ and `GEMINI_API_KEY` env vars to actually send.
 pip install -r requirements.txt
 export FRED_API_KEY=your_key_here          # https://fred.stlouisfed.org/docs/api/api_key.html
 export GEMINI_API_KEY=your_key_here        # https://ai.google.dev/gemini-api/docs/api-key (free tier)
-export GMAIL_ADDRESS=you@gmail.com         # for Story 4's post-release email
+export GMAIL_ADDRESS=you@gmail.com         # for the digest email
 export GMAIL_APP_PASSWORD=your_app_password
 export RECIPIENT_EMAIL=you@gmail.com
 python3 src/main.py
@@ -66,8 +88,20 @@ python3 src/main.py
 
 Only `FRED_API_KEY` is required for ingestion (Stories 1-3) to run; the
 `GEMINI_API_KEY`/`GMAIL_*`/`RECIPIENT_EMAIL` vars are only needed to
-actually send post-release emails (Story 4) — a missing one raises a
-logged, per-indicator error rather than crashing the run.
+actually send the digest email — a missing one raises a logged error
+rather than crashing the run.
+
+### Backfill (one-time, not part of the scheduled run)
+
+```
+python3 src/backfill.py
+```
+
+Seeds each indicator's `history` with FRED's last ~12 real observations,
+for when the local store is too sparse (e.g. right after this project
+started) for the AI to read a real trend from. Safe to re-run — only
+adds observations for dates not already on file, never overwrites or
+duplicates existing entries.
 
 ### Test it
 

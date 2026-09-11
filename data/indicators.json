@@ -433,7 +433,7 @@
         {
           "date": "2026-08-01",
           "value": 334.131,
-          "fetched_at": "2026-09-11T18:34:45.663350+00:00"
+          "fetched_at": "2026-09-11T20:57:53.376753+00:00"
         }
       ],
       "next_release_date": "2026-09-11"
@@ -442,7 +442,7 @@
       "name": "Unemployment Rate",
       "category": "lagging",
       "fred_series_id": "UNRATE",
-      "fred_release_id": null,
+      "fred_release_id": "50",
       "history": [
         {
           "date": "2025-11-01",
@@ -492,7 +492,7 @@
         {
           "date": "2026-08-01",
           "value": 4.1,
-          "fetched_at": "2026-09-09T22:17:34.434074+00:00"
+          "fetched_at": "2026-09-11T20:57:53.610789+00:00"
         }
       ],
       "next_release_date": "2026-10-02"
