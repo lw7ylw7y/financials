@@ -105,11 +105,15 @@ def run_ingestion(state: dict, fetch_fn=fetch_latest_observation) -> dict:
 def update_release_calendar(state: dict, fetch_fn=fetch_next_release_date) -> dict:
     """Refresh next_release_date for every indicator with a fred_release_id.
 
-    Continuously-updated series (fred_release_id is None, e.g. the yield
-    curve spread) have no discrete release to track and are skipped —
-    Story 6's countdown simply excludes them. Overwrites
-    next_release_date in place rather than appending, since it's a
-    single current value, not a history.
+    Indicators with no fred_release_id (e.g. the yield curve spread,
+    which updates continuously, or Fed Funds Rate, whose mapped release
+    bundles many series at a cadence unrelated to its own) have no
+    meaningful countdown — Story 6's countdown excludes them. Any stale
+    next_release_date left over from a previous config is cleared here
+    too, so removing an indicator's release_id actually takes effect
+    rather than leaving old data behind. Overwrites next_release_date in
+    place rather than appending, since it's a single current value, not
+    a history.
     """
     state.setdefault("indicators", {})
     results = {}
@@ -117,6 +121,9 @@ def update_release_calendar(state: dict, fetch_fn=fetch_next_release_date) -> di
     for key, config in INDICATORS.items():
         release_id = config.get("fred_release_id")
         if release_id is None:
+            indicator = state["indicators"].get(key)
+            if indicator is not None:
+                indicator["next_release_date"] = None
             continue
 
         try:

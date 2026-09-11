@@ -42,7 +42,13 @@ INDICATORS = {
         "name": "Fed Funds Rate",
         "category": "lagging",
         "fred_series_id": "FEDFUNDS",
-        "fred_release_id": "18",  # H.15 Selected Interest Rates
+        # H.15 "Selected Interest Rates" (release 18) publishes on nearly
+        # every business day, since it bundles many rate series at
+        # different frequencies — it doesn't reflect FEDFUNDS's own
+        # monthly-average cadence, so a countdown against it is never
+        # meaningful. Treated like the yield curve spread: no release ID,
+        # no countdown.
+        "fred_release_id": None,
     },
     "cpi": {
         "name": "CPI",

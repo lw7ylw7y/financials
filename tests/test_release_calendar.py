@@ -64,6 +64,28 @@ class TestUpdateReleaseCalendar(unittest.TestCase):
             state["indicators"]["yield_curve_spread"]["next_release_date"]
         )
 
+    def test_stale_next_release_date_is_cleared_when_config_drops_release_id(self):
+        # Simulates fed_funds_rate: it used to have a fred_release_id and
+        # a stored next_release_date, but the config no longer maps it to
+        # one (its release didn't reflect its own update cadence) - the
+        # stale value must not linger forever.
+        state = {
+            "indicators": {
+                "fed_funds_rate": {
+                    "name": "Fed Funds Rate",
+                    "category": "lagging",
+                    "fred_series_id": "FEDFUNDS",
+                    "fred_release_id": "18",
+                    "history": [],
+                    "next_release_date": "2026-09-11",
+                }
+            }
+        }
+
+        update_release_calendar(state, fetch_fn=fake_fetch_factory({}))
+
+        self.assertIsNone(state["indicators"]["fed_funds_rate"]["next_release_date"])
+
     def test_changed_date_on_refresh_overwrites_not_duplicates(self):
         state = {
             "indicators": {
