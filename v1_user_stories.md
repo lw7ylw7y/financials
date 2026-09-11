@@ -47,12 +47,12 @@
 **As** the investor, **I want** an email when a new indicator value is published, with a plain-English explanation and a directional read, **so that** I understand what changed without having to interpret raw data myself.
 
 **Acceptance Criteria**
-- [ ] Given a new indicator value is ingested (Story 1) that differs from the last stored value, when ingestion completes, then a post-release email is sent
-- [ ] Email includes: indicator name, category, new value, prior value, and change (absolute and/or %)
-- [ ] Email includes an AI-generated plain-English summary of what changed and why it matters
-- [ ] Email includes an AI-generated directional read: bullish / bearish / neutral
-- [ ] Email visibly labels the AI content as informational commentary, not personalized financial advice
-- [ ] If the AI generation step fails, the email still sends with the raw data (graceful degradation — a broken AI call should never block you from getting the number)
+- [x] Given a new indicator value is ingested (Story 1) that differs from the last stored value, when ingestion completes, then a post-release email is sent
+- [x] Email includes: indicator name, category, new value, prior value, and change (absolute and/or %)
+- [x] Email includes an AI-generated plain-English summary of what changed and why it matters
+- [x] Email includes an AI-generated directional read: bullish / bearish / neutral
+- [x] Email visibly labels the AI content as informational commentary, not personalized financial advice
+- [x] If the AI generation step fails, the email still sends with the raw data (graceful degradation — a broken AI call should never block you from getting the number)
 
 ---
 

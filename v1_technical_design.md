@@ -1,7 +1,7 @@
 # V1 Technical Design — Macroeconomic Indicators Backend
 
 **Companion to:** investment_dashboard_requirements.md, v1_user_stories.md
-**Stack:** GitHub Actions (scheduler/compute) · commit-based JSON (storage) · Gmail SMTP (email) · FRED API (data) · Claude API (AI interpretation) · GitHub Pages (static dashboard)
+**Stack:** GitHub Actions (scheduler/compute) · commit-based JSON (storage) · Gmail SMTP (email) · FRED API (data) · Gemini API (AI interpretation, free tier) · GitHub Pages (static dashboard)
 
 ---
 
@@ -17,7 +17,7 @@ graph TD
 
     D --> G{New value<br/>detected?}
     G -->|yes| H[post_release.py]
-    H --> I[interpret.py<br/>Claude API call]
+    H --> I[interpret.py<br/>Gemini API call]
     I --> H
     H --> J[send_email.py<br/>Gmail SMTP]
 
@@ -52,7 +52,7 @@ graph TD
 │   ├── indicators_config.py     # indicator → FRED series/category mapping
 │   ├── storage.py               # load/save/query/trim indicators.json (Story 2)
 │   ├── post_release.py          # Story 4 logic
-│   ├── interpret.py             # Claude API call for AI summary/read
+│   ├── interpret.py             # Gemini API call for AI summary/read
 │   ├── send_email.py            # Gmail SMTP wrapper
 │   └── render_dashboard.py      # Story 5/6 — builds docs/index.html
 ├── tests/
@@ -118,7 +118,15 @@ Release calendar dates come from FRED's Releases API, keyed by `fred_release_id`
 - Every run also regenerates `docs/index.html` regardless of whether anything changed, so the dashboard always reflects the latest commit, including the next-release countdown (Story 6) pulled from the release calendar
 - 6-hour interval balances timeliness against GitHub Actions minute usage — for monthly-cadence indicators, checking 4x/day is more than sufficient and stays well within the free tier
 
-## 6. AI Interpretation (Story 4) — Claude API Call Design
+## 6. AI Interpretation (Story 4) — Gemini API Call Design
+
+Uses `gemini-3.8-flash` (the current free-tier Gemini model as of this
+writing) via the `google-genai` SDK — chosen over a paid model since this
+is a short, well-specified commentary task with low request volume, well
+within the free tier's daily/per-minute limits. Structured output
+(`response_schema` on a Pydantic model) enforces the `summary` /
+`directional_read` shape rather than relying on prompt-only JSON
+formatting.
 
 **Input to the model per triggered indicator:**
 - Indicator name, category, description of what it measures
@@ -166,7 +174,7 @@ Stored as GitHub Actions repository secrets (never committed to the repo):
 | `GMAIL_ADDRESS` | Sender/account for SMTP |
 | `GMAIL_APP_PASSWORD` | Gmail app password (not your login password) |
 | `RECIPIENT_EMAIL` | Where alerts get sent (your inbox) |
-| `ANTHROPIC_API_KEY` | Claude API access for interpretation |
+| `GEMINI_API_KEY` | Gemini API access for interpretation |
 
 ## 10. Error Handling & Idempotency Summary
 

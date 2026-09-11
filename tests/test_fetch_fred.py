@@ -6,7 +6,12 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import requests
-from fetch_fred import FredApiError, fetch_latest_observation, fetch_next_release_date
+from fetch_fred import (
+    FredApiError,
+    fetch_latest_observation,
+    fetch_next_release_date,
+    fetch_recent_observations,
+)
 
 
 class TestFetchLatestObservation(unittest.TestCase):
@@ -47,6 +52,67 @@ class TestFetchLatestObservation(unittest.TestCase):
     def test_raises_without_api_key(self):
         with self.assertRaises(FredApiError):
             fetch_latest_observation("ICSA")
+
+
+class TestFetchRecentObservations(unittest.TestCase):
+    @patch("fetch_fred.requests.get")
+    def test_returns_oldest_to_newest(self, mock_get):
+        # FRED returns newest-first for sort_order=desc.
+        mock_get.return_value = Mock(
+            json=lambda: {
+                "observations": [
+                    {"date": "2026-08-01", "value": "334.131"},
+                    {"date": "2026-07-01", "value": "332.813"},
+                    {"date": "2026-06-01", "value": "331.5"},
+                ]
+            }
+        )
+
+        result = fetch_recent_observations("CPIAUCSL", limit=3, api_key="test-key")
+
+        self.assertEqual(
+            result,
+            [
+                {"date": "2026-06-01", "value": 331.5},
+                {"date": "2026-07-01", "value": 332.813},
+                {"date": "2026-08-01", "value": 334.131},
+            ],
+        )
+
+    @patch("fetch_fred.requests.get")
+    def test_skips_missing_values(self, mock_get):
+        mock_get.return_value = Mock(
+            json=lambda: {
+                "observations": [
+                    {"date": "2026-08-01", "value": "."},
+                    {"date": "2026-07-01", "value": "332.813"},
+                ]
+            }
+        )
+
+        result = fetch_recent_observations("CPIAUCSL", limit=2, api_key="test-key")
+
+        self.assertEqual(result, [{"date": "2026-07-01", "value": 332.813}])
+
+    @patch("fetch_fred.requests.get")
+    def test_returns_empty_list_when_no_observations(self, mock_get):
+        mock_get.return_value = Mock(json=lambda: {"observations": []})
+
+        result = fetch_recent_observations("CPIAUCSL", api_key="test-key")
+
+        self.assertEqual(result, [])
+
+    @patch("fetch_fred.requests.get")
+    def test_raises_on_request_exception(self, mock_get):
+        mock_get.side_effect = requests.ConnectionError("boom")
+
+        with self.assertRaises(FredApiError):
+            fetch_recent_observations("CPIAUCSL", api_key="test-key")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_raises_without_api_key(self):
+        with self.assertRaises(FredApiError):
+            fetch_recent_observations("CPIAUCSL")
 
 
 class TestFetchNextReleaseDate(unittest.TestCase):

@@ -1,10 +1,13 @@
-"""Story 1/3 orchestrator — pull every v1 indicator's value and release date from FRED.
+"""Story 1/3/4 orchestrator — ingest FRED data, refresh the release
+calendar, and send post-release AI-interpreted emails.
 
 Fetches the latest value for each configured indicator, tags it with its
 category, skips values already seen (no duplicate processing), and never
 lets one indicator's failure stop the others. Also refreshes each
-indicator's next scheduled release date (Story 3). Persistence and
-querying live in storage.py (Story 2).
+indicator's next scheduled release date (Story 3) and, for every
+genuinely new value, sends a post-release email with an AI-generated
+interpretation (Story 4). Persistence and querying live in storage.py
+(Story 2).
 """
 
 import logging
@@ -12,6 +15,7 @@ from datetime import datetime, timezone
 
 from fetch_fred import FredApiError, fetch_latest_observation, fetch_next_release_date
 from indicators_config import INDICATORS
+from post_release import run_post_release
 from storage import load_state, save_state, trim_history
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -136,6 +140,7 @@ def update_release_calendar(state: dict, fetch_fn=fetch_next_release_date) -> di
 def main() -> dict:
     state = load_state()
     results = run_ingestion(state)
+    post_release_results = run_post_release(state, results)
     calendar_results = update_release_calendar(state)
     save_state(state)
 
@@ -147,6 +152,20 @@ def main() -> dict:
         updated,
         unchanged,
         errors,
+    )
+
+    sent = sum(
+        1
+        for r in post_release_results.values()
+        if r["status"] in ("sent", "sent_without_ai")
+    )
+    email_errors = sum(
+        1 for r in post_release_results.values() if r["status"] == "error"
+    )
+    logger.info(
+        "post-release notification complete: %d sent, %d errors",
+        sent,
+        email_errors,
     )
 
     calendar_updated = sum(

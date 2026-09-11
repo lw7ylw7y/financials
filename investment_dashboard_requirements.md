@@ -83,7 +83,7 @@ All of the above are available via FRED, so v1 can run on a single free data sou
 |---|---|---|
 | Macro indicators (all v1 indicators: claims, yield curve, permits, payrolls, industrial production, Fed rate, CPI, unemployment) | FRED | Free, official, no rate-limit concerns — single source covers all of v1 |
 | Economic release calendar (for the next-release countdown) | FRED release calendar | Needed to know upcoming CPI/jobs report/FOMC dates |
-| AI interpretation of indicators | Claude API | Generates plain-English summary + directional read; framed as informational commentary, not advice |
+| AI interpretation of indicators | Gemini API (free tier) | Generates plain-English summary + directional read; framed as informational commentary, not advice |
 | *(v1.1, ticker dashboard)* Price, 52-wk range, moving averages | Finnhub | Free tier has ~20 min delay; acceptable given Monday-cadence buying |
 | *(v1.1, ticker dashboard)* Ticker-related news | Finnhub | Same provider, simplifies integration |
 | *(backlog)* Shiller P/E | multpl.com or similar | No single clean free API; may need light scraping or manual periodic entry |
@@ -126,6 +126,6 @@ All of the above are available via FRED, so v1 can run on a single free data sou
 - **Storage:** Commit-based data file (e.g. JSON) written back into the repo each run — no separate database to manage
 - **Email:** Gmail SMTP with an app password — no new service to set up beyond your existing Gmail account
 - **Data:** FRED API (all 8 v1 indicators + release calendar)
-- **AI interpretation:** Claude API
+- **AI interpretation:** Gemini API (`gemini-3.8-flash`, free tier)
 
 Note: fully free, and reliable regardless of whether your own laptop is on. Known limitation: GitHub's scheduled workflows aren't perfectly precise (can be delayed by minutes) and, under heavy platform load, can occasionally drop a scheduled run entirely — a real but low risk for a job that only needs to run every few hours for monthly-cadence indicators. If this becomes a problem in practice, revisit AWS EventBridge/Lambda for the scheduler.

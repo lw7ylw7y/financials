@@ -59,6 +59,52 @@ def fetch_latest_observation(series_id: str, api_key: str | None = None) -> dict
     return {"date": latest["date"], "value": value}
 
 
+def fetch_recent_observations(
+    series_id: str, limit: int = 12, api_key: str | None = None
+) -> list[dict]:
+    """Fetch the most recent `limit` observations for a FRED series.
+
+    Returns a list of {"date": "YYYY-MM-DD", "value": float}, oldest to
+    newest (matching how history is stored). Observations with no value
+    yet (FRED uses "." for those) are skipped, so the result may have
+    fewer than `limit` entries. Raises FredApiError on a missing key or
+    request failure.
+    """
+    api_key = api_key or os.environ.get("FRED_API_KEY")
+    if not api_key:
+        raise FredApiError("FRED_API_KEY not set")
+
+    params = {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "sort_order": "desc",
+        "limit": limit,
+    }
+    try:
+        response = requests.get(
+            f"{FRED_BASE_URL}/series/observations", params=params, timeout=10
+        )
+        response.raise_for_status()
+    except requests.RequestException as e:
+        raise FredApiError(f"request failed for series {series_id}: {e}") from e
+
+    observations = response.json().get("observations") or []
+    result = []
+    for obs in observations:
+        raw_value = obs.get("value")
+        if raw_value is None or raw_value == ".":
+            continue
+        try:
+            value = float(raw_value)
+        except ValueError:
+            continue
+        result.append({"date": obs["date"], "value": value})
+
+    result.reverse()  # API returns newest-first; history is stored oldest-first
+    return result
+
+
 def fetch_next_release_date(
     release_id: str, api_key: str | None = None, today: str | None = None
 ) -> str | None:
