@@ -19,20 +19,16 @@ send.
 import logging
 from datetime import date, datetime, timedelta, timezone
 
+from email_template import CATEGORY_ORDER, render_html, render_subject, render_text
 from heuristics import sahm_rule_value, yield_curve_inversion_streak
 from interpret import InterpretationError, interpret
 from send_email import EmailSendError, send_email
+from sparkline import render_sparkline
 
 logger = logging.getLogger(__name__)
 
-DISCLAIMER = (
-    "This is automated commentary based on indicator trends, "
-    "not personalized financial advice."
-)
 HISTORY_WINDOW = 12
 MIN_DIGEST_INTERVAL = timedelta(days=7)
-CATEGORY_ORDER = ["leading", "coincident", "lagging"]
-CATEGORY_LABELS = {"leading": "Leading", "coincident": "Coincident", "lagging": "Lagging"}
 
 
 def _heuristic_for(key: str, history: list[dict]) -> dict | None:
@@ -71,7 +67,8 @@ def build_table(indicators_context: list[dict]) -> dict:
     """Group indicators into Leading/Coincident/Lagging rows for the table.
 
     Each row: name, latest_value, latest_date, prior_value (None if
-    fewer than 2 history entries on file).
+    fewer than 2 history entries on file), sparkline_cid (matches a key
+    in build_sparkline_images's returned dict).
     """
     grouped = {category: [] for category in CATEGORY_ORDER}
     for ind in indicators_context:
@@ -84,9 +81,22 @@ def build_table(indicators_context: list[dict]) -> dict:
                 "latest_value": latest["value"],
                 "latest_date": latest["date"],
                 "prior_value": prior["value"] if prior else None,
+                "sparkline_cid": _sparkline_cid(ind["key"]),
             }
         )
     return grouped
+
+
+def _sparkline_cid(key: str) -> str:
+    return f"spark-{key}"
+
+
+def build_sparkline_images(indicators_context: list[dict]) -> dict[str, bytes]:
+    """Render a trend sparkline PNG per indicator, keyed by its Content-ID."""
+    return {
+        _sparkline_cid(ind["key"]): render_sparkline(ind["history_window"])
+        for ind in indicators_context
+    }
 
 
 def build_countdown(state: dict, today: date | None = None) -> dict:
@@ -112,70 +122,32 @@ def build_countdown(state: dict, today: date | None = None) -> dict:
     return {"entries": entries, "soonest": entries[0] if entries else None}
 
 
-def _format_table_section(table: dict) -> list[str]:
-    lines = []
-    for category in CATEGORY_ORDER:
-        rows = table.get(category, [])
-        if not rows:
-            continue
-        lines.append(f"{CATEGORY_LABELS[category]}:")
-        for row in rows:
-            prior = f"{row['prior_value']:g}" if row["prior_value"] is not None else "n/a"
-            lines.append(
-                f"  {row['name']}: {row['latest_value']:g} as of "
-                f"{row['latest_date']} (prior: {prior})"
-            )
-        lines.append("")
-    return lines
-
-
-def _format_countdown_section(countdown: dict) -> list[str]:
-    if not countdown["entries"]:
-        return []
-
-    lines = ["Next releases:"]
-    soonest = countdown["soonest"]
-    lines.append(
-        f"  Next up: {soonest['name']} in {soonest['days_until']} day(s) "
-        f"({soonest['next_release_date']})"
-    )
-    for entry in countdown["entries"]:
-        if entry["key"] == soonest["key"]:
-            continue
-        lines.append(
-            f"  {entry['name']}: in {entry['days_until']} day(s) "
-            f"({entry['next_release_date']})"
-        )
-    return lines
-
-
 def build_digest_email(
     state: dict, indicators_context: list[dict], updated_keys: list[str], ai_result: dict | None
 ) -> dict:
-    """Build {"subject": str, "body": str} for the digest email."""
+    """Build {"subject", "body", "html_body", "images"} for the digest email.
+
+    `body` is the plain-text multipart/alternative fallback; `html_body`
+    is the styled version most clients will render, with a per-indicator
+    trend sparkline embedded via `<img src="cid:...">`; `images` maps
+    each of those cids to its PNG bytes for send_email.py to attach.
+    Rendering itself lives in email_template.py / sparkline.py — this
+    function only gathers the data.
+    """
     updated_names = [
         state["indicators"][key]["name"]
         for key in updated_keys
         if key in state.get("indicators", {})
     ]
-    subject = f"[Indicator Digest] {len(updated_names)} update(s): {', '.join(updated_names)}"
-
     table = build_table(indicators_context)
     countdown = build_countdown(state)
 
-    lines = []
-    if ai_result is not None:
-        lines += [
-            ai_result["summary"],
-            f"Overall directional read: {ai_result['directional_read']}",
-            "",
-            DISCLAIMER,
-            "",
-        ]
-    lines += _format_table_section(table)
-    lines += _format_countdown_section(countdown)
-
-    return {"subject": subject, "body": "\n".join(lines).rstrip() + "\n"}
+    return {
+        "subject": render_subject(updated_names),
+        "body": render_text(table, countdown, ai_result),
+        "html_body": render_html(table, countdown, ai_result),
+        "images": build_sparkline_images(indicators_context),
+    }
 
 
 def indicators_updated_since(state: dict, since: str | None) -> list[str]:
@@ -232,7 +204,12 @@ def run_post_release(
     email = build_digest_email(state, indicators_context, updated_keys, ai_result)
 
     try:
-        send_fn(email["subject"], email["body"])
+        send_fn(
+            email["subject"],
+            email["body"],
+            html_body=email["html_body"],
+            images=email["images"],
+        )
     except EmailSendError as e:
         logger.error("digest email send failed error=%s", e)
         return {"status": "error", "error": str(e)}

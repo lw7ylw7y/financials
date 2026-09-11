@@ -65,14 +65,24 @@ digest contains:
   transient failures like a `503`. If the AI call still fails, the email
   sends anyway without the AI section (and its disclaimer line).
 - **Story 5 — table:** every indicator's latest/prior value and date,
-  grouped by Leading/Coincident/Lagging (`post_release.build_table`).
+  grouped by Leading/Coincident/Lagging (`post_release.build_table`),
+  each row including a small trend sparkline (`sparkline.py`, rendered
+  as a PNG via matplotlib — Gmail strips inline `<svg>` from HTML
+  email, so a raster image embedded via `Content-ID` is the reliable
+  option).
 - **Story 6 — countdown:** days until each indicator's next release
   (Story 3's `next_release_date`), with the single soonest release
-  called out distinctly (`post_release.build_countdown`).
+  called out distinctly (`post_release.build_countdown`). Indicators
+  whose FRED release doesn't actually reflect their own update cadence
+  (Fed Funds Rate's mapped release, H.15, publishes near-daily — not
+  specific to the monthly series we track) have no `fred_release_id`
+  and are excluded, same as the continuously-updating yield curve
+  spread.
 
-Sent via Gmail SMTP (`send_email.py`). Requires `GMAIL_ADDRESS`,
-`GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL`, and `GEMINI_API_KEY` env vars to
-actually send.
+Sent as `multipart/alternative` via Gmail SMTP (`send_email.py`) — a
+styled HTML body (`email_template.py`) most clients render, plus a
+plain-text fallback. Requires `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`,
+`RECIPIENT_EMAIL`, and `GEMINI_API_KEY` env vars to actually send.
 
 ### Run it
 

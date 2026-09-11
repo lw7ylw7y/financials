@@ -15,11 +15,21 @@ class EmailSendError(Exception):
 def send_email(
     subject: str,
     body: str,
+    html_body: str | None = None,
+    images: dict[str, bytes] | None = None,
     to_addr: str | None = None,
     from_addr: str | None = None,
     app_password: str | None = None,
 ) -> None:
-    """Send a plain-text email via Gmail SMTP.
+    """Send an email via Gmail SMTP.
+
+    Plain-text only if `html_body` is omitted. When given, sends
+    multipart/alternative with `body` as the plain-text fallback (for
+    clients that don't render HTML) and `html_body` as the preferred
+    part. `images` (cid -> PNG bytes) are attached as inline parts
+    related to the HTML body, referenced there as `<img src="cid:...">`
+    — ignored if `html_body` is None, since there's no HTML to embed
+    them in.
 
     Credentials default to the GMAIL_ADDRESS / GMAIL_APP_PASSWORD /
     RECIPIENT_EMAIL env vars (per Section 9 of v1_technical_design.md)
@@ -46,6 +56,14 @@ def send_email(
     message["From"] = from_addr
     message["To"] = to_addr
     message.set_content(body)
+    if html_body is not None:
+        message.add_alternative(html_body, subtype="html")
+        if images:
+            html_part = message.get_payload()[-1]
+            for cid, png_bytes in images.items():
+                html_part.add_related(
+                    png_bytes, maintype="image", subtype="png", cid=f"<{cid}>"
+                )
 
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as smtp:

@@ -48,6 +48,8 @@ graph TD
 │   │                             #   AI summary and sends the one digest email
 │   ├── interpret.py             # Gemini API call for the holistic AI summary
 │   ├── heuristics.py            # Sahm Rule / yield curve inversion streak
+│   ├── email_template.py        # plain-text + HTML rendering for the digest
+│   ├── sparkline.py             # per-indicator trend sparkline PNGs
 │   ├── backfill.py              # one-time history backfill (not part of main.py)
 │   └── send_email.py            # Gmail SMTP wrapper
 ├── tests/
@@ -57,6 +59,8 @@ graph TD
 │   ├── test_heuristics.py
 │   ├── test_interpret.py
 │   ├── test_post_release.py
+│   ├── test_email_template.py
+│   ├── test_sparkline.py
 │   ├── test_send_email.py
 │   ├── test_backfill.py
 │   └── test_storage.py
@@ -127,7 +131,7 @@ Release calendar dates come from FRED's Releases API, keyed by `fred_release_id`
 
 One email replaces what earlier drafts of this doc described as a per-indicator alert plus a separately-hosted dashboard page. `post_release.py` builds it whenever the weekly-rollup gate (Section 5) opens:
 
-- **Story 5 content — the table:** all 8 indicators, grouped under Leading / Coincident / Lagging headers, each row showing indicator name, latest value, latest release date, and prior value. Backed directly by `data/indicators.json`'s `history` (Story 2) — built fresh at send time, so there's no separate "refresh" step the way a hosted page would need.
+- **Story 5 content — the table:** all 8 indicators, grouped under Leading / Coincident / Lagging headers, each row showing indicator name, latest value, latest release date, prior value, and a small trend sparkline (see below). Backed directly by `data/indicators.json`'s `history` (Story 2) — built fresh at send time, so there's no separate "refresh" step the way a hosted page would need.
 - **Story 6 content — the countdown:** for each indicator with a `next_release_date` (Story 3), days until that release; the single soonest upcoming release across all 8 is called out distinctly rather than left for the reader to find by scanning every row.
 - **Story 4 content — the AI summary:** one holistic Gemini call reasoning across *all 8* indicators' recent history together — not one call per indicator. This is a deliberate change from an earlier per-indicator-alert design: a holistic read can connect indicators to each other (e.g. "unemployment ticked up while CPI cooled") in a way that N independent single-indicator summaries can't.
 
@@ -169,9 +173,11 @@ One email per triggering run. Subject line names what changed:
 
 - `[Indicator Digest] 2 updates: CPI, Unemployment Rate`
 
-Body, top to bottom: the holistic AI summary + directional read + disclaimer (Story 4, omitted on AI failure) → the full indicator table grouped by category (Story 5) → the next-release countdown, soonest release called out (Story 6).
+Sent as `multipart/alternative` (`send_email.py`, via Python's `smtplib` / Gmail SMTP with an app password): a plain-text fallback (`email_template.render_text`) alongside a styled HTML body (`email_template.render_html`) most clients will actually render. HTML uses inline styles and a table-based layout throughout — the subset that renders consistently across clients, including older Outlook, which don't reliably support `<style>` blocks, flexbox, or grid.
 
-Sent via `send_email.py`, a thin wrapper around Python's `smtplib` using Gmail SMTP (`smtp.gmail.com:587`) with an app password.
+Body, top to bottom: the holistic AI summary + directional read + disclaimer (Story 4, omitted on AI failure) → the full indicator table grouped by category (Story 5), each row including a per-indicator trend sparkline → the next-release countdown, soonest release called out (Story 6).
+
+**Sparklines:** rendered as small PNG images (`sparkline.py`, matplotlib) rather than inline SVG, since Gmail strips `<svg>` from HTML email entirely. Embedded via `Content-ID` references (`<img src="cid:spark-{key}">`) attached as MIME parts related to the HTML body — not as remote/external images, which some clients block by default pending a "show images" click, and not as inline `data:` URIs, which would bloat message size well past what CID attachment does. The endpoint dot is colored green/red/gray based on the latest-vs-prior direction; no axes, gridlines, or labels, in keeping with the sparkline's job as a compact trend glance, not a full chart.
 
 ## 8. Secrets & Configuration
 

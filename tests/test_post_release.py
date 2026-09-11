@@ -10,11 +10,14 @@ from post_release import (
     build_countdown,
     build_digest_email,
     build_indicators_context,
+    build_sparkline_images,
     build_table,
     indicators_updated_since,
     run_post_release,
 )
 from send_email import EmailSendError
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 T0 = "2026-09-01T00:00:00+00:00"
 T1 = "2026-09-08T00:00:00+00:00"
@@ -49,8 +52,10 @@ def make_state():
 
 
 def fake_send_factory(calls, fail=False):
-    def fake_send(subject, body):
-        calls.append({"subject": subject, "body": body})
+    def fake_send(subject, body, html_body=None, images=None):
+        calls.append(
+            {"subject": subject, "body": body, "html_body": html_body, "images": images}
+        )
         if fail:
             raise EmailSendError("simulated smtp failure")
 
@@ -109,6 +114,28 @@ class TestBuildTable(unittest.TestCase):
         cpi_row = table["lagging"][0]
         self.assertIsNone(cpi_row["prior_value"])
 
+    def test_each_row_gets_a_sparkline_cid(self):
+        context = build_indicators_context(make_state())
+
+        table = build_table(context)
+
+        row = table["coincident"][0]
+        self.assertEqual(row["sparkline_cid"], "spark-nonfarm_payrolls")
+
+
+class TestBuildSparklineImages(unittest.TestCase):
+    def test_returns_one_png_per_indicator_keyed_by_cid(self):
+        context = build_indicators_context(make_state())
+
+        images = build_sparkline_images(context)
+
+        self.assertEqual(
+            set(images.keys()),
+            {"spark-nonfarm_payrolls", "spark-cpi", "spark-yield_curve_spread"},
+        )
+        for png in images.values():
+            self.assertTrue(png.startswith(PNG_MAGIC))
+
 
 class TestBuildCountdown(unittest.TestCase):
     def test_days_until_is_correct_for_known_date(self):
@@ -166,6 +193,18 @@ class TestBuildDigestEmail(unittest.TestCase):
         self.assertIn("CPI", email["body"])
         self.assertIn("10yr-2yr Treasury Spread", email["body"])
 
+    def test_html_body_is_present_and_well_formed(self):
+        state = make_state()
+        context = build_indicators_context(state)
+        ai_result = {"summary": "Test summary.", "directional_read": "bullish"}
+
+        email = build_digest_email(state, context, ["cpi"], ai_result)
+
+        self.assertIn("<!doctype html>", email["html_body"].lower())
+        self.assertIn("Test summary.", email["html_body"])
+        self.assertIn("Nonfarm Payrolls", email["html_body"])
+        self.assertIn("CPI", email["html_body"])
+
     def test_subject_names_updated_indicators(self):
         state = make_state()
         context = build_indicators_context(state)
@@ -218,6 +257,10 @@ class TestRunPostRelease(unittest.TestCase):
         self.assertEqual(outcome["status"], "sent")
         self.assertEqual(len(calls), 1)
         self.assertIn("last_digest_sent_at", state)
+        self.assertEqual(
+            set(calls[0]["images"].keys()),
+            {"spark-nonfarm_payrolls", "spark-cpi", "spark-yield_curve_spread"},
+        )
 
     def test_nothing_updated_since_last_digest_sends_no_email(self):
         state = make_state()
