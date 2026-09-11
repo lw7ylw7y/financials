@@ -117,9 +117,9 @@ design and, later, the current consolidated digest email with real AI
 content confirmed delivered).
 
 **Tests**
-- Full workflow run on a manual trigger (`workflow_dispatch`) completes without error against live APIs
-- Workflow correctly commits and pushes updated `indicators.json`
-- Scheduled trigger fires at the expected cron time — not yet verified; needs ≥24h of real elapsed time to observe in Actions run history
+- [x] Full workflow run on a manual trigger (`workflow_dispatch`) completes without error against live APIs — run [34648940255](https://github.com/lw7ylw7y/financials/actions/runs/34648940255): secrets correctly masked, a real Gemini `503` was retried and succeeded, digest email sent (first-ever send under the new throttle, since `last_digest_sent_at` didn't exist in the data before this)
+- [x] Workflow correctly commits and pushes updated `indicators.json` — commit `ef4f518`, pushed by the workflow itself
+- [ ] Scheduled trigger fires at the expected cron time — not yet verified; needs ≥24h of real elapsed time to observe in Actions run history
 
 ---
 
