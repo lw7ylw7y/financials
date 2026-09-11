@@ -105,24 +105,21 @@ digest AND at least a week has passed since then.
 
 ## Cross-Cutting / Integration
 
-| Task | Estimate |
+| Task | Status |
 |---|---|
-| Workflow YAML (`.github/workflows/indicator-check.yml`) — schedule trigger, checkout, run, commit-back | 1h |
-| Secrets setup checklist walkthrough (Section 8/10 of tech design) | 0.5h |
-| Git commit-and-push step from within the workflow | 1h |
-| **Subtotal (remaining)** | **2.5h** |
+| Workflow YAML (`.github/workflows/indicator-check.yml`) — schedule trigger (every 6h), `workflow_dispatch`, checkout, run, commit-back | done |
+| Secrets set on the repo (`gh secret set --env-file`, from local `.env`) — `FRED_API_KEY`, `GEMINI_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | done |
+| Git commit-and-push step from within the workflow, with explicit `permissions: contents: write` so it doesn't depend on the repo's default token permission setting | done |
 
 End-to-end dry run against real FRED + Gemini + Gmail (not mocks) is
-**done** — verified manually against live APIs, including a real backfill
-and a real delivered email. Note: that manual verification predates the
-digest reshape (it exercised the earlier per-indicator-email design) —
-worth one more live run against the current digest email before calling
-Story 4/5/6 fully closed out.
+**done** — verified manually (both the earlier per-indicator-email
+design and, later, the current consolidated digest email with real AI
+content confirmed delivered).
 
 **Tests**
 - Full workflow run on a manual trigger (`workflow_dispatch`) completes without error against live APIs
 - Workflow correctly commits and pushes updated `indicators.json`
-- Scheduled trigger fires at the expected cron time (verified via Actions run history after 24h)
+- Scheduled trigger fires at the expected cron time — not yet verified; needs ≥24h of real elapsed time to observe in Actions run history
 
 ---
 
@@ -134,8 +131,8 @@ Story 4/5/6 fully closed out.
 | Story 2 — Storage | 6h | done |
 | Story 3 — Release Calendar | 3h | done |
 | Story 4/5/6 — Digest Email (AI + table + countdown) | 10.5h | done |
-| Cross-Cutting / Integration | 2.5h remaining | not started |
-| **Total** | **~36.5h originally, ~2.5h remaining** | |
+| Cross-Cutting / Integration | 2.5h | done (pending 24h cron-timing observation) |
+| **Total** | **~36.5h** | v1 functionally complete |
 
 ## Suggested Build Order
 Dependency-driven, not just priority-driven — Stories 1-3 are prerequisites for everything else:

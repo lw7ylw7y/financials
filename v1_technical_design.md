@@ -194,8 +194,8 @@ Stored as GitHub Actions repository secrets (never committed to the repo):
 - All errors logged to the GitHub Actions run log (visible in the Actions tab) for debugging — no separate logging service needed at this scale
 
 ## 10. One-Time Setup Checklist (before first run)
-- [ ] Create free FRED API key
-- [ ] Create a free Gemini API key
-- [ ] Generate a Gmail app password
-- [ ] Create the GitHub repo, add the secrets above
-- [ ] Confirm the workflow's default `GITHUB_TOKEN` has write permission to push commits (repo Settings → Actions → Workflow permissions)
+- [x] Create free FRED API key
+- [x] Create a free Gemini API key
+- [x] Generate a Gmail app password
+- [x] Create the GitHub repo, add the secrets above (`gh secret set --env-file`)
+- [x] Workflow grants itself write permission explicitly (`permissions: contents: write` in `indicator-check.yml`), rather than depending on the repo's default `GITHUB_TOKEN` permission setting
