@@ -1,6 +1,6 @@
 # Investment Dashboard
 
-See `investment_dashboard_requirements.md`, `v1_user_stories.md`, `v1_technical_design.md`, and `v1_task_breakdown.md` for the full spec.
+See `docs/investment_dashboard_requirements.md`, `docs/v1_user_stories.md`, `docs/v1_technical_design.md`, and `docs/v1_task_breakdown.md` for the full spec.
 
 ## Story 1 — Indicator Data Ingestion (prototype)
 
@@ -11,7 +11,7 @@ to `data/indicators.json`.
 
 ## Story 2 — Historical Storage
 
-`src/storage.py` persists ingestion results to `data/indicators.json` and
+`src/storage/storage.py` persists ingestion results to `data/indicators.json` and
 provides:
 
 - `load_state()` / `save_state()` — read/write the JSON store, tolerating

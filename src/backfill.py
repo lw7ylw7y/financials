@@ -10,7 +10,13 @@ append-only invariant).
 """
 
 import logging
+import os
+import sys
 from datetime import datetime, timezone
+
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+for _subdir in ("fred", "storage"):
+    sys.path.insert(0, os.path.join(_SRC_DIR, _subdir))
 
 from fetch_fred import FredApiError, fetch_recent_observations
 from indicators_config import INDICATORS

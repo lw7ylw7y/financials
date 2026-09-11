@@ -4,7 +4,15 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+_SRC = os.path.join(os.path.dirname(__file__), "..", "src")
+for _p in (
+    _SRC,
+    os.path.join(_SRC, "fred"),
+    os.path.join(_SRC, "storage"),
+    os.path.join(_SRC, "digest"),
+    os.path.join(_SRC, "mailer"),
+):
+    sys.path.insert(0, _p)
 
 from send_email import EmailSendError, send_email
 

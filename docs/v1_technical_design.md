@@ -33,25 +33,44 @@ graph TD
 
 ## 2. Repository Structure
 
+`src/` is grouped by concern into subfolders rather than kept flat. This
+project doesn't use Python package-style imports (no `__init__.py`,
+no dotted paths like `fred.fetch_fred`) — it predates the reorg with a
+`sys.path.insert` convention per file, so the reorg keeps that
+convention rather than introducing a different import style: `main.py`
+and `backfill.py` (the two actual entry points) each add every
+subfolder to `sys.path` before their local imports, and every test file
+does the same. Modules still import each other by their own name
+(`from fetch_fred import ...`), unqualified by folder.
+
 ```
 /
 ├── .github/workflows/
 │   └── indicator-check.yml
+├── docs/                         # planning docs (this file and its 3 companions)
+│   ├── investment_dashboard_requirements.md
+│   ├── v1_user_stories.md
+│   ├── v1_technical_design.md
+│   └── v1_task_breakdown.md
 ├── data/
 │   └── indicators.json          # persistent store (Story 2)
 ├── src/
 │   ├── main.py                  # orchestrator — ingestion loop (Story 1)
-│   ├── fetch_fred.py            # FRED API client
-│   ├── indicators_config.py     # indicator → FRED series/category mapping
-│   ├── storage.py               # load/save/query/trim indicators.json (Story 2)
-│   ├── post_release.py          # Story 4/5/6 — builds the table + countdown +
-│   │                             #   AI summary and sends the one digest email
-│   ├── interpret.py             # Gemini API call for the holistic AI summary
-│   ├── heuristics.py            # Sahm Rule / yield curve inversion streak
-│   ├── email_template.py        # plain-text + HTML rendering for the digest
-│   ├── sparkline.py             # per-indicator trend sparkline PNGs
 │   ├── backfill.py              # one-time history backfill (not part of main.py)
-│   └── send_email.py            # Gmail SMTP wrapper
+│   ├── fred/
+│   │   ├── fetch_fred.py        # FRED API client
+│   │   └── indicators_config.py # indicator → FRED series/category mapping
+│   ├── storage/
+│   │   └── storage.py           # load/save/query/trim indicators.json (Story 2)
+│   ├── digest/                  # Story 4/5/6 business logic — what goes in the digest
+│   │   ├── post_release.py      # builds the table + countdown + AI summary,
+│   │   │                        #   sends the one digest email
+│   │   ├── interpret.py         # Gemini API call for the holistic AI summary
+│   │   └── heuristics.py        # Sahm Rule / yield curve inversion streak
+│   └── mailer/                  # turning digest content into a sent email
+│       ├── email_template.py    # plain-text + HTML rendering
+│       ├── sparkline.py         # per-indicator trend sparkline PNGs
+│       └── send_email.py        # Gmail SMTP wrapper
 ├── tests/
 │   ├── test_fetch_fred.py
 │   ├── test_ingestion.py

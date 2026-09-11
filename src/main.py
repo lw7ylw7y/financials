@@ -16,7 +16,13 @@ storage.py (Story 2).
 """
 
 import logging
+import os
+import sys
 from datetime import datetime, timezone
+
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+for _subdir in ("fred", "storage", "digest", "mailer"):
+    sys.path.insert(0, os.path.join(_SRC_DIR, _subdir))
 
 from fetch_fred import FredApiError, fetch_latest_observation, fetch_next_release_date
 from indicators_config import INDICATORS

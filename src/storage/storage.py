@@ -12,7 +12,9 @@ import json
 import os
 from datetime import date
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "indicators.json")
+DATA_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "data", "indicators.json"
+)
 HISTORY_WINDOW_MONTHS = 12
 
 

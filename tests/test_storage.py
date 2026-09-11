@@ -4,7 +4,15 @@ import tempfile
 import unittest
 from datetime import date
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+_SRC = os.path.join(os.path.dirname(__file__), "..", "src")
+for _p in (
+    _SRC,
+    os.path.join(_SRC, "fred"),
+    os.path.join(_SRC, "storage"),
+    os.path.join(_SRC, "digest"),
+    os.path.join(_SRC, "mailer"),
+):
+    sys.path.insert(0, _p)
 
 from storage import load_state, query_history, save_state, trim_history
 
