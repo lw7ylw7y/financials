@@ -1,7 +1,8 @@
-"""Local Flask app for the v1.1 web dashboard — Indicator Digest Page
-(Story 1/1a). Bound to loopback only (127.0.0.1), never 0.0.0.0, so it
-is unreachable from anything but the machine it's running on, per the
-local-only hosting decision in Section 4.1 of investment_dashboard_requirements.md.
+"""Local Flask app for the v1.1 web dashboard: the Indicator Digest Page
+(Story 1/1a, "/") and the Ticker Dashboard (Story 2/3, "/tickers").
+Bound to loopback only (127.0.0.1), never 0.0.0.0, so it is unreachable
+from anything but the machine it's running on, per the local-only
+hosting decision in Section 4.1 of investment_dashboard_requirements.md.
 No authentication layer: unnecessary when the app can never be reached
 from outside the machine itself.
 """
@@ -19,7 +20,12 @@ sys.path.insert(0, _WEB_DIR)
 from flask import Flask, jsonify
 
 from live_pull import check_for_updates, get_initial_page_data
-from page_template import render_check_response, render_indicator_digest_page
+from page_template import (
+    render_check_response,
+    render_indicator_digest_page,
+    render_ticker_dashboard_page,
+)
+from ticker_dashboard import build_ticker_cards
 
 app = Flask(__name__)
 
@@ -28,6 +34,12 @@ app = Flask(__name__)
 def indicator_digest_page():
     data = get_initial_page_data()
     return render_indicator_digest_page(data)
+
+
+@app.route("/tickers")
+def ticker_dashboard_page():
+    grouped_cards = build_ticker_cards()
+    return render_ticker_dashboard_page(grouped_cards)
 
 
 @app.route("/api/check")

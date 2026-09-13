@@ -1,0 +1,9 @@
+{
+  "groups": {
+    "stocks": ["SPY", "IVW", "DGRO"],
+    "bonds": ["VGIT", "VGLT"],
+    "international": ["VIGI", "VYMI", "EMB"],
+    "sector": ["FTEC"],
+    "individual": ["MSFT", "RELY"]
+  }
+}

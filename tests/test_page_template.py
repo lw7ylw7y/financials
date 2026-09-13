@@ -13,7 +13,11 @@ for _p in (
 ):
     sys.path.insert(0, _p)
 
-from page_template import render_check_response, render_indicator_digest_page
+from page_template import (
+    render_check_response,
+    render_indicator_digest_page,
+    render_ticker_dashboard_page,
+)
 
 TABLE = {
     "leading": [],
@@ -146,6 +150,106 @@ class TestRenderCheckResponse(unittest.TestCase):
 
         self.assertIsNotNone(fragments["ai_html"])
         self.assertIn("Fresh read.", fragments["ai_html"])
+
+
+def make_card(**overrides):
+    card = {
+        "symbol": "SPY",
+        "group": "stocks",
+        "price": 452.31,
+        "week52_low": 400.0,
+        "week52_high": 480.0,
+        "ma20": 448.5,
+        "ma200": 430.2,
+        "news": [{"headline": "Fund flows steady", "url": "https://example.com/a", "datetime": 1}],
+        "error": None,
+    }
+    card.update(overrides)
+    return card
+
+
+class TestRenderTickerDashboardPage(unittest.TestCase):
+    def test_renders_card_fields(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]})
+
+        self.assertIn("SPY", html)
+        self.assertIn("452.31", html)
+        self.assertIn("400.00", html)
+        self.assertIn("480.00", html)
+        self.assertIn("448.50", html)
+        self.assertIn("430.20", html)
+        self.assertIn("Fund flows steady", html)
+        self.assertIn("https://example.com/a", html)
+
+    def test_group_header_derived_from_config_key(self):
+        html = render_ticker_dashboard_page({"sector_and_individual": [make_card()]})
+
+        self.assertIn("Sector And Individual", html)
+
+    def test_new_group_key_renders_with_no_code_change(self):
+        html = render_ticker_dashboard_page({"crypto": [make_card(symbol="BTC")]})
+
+        self.assertIn("Crypto", html)
+        self.assertIn("BTC", html)
+
+    def test_groups_render_in_file_order(self):
+        html = render_ticker_dashboard_page(
+            {"bonds": [make_card(symbol="VGIT")], "stocks": [make_card(symbol="SPY")]}
+        )
+
+        self.assertLess(html.index("Bonds"), html.index("Stocks"))
+
+    def test_errored_card_shows_error_state_without_crashing(self):
+        error_card = make_card(
+            price=None,
+            week52_low=None,
+            week52_high=None,
+            ma20=None,
+            ma200=None,
+            news=[],
+            error="no quote data for SPY",
+        )
+
+        html = render_ticker_dashboard_page({"stocks": [error_card]})
+
+        self.assertIn("ticker-card-error", html)
+        self.assertIn("Unable to load data.", html)
+
+    def test_one_card_erroring_does_not_affect_sibling_card(self):
+        error_card = make_card(
+            symbol="BADSYM",
+            price=None,
+            week52_low=None,
+            week52_high=None,
+            ma20=None,
+            ma200=None,
+            news=[],
+            error="no quote data for BADSYM",
+        )
+        ok_card = make_card(symbol="SPY")
+
+        html = render_ticker_dashboard_page({"stocks": [error_card, ok_card]})
+
+        self.assertIn("Unable to load data.", html)
+        self.assertIn("452.31", html)
+
+    def test_missing_ma200_renders_not_available(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(ma200=None)]})
+
+        self.assertIn("n/a", html)
+
+    def test_no_news_renders_placeholder(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(news=[])]})
+
+        self.assertIn("No recent news.", html)
+
+    def test_html_escapes_headline(self):
+        html = render_ticker_dashboard_page(
+            {"stocks": [make_card(news=[{"headline": "<script>alert(1)</script>", "url": "https://example.com", "datetime": 1}])]}
+        )
+
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
 
 
 if __name__ == "__main__":

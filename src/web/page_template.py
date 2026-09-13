@@ -1,4 +1,5 @@
-"""Indicator Digest Page HTML rendering (Story 1/1a).
+"""HTML rendering for both v1.1 pages: the Indicator Digest Page
+(Story 1/1a) and the Ticker Dashboard (Story 2/3).
 
 A browser page, not an email, so this doesn't inherit email_template.py's
 Outlook-safe inline-style-table constraints or its CID-image sparklines —
@@ -208,6 +209,81 @@ def render_indicator_digest_page(data: dict) -> str:
       }}
     }}).catch(function() {{ hideCheckingIndicator(); /* stay on the stored snapshot already shown */ }});
   </script>
+</body>
+</html>"""
+
+
+def _group_header(group_name: str) -> str:
+    """Section header derived straight from the config key, e.g.
+    "sector" -> "Sector" -- never a fixed lookup, so a new or renamed
+    group in config/tickers.json appears correctly with no code change
+    (Story 2/3's AC, Section 5.2 of the tech design)."""
+    return group_name.replace("_", " ").replace("-", " ").title()
+
+
+def _render_ticker_card(card: dict) -> str:
+    if card["error"]:
+        return f"""
+          <div class="ticker-card ticker-card-error">
+            <p class="ticker-symbol">{escape(card['symbol'])}</p>
+            <p class="muted">Unable to load data.</p>
+          </div>"""
+
+    news_items = card["news"][:5]
+    if news_items:
+        news_html = "".join(
+            f'<li><a href="{escape(n["url"])}" target="_blank" rel="noopener">{escape(n["headline"])}</a></li>'
+            for n in news_items
+        )
+    else:
+        news_html = '<li class="muted">No recent news.</li>'
+
+    ma20 = f"{card['ma20']:.2f}" if card["ma20"] is not None else "n/a"
+    ma200 = f"{card['ma200']:.2f}" if card["ma200"] is not None else "n/a"
+
+    return f"""
+          <div class="ticker-card">
+            <p class="ticker-symbol">{escape(card['symbol'])}</p>
+            <p class="ticker-price">${card['price']:.2f}</p>
+            <p class="muted">52wk: ${card['week52_low']:.2f} &ndash; ${card['week52_high']:.2f}</p>
+            <p class="muted">20d MA: {ma20} &middot; 200d MA: {ma200}</p>
+            <ul class="ticker-news">{news_html}</ul>
+          </div>"""
+
+
+def render_ticker_dashboard_page(grouped_cards: dict) -> str:
+    """`grouped_cards` per ticker_dashboard.build_ticker_cards:
+    `{group_name: [card, ...]}` in file order. Group headers are
+    derived from the config keys (see `_group_header`), never a fixed
+    list, and a per-card error state stands in for any ticker whose
+    fetch failed without affecting the rest of the page.
+    """
+    sections = []
+    for group_name, cards in grouped_cards.items():
+        card_html = "".join(_render_ticker_card(card) for card in cards)
+        sections.append(f"""
+        <section class="ticker-group">
+          <p class="category-label">{escape(_group_header(group_name))}</p>
+          <div class="ticker-grid">{card_html}</div>
+        </section>""")
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ticker Dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <main class="page">
+    <header class="page-header">
+      <h1>Ticker Dashboard</h1>
+    </header>
+    {''.join(sections)}
+    <footer class="page-footer">
+      <p class="muted">Prices, moving averages, and news from Finnhub &middot; free tier may lag by up to ~20 minutes</p>
+    </footer>
+  </main>
 </body>
 </html>"""
 
