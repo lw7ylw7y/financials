@@ -1,9 +1,9 @@
 {
   "groups": {
     "stocks": ["SPY", "IVW", "DGRO"],
-    "bonds": ["VGIT", "VGLT"],
-    "international": ["VIGI", "VYMI", "EMB"],
-    "sector": ["FTEC"],
-    "individual": ["MSFT", "RELY"]
+    "bonds": ["VGIT", "VGLT", "EMB"],
+    "international": ["VIGI", "VYMI","BMO", "BNS", "CM", "RY", "TD"],
+    "sector": ["FCOM", "FDIS", "FHLC", "FNCL", "FREL", "FSTA", "FTEC", "FUTY"],
+    "individual": ["AMD", "INTC", "NVDA", "QCOM", "AAPL", "AMZN", "CRM", "GOOGL", "IBM", "META", "MSFT", "NFLX", "ORCL", "RELY", "TSLA"]
   }
 }

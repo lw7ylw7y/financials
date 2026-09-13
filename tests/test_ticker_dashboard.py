@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
@@ -81,19 +82,20 @@ class TestLoadTickerConfig(unittest.TestCase):
 
             self.assertEqual(groups["stocks"], ["SPY"])
 
-    def test_default_config_path_matches_initial_watchlist_draft(self):
+    def test_default_config_path_loads_the_live_watchlist(self):
+        """A smoke test against the real config/tickers.json, not a fixed
+        watchlist snapshot -- Story 2's whole point is that this file is
+        hand-edited freely, so pinning its exact contents here would make
+        the test suite fail every time the watchlist is legitimately
+        updated. Checks the loader handles the real file's shape, not
+        what's currently in it."""
         groups = load_ticker_config(CONFIG_PATH)
 
-        self.assertEqual(
-            groups,
-            {
-                "stocks": ["SPY", "IVW", "DGRO"],
-                "bonds": ["VGIT", "VGLT"],
-                "international": ["VIGI", "VYMI", "EMB"],
-                "sector": ["FTEC"],
-                "individual": ["MSFT", "RELY"],
-            },
-        )
+        self.assertTrue(groups)
+        for group_name, symbols in groups.items():
+            self.assertTrue(symbols, f"group {group_name!r} has no tickers")
+            for symbol in symbols:
+                self.assertTrue(symbol.isalnum(), f"{symbol!r} in {group_name!r} isn't a valid ticker")
 
 
 class TestBuildTickerCards(unittest.TestCase):
@@ -224,6 +226,59 @@ class TestBuildTickerCards(unittest.TestCase):
         )
 
         self.assertFalse(cards["stocks"][0]["pending"])
+
+    def test_order_preserved_even_when_slower_tickers_finish_first(self):
+        # SPY is made to sleep longest and IVW shortest, forcing them to
+        # resolve out of submission order -- output order must still
+        # follow config order, not completion order.
+        delays = {"SPY": 0.06, "IVW": 0.0, "DGRO": 0.03}
+
+        def fake_quote(symbol):
+            time.sleep(delays[symbol])
+            return {"price": float(len(symbol))}
+
+        cards = build_ticker_cards(
+            config={"stocks": ["SPY", "IVW", "DGRO"]},
+            fetch_quote_fn=fake_quote,
+            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_closes_fn=lambda s: [1.0, 2.0],
+        )
+
+        self.assertEqual([c["symbol"] for c in cards["stocks"]], ["SPY", "IVW", "DGRO"])
+
+    def test_fetches_run_concurrently_not_sequentially(self):
+        # 5 tickers each sleeping 0.1s: sequential would take >=0.5s;
+        # concurrent (max_workers=5 default) should take close to 0.1s.
+        symbols = ["A", "B", "C", "D", "E"]
+
+        def slow_quote(symbol):
+            time.sleep(0.1)
+            return {"price": 1.0}
+
+        started = time.monotonic()
+        build_ticker_cards(
+            config={"stocks": symbols},
+            fetch_quote_fn=slow_quote,
+            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_closes_fn=lambda s: [1.0, 2.0],
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.3)
+
+    def test_more_tickers_than_max_workers_still_processes_all(self):
+        symbols = [f"SYM{i}" for i in range(12)]
+
+        cards = build_ticker_cards(
+            config={"stocks": symbols},
+            fetch_quote_fn=lambda s: {"price": 1.0},
+            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_closes_fn=lambda s: [1.0, 2.0],
+            max_workers=5,
+        )
+
+        self.assertEqual([c["symbol"] for c in cards["stocks"]], symbols)
+        self.assertTrue(all(c["error"] is None for c in cards["stocks"]))
 
     def test_errored_card_is_not_pending(self):
         def failing_quote(symbol):

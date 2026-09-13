@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
@@ -174,6 +175,37 @@ class TestRunIngestion(unittest.TestCase):
         self.assertEqual(results["initial_jobless_claims"]["status"], "updated")
         history = state["indicators"]["initial_jobless_claims"]["history"]
         self.assertEqual([e["date"] for e in history], ["2026-09-04", "2026-09-11"])
+
+    def test_fetches_run_concurrently_not_sequentially(self):
+        # 8 indicators each sleeping 0.1s: sequential would take >=0.8s;
+        # concurrent (one thread per indicator) should take close to 0.1s.
+        def slow_fetch(series_id):
+            time.sleep(0.1)
+            return FIXTURES[series_id]
+
+        state = {"indicators": {}}
+        started = time.monotonic()
+        run_ingestion(state, fetch_fn=slow_fetch)
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.4)
+
+    def test_results_ordered_by_config_not_completion(self):
+        # Give initial_jobless_claims (first in INDICATORS) the longest
+        # delay so it resolves last -- results must still come back keyed
+        # correctly per indicator regardless of fetch completion order.
+        delays = {"ICSA": 0.05}
+
+        def fake_fetch(series_id):
+            time.sleep(delays.get(series_id, 0.0))
+            return FIXTURES[series_id]
+
+        state = {"indicators": {}}
+        results = run_ingestion(state, fetch_fn=fake_fetch)
+
+        self.assertEqual(results["initial_jobless_claims"]["status"], "updated")
+        self.assertEqual(results["initial_jobless_claims"]["date"], "2026-09-04")
+        self.assertTrue(all(r["status"] == "updated" for r in results.values()))
 
 
 if __name__ == "__main__":

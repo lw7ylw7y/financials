@@ -97,8 +97,7 @@ v1's entire product surface is a single digest email — there is no webpage/das
 | Economic release calendar (for the next-release countdown) | FRED release calendar | Needed to know upcoming CPI/jobs report/FOMC dates |
 | AI interpretation of indicators | Gemini API (free tier) | Generates plain-English summary + directional read; framed as informational commentary, not advice |
 | *(v1.1, ticker dashboard)* Price, 52-wk range | Finnhub | Free tier has ~20 min delay; acceptable given Monday-cadence buying. `/stock/candle` turned out to be paid-tier-only (confirmed 2026-09-13), so the 52-wk range uses Finnhub's separate `/stock/metric` endpoint instead, which is still free |
-| *(v1.1, ticker dashboard)* Moving averages (20d/200d) | Yahoo Finance (public chart endpoint) | Finnhub's free tier has no daily-close source at all; Yahoo's undocumented chart endpoint is free, unauthenticated, and (unlike stooq.io, tried first) doesn't gate requests behind a bot challenge |
-| *(v1.1, ticker dashboard)* Ticker-related news | Finnhub | Still free, no change |
+| *(v1.1, ticker dashboard)* Moving averages (20d/50d/200d) | Yahoo Finance (public chart endpoint) | Finnhub's free tier has no daily-close source at all; Yahoo's undocumented chart endpoint is free, unauthenticated, and (unlike stooq.io, tried first) doesn't gate requests behind a bot challenge |
 | *(backlog)* Shiller P/E | multpl.com or similar | No single clean free API; may need light scraping or manual periodic entry |
 | *(backlog)* ISM Manufacturing New Orders | Paid vendor or workaround TBD | No free open feed available |
 

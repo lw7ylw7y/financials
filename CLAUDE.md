@@ -243,11 +243,26 @@ callables for this.
   background check, this one has no "skip if nothing changed" gate —
   every check re-fetches every ticker live, since there's no expensive
   AI call here to protect. Deliberately *not* done: per-ticker
-  progressive/streaming updates (each row resolving independently) and
-  parallelizing the per-ticker fetches — both would be reasonable
-  follow-ups if the background check's total wait is still noticeable,
-  but weren't asked for and would add real complexity, so left out for
-  now (see Section 5.3 of the tech design).
+  progressive/streaming updates (each row resolving independently) —
+  would add real streaming-architecture complexity for a UX gain the
+  bulk-fetch-plus-cache design (above) and the parallelization (below)
+  already mostly deliver.
+- **Parallelized 2026-09-13:** once the real watchlist grew to 36
+  tickers, the background check (Story 5, above) was clocked at ~22s —
+  fetching every ticker sequentially. `ticker_dashboard.build_ticker_cards()`
+  now fetches every ticker concurrently via `ThreadPoolExecutor`
+  (`max_workers=5` — deliberately modest, since Finnhub's free-tier
+  rate limit meant maxing it out risked trading slow-but-successful
+  fetches for fast 429s), cutting that same 36-ticker check to ~4s,
+  verified live. `main.run_ingestion()` and `main.update_release_calendar()`
+  got the same treatment (one thread per indicator — only 8 of them, no
+  rate-limit concern at that volume). In every case only the fetch
+  calls run concurrently; state mutation and result-building still run
+  single-threaded afterward, and `executor.map`'s output-order
+  guarantee keeps everything grouped/ordered exactly as the sequential
+  version did, regardless of which fetch resolves first — covered by
+  tests that force out-of-order completion via `time.sleep` and assert
+  the order didn't scramble.
 - When behavior actually changes, keep these in sync (all checkbox/prose
   acceptance-criteria style, not auto-generated): `docs/investment_dashboard_requirements.md`,
   `docs/v1.1_user_stories.md`, `docs/v1.1_technical_design.md`,

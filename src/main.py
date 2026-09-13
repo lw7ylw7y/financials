@@ -18,6 +18,7 @@ storage.py (Story 2).
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,8 +34,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
+def _fetch_observation(item: tuple[str, dict], fetch_fn) -> tuple[str, dict | None, Exception | None]:
+    key, config = item
+    try:
+        return key, fetch_fn(config["fred_series_id"]), None
+    except FredApiError as e:
+        return key, None, e
+
+
 def run_ingestion(state: dict, fetch_fn=fetch_latest_observation) -> dict:
     """Fetch the latest value for every configured indicator.
+
+    The fetches themselves run concurrently (one thread per indicator —
+    only 8 of them, well within FRED's rate limit) since they're
+    independent I/O calls; everything after a fetch resolves (dedup
+    check, history append) still runs single-threaded, sequentially, so
+    `state` is never mutated from more than one thread at a time.
 
     Mutates `state` in place (appending new history entries) and returns
     a dict of indicator key -> result:
@@ -44,12 +59,16 @@ def run_ingestion(state: dict, fetch_fn=fetch_latest_observation) -> dict:
     state.setdefault("indicators", {})
     results = {}
 
-    for key, config in INDICATORS.items():
-        try:
-            observation = fetch_fn(config["fred_series_id"])
-        except FredApiError as e:
-            logger.error("fetch failed indicator=%s error=%s", key, e)
-            results[key] = {"status": "error", "error": str(e)}
+    with ThreadPoolExecutor(max_workers=len(INDICATORS)) as executor:
+        fetched = list(
+            executor.map(lambda item: _fetch_observation(item, fetch_fn), INDICATORS.items())
+        )
+
+    for key, observation, error in fetched:
+        config = INDICATORS[key]
+        if error is not None:
+            logger.error("fetch failed indicator=%s error=%s", key, error)
+            results[key] = {"status": "error", "error": str(error)}
             continue
 
         stored = state["indicators"].get(key, {})
@@ -124,6 +143,7 @@ def update_release_calendar(state: dict, fetch_fn=fetch_next_release_date) -> di
     state.setdefault("indicators", {})
     results = {}
 
+    to_fetch = []
     for key, config in INDICATORS.items():
         release_id = config.get("fred_release_id")
         if release_id is None:
@@ -131,12 +151,26 @@ def update_release_calendar(state: dict, fetch_fn=fetch_next_release_date) -> di
             if indicator is not None:
                 indicator["next_release_date"] = None
             continue
+        to_fetch.append((key, release_id))
 
+    def _fetch(item):
+        key, release_id = item
         try:
-            next_date = fetch_fn(release_id)
+            return key, release_id, fetch_fn(release_id), None
         except FredApiError as e:
-            logger.error("release date fetch failed indicator=%s error=%s", key, e)
-            results[key] = {"status": "error", "error": str(e)}
+            return key, release_id, None, e
+
+    # Same reasoning as run_ingestion: only the fetches (independent
+    # I/O) run concurrently, one thread per indicator that has a
+    # release_id -- the state mutation below stays single-threaded.
+    with ThreadPoolExecutor(max_workers=max(len(to_fetch), 1)) as executor:
+        fetched = list(executor.map(_fetch, to_fetch))
+
+    for key, release_id, next_date, error in fetched:
+        config = INDICATORS[key]
+        if error is not None:
+            logger.error("release date fetch failed indicator=%s error=%s", key, error)
+            results[key] = {"status": "error", "error": str(error)}
             continue
 
         indicator = state["indicators"].setdefault(

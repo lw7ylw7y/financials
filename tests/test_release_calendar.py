@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
@@ -153,6 +154,33 @@ class TestUpdateReleaseCalendar(unittest.TestCase):
             state["indicators"]["unemployment_rate"]["next_release_date"],
             "2026-10-02",
         )
+
+    def test_fetches_run_concurrently_not_sequentially(self):
+        # 6 indicators have a release_id; each fetch sleeps 0.1s.
+        # Sequential would take >=0.6s, concurrent should be close to 0.1s.
+        def slow_fetch(release_id):
+            time.sleep(0.1)
+            return "2026-12-01"
+
+        state = {
+            "indicators": {
+                key: {
+                    "name": key,
+                    "category": "leading",
+                    "fred_series_id": key.upper(),
+                    "fred_release_id": str(i),
+                    "history": [],
+                    "next_release_date": None,
+                }
+                for i, key in enumerate(["a", "b", "c", "d", "e", "f"])
+            }
+        }
+
+        started = time.monotonic()
+        update_release_calendar(state, fetch_fn=slow_fetch)
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.4)
 
 
 if __name__ == "__main__":

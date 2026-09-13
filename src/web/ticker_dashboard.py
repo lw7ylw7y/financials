@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from finnhub_client import fetch_52_week_range, fetch_quote
@@ -140,9 +141,21 @@ def build_ticker_cards(
     fetch_quote_fn=fetch_quote,
     fetch_week52_fn=fetch_52_week_range,
     fetch_closes_fn=fetch_daily_closes,
+    max_workers: int = 5,
 ) -> dict[str, list[dict]]:
     """Return `{group_name: [card, ...]}` in file order, one card per
     ticker in `config` (defaults to `load_ticker_config()`).
+
+    Fetches every ticker concurrently (`max_workers` threads) rather
+    than one at a time -- with a large watchlist, sequential fetching
+    made the background check (Story 5) take tens of seconds.
+    `max_workers` is deliberately modest rather than maxed out: Finnhub's
+    free tier enforces an overall calls-per-minute rate limit, and
+    firing every ticker's calls at once risks 429s, which would just
+    turn into more error/stale-fallback cards than the sequential
+    version had. `executor.map` preserves input order in its output, so
+    the result is grouped/ordered exactly as if this were still
+    sequential, regardless of which ticker's fetch finishes first.
 
     Each card is `{symbol, group, price, week52_low, week52_high, ma20,
     ma50, ma200, error, pending}` -- `error` is `None` on success, or a
@@ -154,13 +167,28 @@ def build_ticker_cards(
     the others.
     """
     config = config if config is not None else load_ticker_config()
+    tasks = [(group_name, symbol) for group_name, symbols in config.items() for symbol in symbols]
 
-    grouped_cards = {}
-    for group_name, symbols in config.items():
-        grouped_cards[group_name] = [
-            _build_card(symbol, group_name, fetch_quote_fn, fetch_week52_fn, fetch_closes_fn)
-            for symbol in symbols
-        ]
+    grouped_cards = {group_name: [] for group_name in config}
+    if not tasks:
+        return grouped_cards
+
+    symbols = [symbol for _, symbol in tasks]
+    task_group_names = [group_name for group_name, _ in tasks]
+    n = len(tasks)
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, n)) as executor:
+        cards = executor.map(
+            _build_card,
+            symbols,
+            task_group_names,
+            [fetch_quote_fn] * n,
+            [fetch_week52_fn] * n,
+            [fetch_closes_fn] * n,
+        )
+        for (group_name, _symbol), card in zip(tasks, cards):
+            grouped_cards[group_name].append(card)
+
     return grouped_cards
 
 
