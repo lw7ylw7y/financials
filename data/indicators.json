@@ -503,5 +503,10 @@
       "next_release_date": "2026-10-02"
     }
   },
-  "last_digest_sent_at": "2026-09-11T21:21:33.284639+00:00"
+  "last_digest_sent_at": "2026-09-11T21:21:33.284639+00:00",
+  "last_ai_response": {
+    "summary": "Even with no new data releases this cycle, the broader macroeconomic landscape continues to reflect resilient, steady economic expansion. Leading indicators remain constructive, highlighted by initial jobless claims anchored near cyclical lows around 206,000 and a consistently positive Treasury yield spread. Coincident measures reinforce this strength, with nonfarm payrolls and industrial production sustaining multi-month upward trends while the unemployment rate sits at a healthy 4.1%. With the Federal Reserve holding interest rates steady at 3.63% alongside moderate inflation, the broader backdrop shows no signs of imminent economic contraction. For long-term buy-and-hold investors, these conditions remain supportive of corporate earnings and favor staying disciplined with existing investment plans.",
+    "directional_read": "bullish",
+    "generated_at": "2026-09-13T01:00:29.279964+00:00"
+  }
 }

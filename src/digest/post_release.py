@@ -17,109 +17,31 @@ send.
 """
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
-from email_template import CATEGORY_ORDER, render_html, render_subject, render_text
-from heuristics import sahm_rule_value, yield_curve_inversion_streak
-from interpret import InterpretationError, interpret
+from build_digest_content import (
+    build_countdown,
+    build_digest_content,
+    build_indicators_context,
+    build_table,
+    sparkline_cid,
+)
+from email_template import render_html, render_subject, render_text
+from interpret import interpret
 from send_email import EmailSendError, send_email
 from sparkline import render_sparkline
 
 logger = logging.getLogger(__name__)
 
-HISTORY_WINDOW = 12
 MIN_DIGEST_INTERVAL = timedelta(days=7)
-
-
-def _heuristic_for(key: str, history: list[dict]) -> dict | None:
-    if key == "unemployment_rate":
-        value = sahm_rule_value(history)
-        return {"sahm_rule_value": value} if value is not None else None
-    if key == "yield_curve_spread":
-        return {"inversion_streak": yield_curve_inversion_streak(history)}
-    return None
-
-
-def build_indicators_context(state: dict) -> list[dict]:
-    """One entry per indicator with any history, for the AI prompt and table.
-
-    Each entry: {"key", "name", "category", "history_window" (last 12
-    entries), "heuristic"}.
-    """
-    context = []
-    for key, indicator in state.get("indicators", {}).items():
-        history = indicator.get("history", [])
-        if not history:
-            continue
-        context.append(
-            {
-                "key": key,
-                "name": indicator["name"],
-                "category": indicator["category"],
-                "history_window": history[-HISTORY_WINDOW:],
-                "heuristic": _heuristic_for(key, history),
-            }
-        )
-    return context
-
-
-def build_table(indicators_context: list[dict]) -> dict:
-    """Group indicators into Leading/Coincident/Lagging rows for the table.
-
-    Each row: name, latest_value, latest_date, prior_value (None if
-    fewer than 2 history entries on file), sparkline_cid (matches a key
-    in build_sparkline_images's returned dict).
-    """
-    grouped = {category: [] for category in CATEGORY_ORDER}
-    for ind in indicators_context:
-        history = ind["history_window"]
-        latest = history[-1]
-        prior = history[-2] if len(history) >= 2 else None
-        grouped.setdefault(ind["category"], []).append(
-            {
-                "name": ind["name"],
-                "latest_value": latest["value"],
-                "latest_date": latest["date"],
-                "prior_value": prior["value"] if prior else None,
-                "sparkline_cid": _sparkline_cid(ind["key"]),
-            }
-        )
-    return grouped
-
-
-def _sparkline_cid(key: str) -> str:
-    return f"spark-{key}"
 
 
 def build_sparkline_images(indicators_context: list[dict]) -> dict[str, bytes]:
     """Render a trend sparkline PNG per indicator, keyed by its Content-ID."""
     return {
-        _sparkline_cid(ind["key"]): render_sparkline(ind["history_window"])
+        sparkline_cid(ind["key"]): render_sparkline(ind["history_window"])
         for ind in indicators_context
     }
-
-
-def build_countdown(state: dict, today: date | None = None) -> dict:
-    """Return {"entries": [...], "soonest": entry|None} for indicators with
-    a next_release_date, sorted soonest-first.
-    """
-    today = today or date.today()
-    entries = []
-    for key, indicator in state.get("indicators", {}).items():
-        next_date = indicator.get("next_release_date")
-        if not next_date:
-            continue
-        days_until = (date.fromisoformat(next_date) - today).days
-        entries.append(
-            {
-                "key": key,
-                "name": indicator["name"],
-                "next_release_date": next_date,
-                "days_until": days_until,
-            }
-        )
-    entries.sort(key=lambda e: e["days_until"])
-    return {"entries": entries, "soonest": entries[0] if entries else None}
 
 
 def build_digest_email(
@@ -193,15 +115,10 @@ def run_post_release(
         if elapsed < MIN_DIGEST_INTERVAL:
             return {"status": "skipped", "reason": "last digest sent too recently"}
 
-    indicators_context = build_indicators_context(state)
-
-    ai_result = None
-    try:
-        ai_result = interpret_fn(indicators_context, updated_keys)
-    except InterpretationError as e:
-        logger.warning("AI interpretation failed error=%s", e)
-
-    email = build_digest_email(state, indicators_context, updated_keys, ai_result)
+    content = build_digest_content(state, updated_keys, interpret_fn=interpret_fn, now=now)
+    email = build_digest_email(
+        state, content["indicators_context"], updated_keys, content["ai_result"]
+    )
 
     try:
         send_fn(
@@ -215,4 +132,4 @@ def run_post_release(
         return {"status": "error", "error": str(e)}
 
     state["last_digest_sent_at"] = now.isoformat()
-    return {"status": "sent" if ai_result else "sent_without_ai", **email}
+    return {"status": "sent" if content["ai_result"] else "sent_without_ai", **email}

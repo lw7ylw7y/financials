@@ -2,3 +2,4 @@ requests
 google-genai
 pydantic
 matplotlib
+flask

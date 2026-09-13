@@ -122,3 +122,71 @@ python3 -m unittest discover -s tests -v
 No network calls in tests — `fetch_fred.requests.get`, the Gemini API
 client, and `smtplib.SMTP` are all mocked, and `run_ingestion` is
 exercised with a fake `fetch_fn`.
+
+## V1.1 Story 1/1a — Indicator Digest Page (local web dashboard)
+
+See `docs/investment_dashboard_requirements.md` (Section 4.1),
+`docs/v1.1_user_stories.md`, and `docs/v1.1_technical_design.md` for the
+full spec. A local-only web page (no domain, no login, never reachable
+outside your machine) that shows the same content as the digest email —
+holistic AI interpretation, indicator table, next-release countdown —
+but refreshable on demand instead of waiting for the next email.
+
+- `src/digest/build_digest_content.py` — the table/countdown/AI-assembly
+  logic, extracted out of `post_release.py` so the weekly email and this
+  page build identical content from identical code. A successful AI call
+  is persisted to `data/indicators.json`'s new `last_ai_response` field
+  (v1 never saved it — it was generated fresh per email and discarded).
+- `src/web/live_pull.py` — split in two so the page never blocks on a
+  live pull just to render: `get_initial_page_data()` builds the page
+  entirely from stored data (no network calls, near-instant), and
+  `check_for_updates()` — called by the page's own background script
+  right after load — does the real FRED pull. If nothing's genuinely
+  new (or the check fails outright), it reports "no update" and costs a
+  FRED call but **never** a Gemini call; only when at least one
+  indicator actually has a new value does it refresh the release
+  calendar, re-run the AI interpretation, and persist. The indicator
+  table and the AI section carry *independent* freshness — e.g. FRED
+  can find new data while Gemini fails, updating a live table next to
+  an unchanged Saved AI section.
+- `src/web/page_template.py` — HTML rendering. Reuses `email_template.py`'s
+  copy/color constants (disclaimer text, category labels, directional
+  badge colors) so the two surfaces can't drift on wording, but has its
+  own markup (a browser page doesn't need email's Outlook-safe inline
+  styles or CID-embedded sparkline images — each table row instead gets
+  a small inline-`<svg>` trend line, since a browser renders SVG
+  natively). A "Checking for updates..." indicator shows for the
+  duration of the background check and disappears once it settles,
+  found or not — there is no persistent Live/Saved freshness badge or
+  timestamp (an earlier version had both; dropped as distracting).
+  `render_check_response` reuses the same private section-renderers as
+  the initial page, so the two can't render the same data differently.
+- `src/web/app.py` — the Flask app. `GET /` renders instantly from
+  stored data; `GET /api/check` is what the page's inline `<script>`
+  calls in the background, returning HTML fragments (as JSON) that get
+  patched into `#table-section`/`#countdown-section`/`#ai-section` only
+  when something actually changed. Bound explicitly to `127.0.0.1`
+  (never `0.0.0.0`), so it's unreachable from anything but the machine
+  running it — no authentication layer, since none is needed for a page
+  that's never network-reachable.
+
+### Run it
+
+```
+pip install -r requirements.txt
+export FRED_API_KEY=your_key_here
+export GEMINI_API_KEY=your_key_here        # optional — page still works without it, AI section just stays absent
+python3 src/web/app.py
+```
+
+Then open `http://127.0.0.1:5000/` in a browser. It renders immediately
+from stored data, then checks for updates in the background — you'll
+only see anything change if the check finds a genuinely new value.
+
+**Known trade-off:** a background check that finds new data writes to
+the same `data/indicators.json` the GitHub Actions workflow commits, so
+that run will leave the file modified in your working tree (`git
+status` will show it dirty) until you commit or discard it. This never
+corrupts history or double-counts a value — ingestion is idempotent
+(dedup by date) — it's purely a local working-tree diff. A check that
+finds nothing new never touches the file at all.
