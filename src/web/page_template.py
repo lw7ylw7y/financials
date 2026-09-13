@@ -34,6 +34,18 @@ SPARKLINE_UP_COLOR = "#15803d"
 SPARKLINE_DOWN_COLOR = "#b91c1c"
 SPARKLINE_FLAT_COLOR = "#64748b"
 
+# Status scale for the 52-week range bar: good (near the low, cheap) ->
+# warning (mid-range) -> critical (near the high, expensive). Reuses the
+# same green/red already established above for up/down, plus one amber
+# step for the middle -- not a new, unrelated palette.
+RANGE_GOOD_COLOR = SPARKLINE_UP_COLOR
+RANGE_WARNING_COLOR = "#f59e0b"
+RANGE_CRITICAL_COLOR = SPARKLINE_DOWN_COLOR
+RANGE_BAR_WIDTH = 100
+RANGE_BAR_HEIGHT = 10
+
+NAV_LINKS = [("/", "Indicator Digest"), ("/tickers", "Ticker Dashboard")]
+
 
 def _render_sparkline_svg(values: list[float]) -> str:
     """Minimal inline-SVG trend line for a table row, mirroring
@@ -82,6 +94,17 @@ def _render_sparkline_svg(values: list[float]) -> str:
         f'<circle cx="{end_x:.1f}" cy="{end_y:.1f}" r="2.4" fill="{endpoint_color}"/>'
         f"</svg>"
     )
+
+def _render_nav(active_path: str) -> str:
+    """Shared nav so either v1.1 page links to the other -- clicking
+    between the Indicator Digest Page and the Ticker Dashboard doesn't
+    require typing a URL."""
+    links = []
+    for path, label in NAV_LINKS:
+        css_class = "active" if path == active_path else ""
+        links.append(f'<a href="{path}" class="{css_class}">{escape(label)}</a>')
+    return f'<nav class="site-nav">{"".join(links)}</nav>'
+
 
 def _render_ai_section(ai_result: dict | None) -> str:
     if ai_result is None:
@@ -179,6 +202,7 @@ def render_indicator_digest_page(data: dict) -> str:
 </head>
 <body>
   <main class="page">
+    {_render_nav("/")}
     <header class="page-header">
       <h1>Indicator Digest</h1>
       <div class="header-meta">
@@ -221,52 +245,134 @@ def _group_header(group_name: str) -> str:
     return group_name.replace("_", " ").replace("-", " ").title()
 
 
-def _render_ticker_card(card: dict) -> str:
-    if card["error"]:
-        return f"""
-          <div class="ticker-card ticker-card-error">
-            <p class="ticker-symbol">{escape(card['symbol'])}</p>
-            <p class="muted">Unable to load data.</p>
-          </div>"""
-
-    news_items = card["news"][:5]
-    if news_items:
-        news_html = "".join(
-            f'<li><a href="{escape(n["url"])}" target="_blank" rel="noopener">{escape(n["headline"])}</a></li>'
-            for n in news_items
-        )
-    else:
-        news_html = '<li class="muted">No recent news.</li>'
-
-    ma20 = f"{card['ma20']:.2f}" if card["ma20"] is not None else "n/a"
-    ma200 = f"{card['ma200']:.2f}" if card["ma200"] is not None else "n/a"
+def _render_range_bar(symbol: str, low: float, high: float, price: float) -> str:
+    """52-week range as a green (near the low, cheap) -> amber ->
+    red (near the high, expensive) status gradient, with a marker at
+    the current price's position -- a continuous read of "where in its
+    range does this sit", not just the raw numbers. Never color-alone:
+    the low/high are printed as text below the bar, and the exact price
+    is its own table column, so the read survives without color too.
+    """
+    w, h = RANGE_BAR_WIDTH, RANGE_BAR_HEIGHT
+    span = high - low
+    pct = 0.5 if span <= 0 else max(0.0, min(1.0, (price - low) / span))
+    marker_x = pct * w
+    gradient_id = f"range-grad-{escape(symbol)}"
 
     return f"""
-          <div class="ticker-card">
-            <p class="ticker-symbol">{escape(card['symbol'])}</p>
-            <p class="ticker-price">${card['price']:.2f}</p>
-            <p class="muted">52wk: ${card['week52_low']:.2f} &ndash; ${card['week52_high']:.2f}</p>
-            <p class="muted">20d MA: {ma20} &middot; 200d MA: {ma200}</p>
-            <ul class="ticker-news">{news_html}</ul>
-          </div>"""
+            <div class="range-cell">
+              <svg class="range-bar" width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img"
+                   aria-label="52-week range ${low:,.2f} to ${high:,.2f}, current price ${price:,.2f}">
+                <defs>
+                  <linearGradient id="{gradient_id}" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stop-color="{RANGE_GOOD_COLOR}"/>
+                    <stop offset="50%" stop-color="{RANGE_WARNING_COLOR}"/>
+                    <stop offset="100%" stop-color="{RANGE_CRITICAL_COLOR}"/>
+                  </linearGradient>
+                </defs>
+                <rect x="0" y="{h / 2 - 3:.1f}" width="{w}" height="6" rx="3" fill="url(#{gradient_id})"/>
+                <circle cx="{marker_x:.1f}" cy="{h / 2:.1f}" r="3.5" fill="#fff" stroke="#0f172a" stroke-width="1.3"/>
+              </svg>
+              <div class="range-labels muted">
+                <span>${low:,.2f}</span><span>${high:,.2f}</span>
+              </div>
+            </div>"""
 
 
-def render_ticker_dashboard_page(grouped_cards: dict) -> str:
-    """`grouped_cards` per ticker_dashboard.build_ticker_cards:
-    `{group_name: [card, ...]}` in file order. Group headers are
-    derived from the config keys (see `_group_header`), never a fixed
-    list, and a per-card error state stands in for any ticker whose
-    fetch failed without affecting the rest of the page.
+def _render_ma_cell(price: float, ma: float | None) -> str:
+    """A moving-average value plus how far the current price sits above
+    or below it, as both a color (green above / red below, matching the
+    directional badges elsewhere) and a same-information arrow + signed
+    percentage -- so the read doesn't depend on color perception alone.
+    "n/a" when there isn't enough history yet (Story 3's documented
+    fewer-than-window behavior).
+    """
+    if ma is None:
+        return '<td class="num muted">n/a</td>'
+
+    pct_diff = (price - ma) / ma * 100
+    if pct_diff > 0:
+        css_class, arrow, color = "up", "&#9650;", SPARKLINE_UP_COLOR
+    elif pct_diff < 0:
+        css_class, arrow, color = "down", "&#9660;", SPARKLINE_DOWN_COLOR
+    else:
+        css_class, arrow, color = "flat", "", SPARKLINE_FLAT_COLOR
+
+    return (
+        f'<td class="num">{ma:,.2f} '
+        f'<span class="ma-delta {css_class}" style="color:{color};">{arrow}{abs(pct_diff):.1f}%</span></td>'
+    )
+
+
+def _render_ticker_row(card: dict) -> str:
+    if card["pending"]:
+        return f"""
+              <tr>
+                <td>{escape(card['symbol'])}</td>
+                <td colspan="5" class="muted">Loading&hellip;</td>
+              </tr>"""
+
+    if card["error"]:
+        return f"""
+              <tr>
+                <td>{escape(card['symbol'])}</td>
+                <td colspan="5" class="muted">Unable to load data.</td>
+              </tr>"""
+
+    return f"""
+              <tr>
+                <td>{escape(card['symbol'])}</td>
+                <td class="num">${card['price']:,.2f}</td>
+                <td class="range-bar-cell">{_render_range_bar(card['symbol'], card['week52_low'], card['week52_high'], card['price'])}</td>
+                {_render_ma_cell(card['price'], card['ma20'])}
+                {_render_ma_cell(card['price'], card['ma50'])}
+                {_render_ma_cell(card['price'], card['ma200'])}
+              </tr>"""
+
+
+def _render_ticker_groups(grouped_cards: dict) -> str:
+    """The group tables only -- shared by the full-page initial render
+    and the /api/check-tickers fragment, both of which the page's
+    #ticker-groups div swaps in. Group headers are derived from the
+    config keys (see `_group_header`), never a fixed list, and a
+    pending/errored ticker stands in for any row not yet fetched or
+    whose fetch failed, without affecting the other rows.
     """
     sections = []
     for group_name, cards in grouped_cards.items():
-        card_html = "".join(_render_ticker_card(card) for card in cards)
+        row_html = "".join(_render_ticker_row(card) for card in cards)
         sections.append(f"""
-        <section class="ticker-group">
+        <div class="category-block">
           <p class="category-label">{escape(_group_header(group_name))}</p>
-          <div class="ticker-grid">{card_html}</div>
-        </section>""")
+          <table class="indicator-table ticker-table">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th class="num">Price</th>
+                <th>52-Week Range</th>
+                <th class="num">20d MA</th>
+                <th class="num">50d MA</th>
+                <th class="num">200d MA</th>
+              </tr>
+            </thead>
+            <tbody>
+              {row_html}
+            </tbody>
+          </table>
+        </div>""")
+    return "".join(sections)
 
+
+def render_ticker_dashboard_page(grouped_cards: dict) -> str:
+    """`grouped_cards` per ticker_dashboard.get_initial_ticker_page_data:
+    `{group_name: [card, ...]}` in file order, built entirely from the
+    local snapshot cache -- so this renders instantly, same as the
+    Indicator Digest Page. A ticker with no cached snapshot yet renders
+    as a "Loading..." placeholder row. The page's own script then calls
+    /api/check-tickers in the background to fetch live and patch
+    #ticker-groups in place; a "Checking for updates..." indicator is
+    shown for the duration and removed once it settles either way.
+    """
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -275,17 +381,39 @@ def render_ticker_dashboard_page(grouped_cards: dict) -> str:
   <link rel="stylesheet" href="/static/dashboard.css">
 </head>
 <body>
-  <main class="page">
+  <main class="page page-wide">
+    {_render_nav("/tickers")}
     <header class="page-header">
       <h1>Ticker Dashboard</h1>
+      <div class="header-meta">
+        <span class="checking-indicator muted" id="checking-indicator">Checking for updates&hellip;</span>
+      </div>
     </header>
-    {''.join(sections)}
+    <div id="ticker-groups">{_render_ticker_groups(grouped_cards)}</div>
     <footer class="page-footer">
-      <p class="muted">Prices, moving averages, and news from Finnhub &middot; free tier may lag by up to ~20 minutes</p>
+      <p class="muted">Price and 52-week range from Finnhub &middot; moving averages from Yahoo Finance &middot; free tier may lag by up to ~20 minutes</p>
     </footer>
   </main>
+  <script>
+    function hideCheckingIndicator() {{
+      var el = document.getElementById('checking-indicator');
+      if (el) el.remove();
+    }}
+    fetch('/api/check-tickers').then(function(r) {{ return r.json(); }}).then(function(data) {{
+      hideCheckingIndicator();
+      document.getElementById('ticker-groups').innerHTML = data.groups_html;
+    }}).catch(function() {{ hideCheckingIndicator(); /* stay on the stored snapshot already shown */ }});
+  </script>
 </body>
 </html>"""
+
+
+def render_ticker_check_response(grouped_cards: dict) -> dict:
+    """HTML fragment for /api/check-tickers, called once
+    check_for_ticker_updates finishes its live pull (which always
+    re-fetches -- there's no "nothing changed" gate for tickers the way
+    there is for the AI-backed indicator digest)."""
+    return {"groups_html": _render_ticker_groups(grouped_cards)}
 
 
 def render_check_response(content: dict) -> dict:

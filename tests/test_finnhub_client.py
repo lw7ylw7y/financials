@@ -11,12 +11,7 @@ for _p in (
     sys.path.insert(0, _p)
 
 import requests
-from finnhub_client import (
-    FinnhubApiError,
-    fetch_52_week_range,
-    fetch_company_news,
-    fetch_quote,
-)
+from finnhub_client import FinnhubApiError, fetch_52_week_range, fetch_quote
 
 
 class TestFetchQuote(unittest.TestCase):
@@ -72,39 +67,6 @@ class TestFetch52WeekRange(unittest.TestCase):
 
         with self.assertRaises(FinnhubApiError):
             fetch_52_week_range("SPY", api_key="test-key")
-
-
-class TestFetchCompanyNews(unittest.TestCase):
-    @patch("finnhub_client.requests.get")
-    def test_parses_headlines(self, mock_get):
-        mock_get.return_value = Mock(
-            json=lambda: [
-                {"headline": "Company beats estimates", "url": "https://example.com/a", "datetime": 1},
-                {"headline": "", "url": "https://example.com/b", "datetime": 2},
-            ]
-        )
-
-        result = fetch_company_news("SPY", api_key="test-key")
-
-        self.assertEqual(
-            result,
-            [{"headline": "Company beats estimates", "url": "https://example.com/a", "datetime": 1}],
-        )
-
-    @patch("finnhub_client.requests.get")
-    def test_empty_response_returns_empty_list(self, mock_get):
-        mock_get.return_value = Mock(json=lambda: [])
-
-        result = fetch_company_news("SPY", api_key="test-key")
-
-        self.assertEqual(result, [])
-
-    @patch("finnhub_client.requests.get")
-    def test_raises_on_request_exception(self, mock_get):
-        mock_get.side_effect = requests.ConnectionError("boom")
-
-        with self.assertRaises(FinnhubApiError):
-            fetch_company_news("SPY", api_key="test-key")
 
 
 if __name__ == "__main__":

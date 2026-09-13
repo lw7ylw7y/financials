@@ -9,7 +9,8 @@ A single-user investment-monitoring tool, replacing a manual Fidelity-website
 (`docs/investment_dashboard_requirements.md` Section 2). v1 (shipped): a
 scheduled email digest of 8 macro indicators with AI commentary. v1.1 (in
 progress): a local Flask web dashboard mirroring that content, plus a
-Ticker Dashboard sourced from Finnhub. Full spec lives in `docs/`:
+Ticker Dashboard sourced from Finnhub + Yahoo Finance, with a shared nav
+linking the two pages. Full spec lives in `docs/`:
 `investment_dashboard_requirements.md` (product requirements, both v1 and
 v1.1), `v1.1_user_stories.md` (acceptance criteria), `v1.1_technical_design.md`,
 `v1.1_task_breakdown.md`.
@@ -54,7 +55,7 @@ source .env && set +a`) before running anything that needs them.
 | `FRED_API_KEY` | any ingestion (Stories 1-3) |
 | `GEMINI_API_KEY` | AI interpretation — optional; both the email and the web page degrade gracefully (no AI section) without it |
 | `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | sending the digest email |
-| `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range/news fetch (`/tickers`) — without it, every card renders its individual error state rather than crashing the page; Story 2's config loading needs no API key |
+| `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range fetch — without it, the background check's live fetch fails for every ticker, falling back to `data/tickers.json`'s cached snapshot where one exists, or that ticker's error state where one doesn't; Story 2's config loading needs no API key |
 
 ## Architecture
 
@@ -79,23 +80,29 @@ src/
             Gmail strips inline <svg>, so the email needs a raster image
             embedded via Content-ID; the web page instead renders sparklines
             as plain inline SVG, since browsers don't have that limitation)
-  web/      app.py (Flask routes: "/" and "/tickers"), live_pull.py
-            (stored-only render + gated background live-check for the
-            Indicator Digest Page), page_template.py (HTML string
-            rendering for both pages, mirrors email_template.py's
-            plain-string-building convention — no templating engine),
-            ticker_dashboard.py (load_ticker_config() reads
-            config/tickers.json's groups as an open map in file order,
-            skips malformed symbols; build_ticker_cards() does the
-            per-ticker quote + 52wk range + news fetch from Finnhub plus
-            daily closes from Yahoo for the 20d/200d SMA, with a
-            per-ticker try/except so one bad symbol can't take down the
-            rest), finnhub_client.py (quote/52wk-range/company-news REST
-            wrapper, raises FinnhubApiError per-call — NOT candles: see
-            its docstring, Finnhub's free tier blocks `/stock/candle`
-            outright), yahoo_client.py (daily closes from Yahoo's public
-            chart endpoint, no API key — the only source for moving
-            averages; raises YahooApiError per-call)
+  web/      app.py (Flask routes: "/", "/tickers", "/api/check",
+            "/api/check-tickers"), live_pull.py (stored-only render +
+            gated background live-check for the Indicator Digest Page),
+            page_template.py (HTML string rendering for both pages,
+            mirrors email_template.py's plain-string-building
+            convention — no templating engine; also renders the shared
+            _render_nav() linking the two pages), ticker_dashboard.py
+            (load_ticker_config() reads config/tickers.json's groups as
+            an open map in file order, skips malformed symbols;
+            build_ticker_cards() does the per-ticker quote + 52wk range
+            fetch from Finnhub plus daily closes from Yahoo for the
+            20d/50d/200d SMA, with a per-ticker try/except so one bad
+            symbol can't take down the rest; get_initial_ticker_page_data()
+            + check_for_ticker_updates() are the stored-render/live-check
+            split, backed by load_ticker_state()/save_ticker_state()
+            reading/writing data/tickers.json), finnhub_client.py
+            (quote/52wk-range REST wrapper, raises FinnhubApiError
+            per-call — NOT candles: see its docstring, Finnhub's free
+            tier blocks `/stock/candle` outright; company-news was
+            built and then removed, see Status below), yahoo_client.py
+            (daily closes from Yahoo's public chart endpoint, no API
+            key — the only source for moving averages; raises
+            YahooApiError per-call)
   main.py       v1 entrypoint: run_ingestion + update_release_calendar +
                 run_post_release — what the scheduled workflow calls
   backfill.py   one-time manual seed of sparse history
@@ -129,18 +136,39 @@ src/
    but never a Gemini call). The page's own inline `<script>` calls
    `/api/check` right after load and patches `#table-section`/
    `#countdown-section`/`#ai-section` in place only if `data_updated` is true.
+6. Ticker path: `web/ticker_dashboard.py` splits the same way —
+   `get_initial_ticker_page_data()` (stored-only, reads `data/tickers.json`)
+   and `check_for_ticker_updates()` (the real live pull via
+   `build_ticker_cards()`, always re-fetches every ticker — no
+   "nothing changed" gate, since there's no expensive AI call to
+   protect here). A ticker whose live fetch fails resolves to its last
+   cached snapshot silently if one exists, or that ticker's error state
+   if not; every success is persisted back to `data/tickers.json`. The
+   page's own inline `<script>` calls `/api/check-tickers` right after
+   load and replaces `#ticker-groups` unconditionally (there's no
+   `data_updated` gate to check, since the ticker check is never a
+   no-op).
 
 ### Storage model
-Single committed JSON file, `data/indicators.json` — no database. Shape:
-`{"indicators": {key: {name, category, fred_series_id, fred_release_id,
-history: [{date, value, fetched_at}], next_release_date}}, "last_digest_sent_at",
-"last_ai_response": {summary, directional_read, generated_at}}`. The scheduled
-GitHub Actions workflow (`.github/workflows/indicator-check.yml`) commits this
-file back to the repo after each run. Running the web dashboard locally and
-triggering a live update (via `/api/check` finding new data) writes to this
-same file, leaving it dirty in your local working tree until committed or
-discarded — expected and harmless, since ingestion is idempotent (dedup by
-date never double-counts or corrupts history).
+Two separate local JSON files — not a database, and not the same file:
+
+- **`data/indicators.json`** (committed) — the v1 historical record. Shape:
+  `{"indicators": {key: {name, category, fred_series_id, fred_release_id,
+  history: [{date, value, fetched_at}], next_release_date}}, "last_digest_sent_at",
+  "last_ai_response": {summary, directional_read, generated_at}}`. The scheduled
+  GitHub Actions workflow (`.github/workflows/indicator-check.yml`) commits this
+  file back to the repo after each run. Running the web dashboard locally and
+  triggering a live update (via `/api/check` finding new data) writes to this
+  same file, leaving it dirty in your local working tree until committed or
+  discarded — expected and harmless, since ingestion is idempotent (dedup by
+  date never double-counts or corrupts history).
+- **`data/tickers.json`** (gitignored, v1.1 addition) — a pure local cache, one
+  snapshot per ticker: `{symbol: {price, week52_low, week52_high, ma20, ma50,
+  ma200, fetched_at}}`. Never committed and never scheduled — it's written only
+  when you run the Flask app locally and `/api/check-tickers` fires, purely so
+  the *next* local page load has something better than a blank "Loading…" row
+  to show instantly. Losing it is harmless (everything just shows as pending
+  again until the next live fetch).
 
 ### Testing conventions
 There are no package `__init__.py` files — every module (in `src/` and in
@@ -169,13 +197,11 @@ callables for this.
   (Story 2 — open group map read in file order, malformed symbols skipped
   and logged) and `finnhub_client.py` + `yahoo_client.py` +
   `ticker_dashboard.build_ticker_cards()` + `page_template.render_ticker_dashboard_page()`
-  (Story 3 — per-ticker price/52wk-range/news from Finnhub, 20d-and-200d-SMA
+  (Story 3 — per-ticker price/52wk-range from Finnhub, 20d/50d/200d SMA
   from Yahoo daily closes, grouped under headers title-cased straight from
-  the config keys, one card's fetch failure — from either provider —
-  rendered as that card's own error state without affecting the rest of
-  the page). No persisted fallback for tickers (unlike the Indicator Digest
-  Page) — a fetch failure is just that card's error state, by design
-  (Section 5.3 of the tech design).
+  the config keys, one row's fetch failure — from either provider —
+  rendered as that row's own error state without affecting the rest of
+  the page).
   **Data-source pivot, worth knowing before touching this code:** the original
   plan was Finnhub `/stock/candle` for everything price-history-related.
   Confirmed live (2026-09-13) that Finnhub's free tier now 403s that endpoint
@@ -187,6 +213,41 @@ callables for this.
   `requests` call (`yahoo_client.py`) rather than the `yfinance` library, to
   avoid that library's much heavier dependency tree. See Section 5's
   deviation note in `docs/v1.1_technical_design.md` for the full account.
+- **Redesigned 2026-09-13, after using it live:** the Ticker Dashboard
+  originally rendered one card per ticker in a grid, with a news column.
+  Both were dropped: the card grid was hard to scan, so it's now one
+  `<table>` per group (same per-category-table pattern as the Indicator
+  Digest Page), and news was cut entirely (cluttered the table without
+  adding enough value) — `finnhub_client.fetch_company_news` was removed
+  along with it, not left as dead code. Added: a 50-day moving average
+  alongside 20d/200d, a green→amber→red gradient bar with a marker showing
+  where the current price sits in its 52-week range, and a colored
+  arrow+percentage on each MA showing how far price is above/below it
+  (green above, red below — reusing the same palette as the AI directional
+  badges/sparkline endpoints already used on the Indicator Digest Page,
+  not a new one). Both encodings deliberately avoid color-alone: numbers
+  and arrows carry the same information as the color. Both pages now also
+  show a small nav (`page_template._render_nav`) linking to the other.
+  Don't re-add cards or the news column without the user explicitly asking.
+- **Story 5, added 2026-09-13:** the Ticker Dashboard originally blocked
+  `/tickers` on every ticker's Finnhub+Yahoo fetch before rendering
+  anything — explicitly ruled out having a persisted fallback at Story 3
+  time, then added one after using the page live and finding the wait
+  too long. `/tickers` now renders instantly from `data/tickers.json`
+  (a ticker with no cached snapshot renders "Loading…"), the page's own
+  script calls the new `/api/check-tickers` route in the background
+  (mirrors `/api/check`'s pattern exactly, including reusing the same
+  `#checking-indicator` markup/CSS), and a live-fetch failure falls back
+  silently to the last cached snapshot rather than erroring, unless
+  there's no snapshot to fall back to. Unlike the indicator pipeline's
+  background check, this one has no "skip if nothing changed" gate —
+  every check re-fetches every ticker live, since there's no expensive
+  AI call here to protect. Deliberately *not* done: per-ticker
+  progressive/streaming updates (each row resolving independently) and
+  parallelizing the per-ticker fetches — both would be reasonable
+  follow-ups if the background check's total wait is still noticeable,
+  but weren't asked for and would add real complexity, so left out for
+  now (see Section 5.3 of the tech design).
 - When behavior actually changes, keep these in sync (all checkbox/prose
   acceptance-criteria style, not auto-generated): `docs/investment_dashboard_requirements.md`,
   `docs/v1.1_user_stories.md`, `docs/v1.1_technical_design.md`,

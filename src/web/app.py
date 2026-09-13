@@ -23,9 +23,10 @@ from live_pull import check_for_updates, get_initial_page_data
 from page_template import (
     render_check_response,
     render_indicator_digest_page,
+    render_ticker_check_response,
     render_ticker_dashboard_page,
 )
-from ticker_dashboard import build_ticker_cards
+from ticker_dashboard import check_for_ticker_updates, get_initial_ticker_page_data
 
 app = Flask(__name__)
 
@@ -38,7 +39,7 @@ def indicator_digest_page():
 
 @app.route("/tickers")
 def ticker_dashboard_page():
-    grouped_cards = build_ticker_cards()
+    grouped_cards = get_initial_ticker_page_data()
     return render_ticker_dashboard_page(grouped_cards)
 
 
@@ -51,6 +52,14 @@ def api_check():
         return jsonify({"data_updated": False})
     fragments = render_check_response(result["content"])
     return jsonify({"data_updated": True, **fragments})
+
+
+@app.route("/api/check-tickers")
+def api_check_tickers():
+    """Called by the ticker page's own background script after the
+    fast initial render. See ticker_dashboard.check_for_ticker_updates."""
+    grouped_cards = check_for_ticker_updates()
+    return jsonify(render_ticker_check_response(grouped_cards))
 
 
 if __name__ == "__main__":

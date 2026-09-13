@@ -11,7 +11,15 @@ for _p in (
 ):
     sys.path.insert(0, _p)
 
-from ticker_dashboard import CONFIG_PATH, build_ticker_cards, load_ticker_config
+from ticker_dashboard import (
+    CONFIG_PATH,
+    build_ticker_cards,
+    check_for_ticker_updates,
+    get_initial_ticker_page_data,
+    load_ticker_config,
+    load_ticker_state,
+    save_ticker_state,
+)
 
 
 def write_config(tmp_dir, groups):
@@ -101,15 +109,11 @@ class TestBuildTickerCards(unittest.TestCase):
         def fake_closes(symbol):
             return closes
 
-        def fake_news(symbol):
-            return [{"headline": "Beats estimates", "url": "https://example.com/a", "datetime": 1}]
-
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=fake_quote,
             fetch_week52_fn=fake_week52,
             fetch_closes_fn=fake_closes,
-            fetch_news_fn=fake_news,
         )
 
         card = cards["stocks"][0]
@@ -119,8 +123,8 @@ class TestBuildTickerCards(unittest.TestCase):
         self.assertEqual(card["week52_low"], 400.0)
         self.assertEqual(card["week52_high"], 480.0)
         self.assertEqual(card["ma20"], sum(closes[-20:]) / 20)
+        self.assertEqual(card["ma50"], sum(closes[-50:]) / 50)
         self.assertEqual(card["ma200"], sum(closes[-200:]) / 200)
-        self.assertEqual(len(card["news"]), 1)
         self.assertIsNone(card["error"])
 
     def test_fewer_than_200_candles_leaves_ma200_none(self):
@@ -131,11 +135,11 @@ class TestBuildTickerCards(unittest.TestCase):
             fetch_quote_fn=lambda s: {"price": 10.0},
             fetch_week52_fn=lambda s: {"low": 1.0, "high": 50.0},
             fetch_closes_fn=lambda s: closes,
-            fetch_news_fn=lambda s: [],
         )
 
         card = cards["stocks"][0]
         self.assertEqual(card["ma20"], sum(closes[-20:]) / 20)
+        self.assertEqual(card["ma50"], sum(closes) / 50)
         self.assertIsNone(card["ma200"])
         self.assertIsNone(card["error"])
 
@@ -150,7 +154,6 @@ class TestBuildTickerCards(unittest.TestCase):
             fetch_quote_fn=fake_quote,
             fetch_week52_fn=lambda s: {"low": 1.0, "high": 3.0},
             fetch_closes_fn=lambda s: [1.0, 2.0, 3.0],
-            fetch_news_fn=lambda s: [],
         )
 
         spy, badsym, ivw = cards["stocks"]
@@ -159,7 +162,6 @@ class TestBuildTickerCards(unittest.TestCase):
         self.assertIsNotNone(badsym["error"])
         self.assertIn("BADSYM", badsym["error"])
         self.assertIsNone(badsym["price"])
-        self.assertEqual(badsym["news"], [])
 
     def test_week52_failure_also_errors_the_card(self):
         def fake_week52(symbol):
@@ -170,7 +172,6 @@ class TestBuildTickerCards(unittest.TestCase):
             fetch_quote_fn=lambda s: {"price": 100.0},
             fetch_week52_fn=fake_week52,
             fetch_closes_fn=lambda s: [1.0, 2.0, 3.0],
-            fetch_news_fn=lambda s: [],
         )
 
         card = cards["stocks"][0]
@@ -186,7 +187,6 @@ class TestBuildTickerCards(unittest.TestCase):
             fetch_quote_fn=lambda s: {"price": 100.0},
             fetch_week52_fn=lambda s: {"low": 1.0, "high": 3.0},
             fetch_closes_fn=fake_closes,
-            fetch_news_fn=lambda s: [],
         )
 
         card = cards["stocks"][0]
@@ -199,7 +199,6 @@ class TestBuildTickerCards(unittest.TestCase):
             fetch_quote_fn=lambda s: {"price": 1.0},
             fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
-            fetch_news_fn=lambda s: [],
         )
 
         self.assertEqual(list(cards.keys()), ["bonds", "stocks"])
@@ -211,11 +210,190 @@ class TestBuildTickerCards(unittest.TestCase):
             fetch_quote_fn=lambda s: {"price": 1.0},
             fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
-            fetch_news_fn=lambda s: [],
         )
 
         self.assertEqual(list(cards.keys()), ["stocks", "bonds", "international", "sector", "individual"])
         self.assertEqual([c["symbol"] for c in cards["stocks"]], ["SPY", "IVW", "DGRO"])
+
+    def test_successful_card_is_not_pending(self):
+        cards = build_ticker_cards(
+            config={"stocks": ["SPY"]},
+            fetch_quote_fn=lambda s: {"price": 1.0},
+            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_closes_fn=lambda s: [1.0, 2.0],
+        )
+
+        self.assertFalse(cards["stocks"][0]["pending"])
+
+    def test_errored_card_is_not_pending(self):
+        def failing_quote(symbol):
+            raise RuntimeError("boom")
+
+        cards = build_ticker_cards(
+            config={"stocks": ["SPY"]},
+            fetch_quote_fn=failing_quote,
+            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_closes_fn=lambda s: [1.0, 2.0],
+        )
+
+        self.assertFalse(cards["stocks"][0]["pending"])
+
+
+class TestTickerStatePersistence(unittest.TestCase):
+    def test_write_then_reload_matches(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "tickers.json")
+            state = {"SPY": {"price": 452.31, "week52_low": 400.0, "week52_high": 480.0,
+                              "ma20": 448.5, "ma50": 440.0, "ma200": 430.2,
+                              "fetched_at": "2026-09-13T12:00:00+00:00"}}
+
+            save_ticker_state(state, path)
+            reloaded = load_ticker_state(path)
+
+            self.assertEqual(reloaded, state)
+
+    def test_missing_file_returns_empty_dict(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "does-not-exist.json")
+
+            self.assertEqual(load_ticker_state(path), {})
+
+    def test_corrupted_file_returns_empty_dict(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "tickers.json")
+            with open(path, "w") as f:
+                f.write("{not valid json")
+
+            self.assertEqual(load_ticker_state(path), {})
+
+
+class TestGetInitialTickerPageData(unittest.TestCase):
+    def test_ticker_with_stored_snapshot_renders_its_values(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = os.path.join(tmp_dir, "tickers.json")
+            save_ticker_state(
+                {"SPY": {"price": 452.31, "week52_low": 400.0, "week52_high": 480.0,
+                         "ma20": 448.5, "ma50": 440.0, "ma200": 430.2}},
+                state_path,
+            )
+
+            cards = get_initial_ticker_page_data(config={"stocks": ["SPY"]}, state_path=state_path)
+
+            card = cards["stocks"][0]
+            self.assertFalse(card["pending"])
+            self.assertIsNone(card["error"])
+            self.assertEqual(card["price"], 452.31)
+            self.assertEqual(card["ma50"], 440.0)
+
+    def test_ticker_with_no_stored_snapshot_renders_pending(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = os.path.join(tmp_dir, "tickers.json")
+
+            cards = get_initial_ticker_page_data(config={"stocks": ["NEWTICKER"]}, state_path=state_path)
+
+            card = cards["stocks"][0]
+            self.assertTrue(card["pending"])
+            self.assertIsNone(card["error"])
+            self.assertIsNone(card["price"])
+
+    def test_never_makes_a_network_call(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = os.path.join(tmp_dir, "tickers.json")
+            # No fetch_fn parameters exist on this function at all -- if it took
+            # any, that would itself indicate a live call snuck into the "instant" path.
+            cards = get_initial_ticker_page_data(config={"stocks": ["SPY"]}, state_path=state_path)
+            self.assertEqual(len(cards["stocks"]), 1)
+
+
+class TestCheckForTickerUpdates(unittest.TestCase):
+    def test_successful_fetch_persists_snapshot_to_disk(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = os.path.join(tmp_dir, "tickers.json")
+
+            cards = check_for_ticker_updates(
+                config={"stocks": ["SPY"]},
+                fetch_quote_fn=lambda s: {"price": 452.31},
+                fetch_week52_fn=lambda s: {"low": 400.0, "high": 480.0},
+                fetch_closes_fn=lambda s: [1.0] * 200,
+                state_path=state_path,
+            )
+
+            self.assertFalse(cards["stocks"][0]["pending"])
+            self.assertIsNone(cards["stocks"][0]["error"])
+            self.assertEqual(cards["stocks"][0]["price"], 452.31)
+
+            persisted = load_ticker_state(state_path)
+            self.assertEqual(persisted["SPY"]["price"], 452.31)
+            self.assertIn("fetched_at", persisted["SPY"])
+
+    def test_failed_fetch_falls_back_to_stored_snapshot_silently(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = os.path.join(tmp_dir, "tickers.json")
+            save_ticker_state(
+                {"SPY": {"price": 440.0, "week52_low": 400.0, "week52_high": 480.0,
+                         "ma20": 435.0, "ma50": 430.0, "ma200": 420.0}},
+                state_path,
+            )
+
+            def failing_quote(symbol):
+                raise RuntimeError("finnhub is down")
+
+            cards = check_for_ticker_updates(
+                config={"stocks": ["SPY"]},
+                fetch_quote_fn=failing_quote,
+                fetch_week52_fn=lambda s: {"low": 400.0, "high": 480.0},
+                fetch_closes_fn=lambda s: [1.0] * 200,
+                state_path=state_path,
+            )
+
+            card = cards["stocks"][0]
+            self.assertIsNone(card["error"])
+            self.assertFalse(card["pending"])
+            self.assertEqual(card["price"], 440.0)
+
+    def test_failed_fetch_with_no_stored_snapshot_is_a_genuine_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = os.path.join(tmp_dir, "tickers.json")
+
+            def failing_quote(symbol):
+                raise RuntimeError("no quote data for NEWTICKER")
+
+            cards = check_for_ticker_updates(
+                config={"stocks": ["NEWTICKER"]},
+                fetch_quote_fn=failing_quote,
+                fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+                fetch_closes_fn=lambda s: [1.0, 2.0],
+                state_path=state_path,
+            )
+
+            card = cards["stocks"][0]
+            self.assertIsNotNone(card["error"])
+            self.assertFalse(card["pending"])
+
+    def test_always_refetches_even_when_a_snapshot_already_exists(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = os.path.join(tmp_dir, "tickers.json")
+            save_ticker_state(
+                {"SPY": {"price": 100.0, "week52_low": 90.0, "week52_high": 110.0,
+                         "ma20": 99.0, "ma50": 98.0, "ma200": 95.0}},
+                state_path,
+            )
+            call_count = {"n": 0}
+
+            def counting_quote(symbol):
+                call_count["n"] += 1
+                return {"price": 999.0}
+
+            cards = check_for_ticker_updates(
+                config={"stocks": ["SPY"]},
+                fetch_quote_fn=counting_quote,
+                fetch_week52_fn=lambda s: {"low": 90.0, "high": 110.0},
+                fetch_closes_fn=lambda s: [1.0] * 200,
+                state_path=state_path,
+            )
+
+            self.assertEqual(call_count["n"], 1)
+            self.assertEqual(cards["stocks"][0]["price"], 999.0)
 
 
 if __name__ == "__main__":

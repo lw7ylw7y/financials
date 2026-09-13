@@ -69,8 +69,15 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - Web app, no login required for v1.1
 - Tickers grouped by asset type; the group names themselves come entirely from your config file, not a fixed list baked into the app — add, rename, split, or remove groups just by editing the file (see Section 7)
 - Initial watchlist (from your config): SPY, IVW, DGRO (stocks) · VGIT, VGLT (bonds) · VIGI, VYMI, EMB (international) · FTEC + other Fidelity sector ETFs (sector) · MSFT, RELY + other trusted individual stocks (individual)
-- Per-ticker card shows: current price, 52-week range, 20-day moving average, 200-day moving average, recent related news
+- **Table, not per-ticker cards** (revised after initial use — a card grid was hard to scan across many tickers). One row per ticker, grouped under the same asset-type headers, columns: Ticker, Price, 52-Week Range, 20-day MA, 50-day MA, 200-day MA
+- **52-week range** rendered as a green (near the low)→amber→red (near the high) gradient bar with a marker at the current price's position, plus the low/high printed as text — a quick "where in its range" read that doesn't depend on color alone
+- **Each moving average** shows the value plus how far the current price sits above/below it, as both a color (green above, red below — same convention as the AI directional badges elsewhere in the app) and a signed arrow+percentage, again so the read isn't color-only
+- No recent-news column (dropped after initial use — found it cluttered the table without adding enough value)
+- **Loads instantly from a local snapshot cache, then refreshes live in the background** (added after initial use — the page previously blocked on every ticker's Finnhub+Yahoo fetch before showing anything). Same pattern as the Indicator Digest Page (Section 4.1): the initial render never waits on a live pull, a background check fetches for real afterward, and a "checking for updates" indicator shows while it's in flight. A ticker with no cached data yet renders as a loading placeholder rather than an error; a ticker whose live fetch fails falls back silently to its last cached values, with the error state reserved for a ticker that's never been fetched successfully at all. Unlike the indicator pipeline, the background check always re-fetches every ticker live — there's no expensive AI call to gate around
 - Add/remove tickers, and add/remove/rename groups, via a local config file (JSON), editable by hand — no separate editor UI in v1.1 (an in-app editor remains a backlog item, Section 5)
+
+### 4.3 Cross-page navigation
+- Both v1.1 pages show a small nav linking to the other, so you can move between the Indicator Digest Page and the Ticker Dashboard by clicking rather than typing a URL
 
 ## 5. Backlog (v2+, not yet scheduled)
 - ISM Manufacturing New Orders — deferred, no free open data feed; add once a paid vendor or workaround is chosen
