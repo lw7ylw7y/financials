@@ -287,7 +287,15 @@ callables for this.
   `peBasicExclExtraTTM`/`peNormalizedAnnual`) so there's no new fetch per
   ticker. `page_template._format_market_cap()` renders the raw
   millions-of-USD figure as `$T`/`$B`/`$M`; either column renders "n/a"
-  (not an error) when Finnhub has no value for that symbol.
+  (not an error) when Finnhub has no value for that symbol. At 11
+  columns, the ticker table needed tighter styling than the Indicator
+  Digest table to fit without horizontal scroll: `dashboard.css`'s
+  `.ticker-table` rule trims cell padding and (for data cells only)
+  font-size below `.indicator-table`'s defaults, and deliberately
+  leaves `<th>` out of the nowrap rule so a long one-line header (e.g.
+  "Market Cap") can wrap to two lines rather than forcing its narrow
+  data column wide. `RANGE_BAR_WIDTH` (`page_template.py`) was also
+  trimmed 100→90 to match.
 - In-app ticker editing (Story 7): `ticker_dashboard.add_ticker_to_group`/
   `remove_ticker_from_group` read-modify-write `config/tickers.json`
   directly; `/api/tickers/add`/`/remove` (`app.py`) wrap them, 400 on
