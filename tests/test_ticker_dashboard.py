@@ -15,10 +15,14 @@ for _p in (
 from ticker_dashboard import (
     CONFIG_PATH,
     build_ticker_cards,
+    check_for_market_news,
     check_for_ticker_updates,
+    get_initial_market_news,
     get_initial_ticker_page_data,
+    load_market_news_state,
     load_ticker_config,
     load_ticker_state,
+    save_market_news_state,
     save_ticker_state,
 )
 
@@ -216,6 +220,32 @@ class TestBuildTickerCards(unittest.TestCase):
 
         self.assertEqual(list(cards.keys()), ["stocks", "bonds", "international", "sector", "individual"])
         self.assertEqual([c["symbol"] for c in cards["stocks"]], ["SPY", "IVW", "DGRO"])
+
+    def test_computes_pct_off_high_and_passes_through_change(self):
+        cards = build_ticker_cards(
+            config={"stocks": ["SPY"]},
+            fetch_quote_fn=lambda s: {"price": 450.0, "change": -2.5, "change_percent": -0.55},
+            fetch_week52_fn=lambda s: {"low": 400.0, "high": 500.0},
+            fetch_closes_fn=lambda s: [1.0, 2.0],
+        )
+
+        card = cards["stocks"][0]
+        self.assertEqual(card["change"], -2.5)
+        self.assertEqual(card["change_percent"], -0.55)
+        self.assertEqual(card["pct_off_high"], 10.0)  # (500-450)/500 * 100
+
+    def test_missing_change_fields_in_quote_degrade_to_none(self):
+        cards = build_ticker_cards(
+            config={"stocks": ["SPY"]},
+            fetch_quote_fn=lambda s: {"price": 450.0},  # no change/change_percent keys
+            fetch_week52_fn=lambda s: {"low": 400.0, "high": 500.0},
+            fetch_closes_fn=lambda s: [1.0, 2.0],
+        )
+
+        card = cards["stocks"][0]
+        self.assertIsNone(card["change"])
+        self.assertIsNone(card["change_percent"])
+        self.assertIsNotNone(card["pct_off_high"])
 
     def test_successful_card_is_not_pending(self):
         cards = build_ticker_cards(
@@ -449,6 +479,98 @@ class TestCheckForTickerUpdates(unittest.TestCase):
 
             self.assertEqual(call_count["n"], 1)
             self.assertEqual(cards["stocks"][0]["price"], 999.0)
+
+
+class TestMarketNewsPersistence(unittest.TestCase):
+    def test_write_then_reload_matches(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "market_news.json")
+            state = {"headlines": [{"headline": "Stocks rally", "url": "https://a", "source": "CNBC", "datetime": 1}],
+                      "fetched_at": "2026-09-14T12:00:00+00:00"}
+
+            save_market_news_state(state, path)
+            reloaded = load_market_news_state(path)
+
+            self.assertEqual(reloaded, state)
+
+    def test_missing_file_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "does-not-exist.json")
+
+            self.assertIsNone(load_market_news_state(path))
+
+    def test_corrupted_file_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "market_news.json")
+            with open(path, "w") as f:
+                f.write("{not valid json")
+
+            self.assertIsNone(load_market_news_state(path))
+
+
+class TestGetInitialMarketNews(unittest.TestCase):
+    def test_no_cache_yet_is_pending(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "market_news.json")
+
+            result = get_initial_market_news(path)
+
+            self.assertTrue(result["pending"])
+            self.assertEqual(result["headlines"], [])
+
+    def test_cached_headlines_render_without_network(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "market_news.json")
+            save_market_news_state(
+                {"headlines": [{"headline": "Stocks rally", "url": "https://a", "source": "CNBC", "datetime": 1}]},
+                path,
+            )
+
+            result = get_initial_market_news(path)
+
+            self.assertFalse(result["pending"])
+            self.assertEqual(len(result["headlines"]), 1)
+
+
+class TestCheckForMarketNews(unittest.TestCase):
+    def test_successful_fetch_persists_to_disk(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "market_news.json")
+            headlines = [{"headline": "Stocks rally", "url": "https://a", "source": "CNBC", "datetime": 1}]
+
+            result = check_for_market_news(fetch_news_fn=lambda: headlines, path=path)
+
+            self.assertFalse(result["pending"])
+            self.assertEqual(result["headlines"], headlines)
+            persisted = load_market_news_state(path)
+            self.assertEqual(persisted["headlines"], headlines)
+            self.assertIn("fetched_at", persisted)
+
+    def test_failed_fetch_falls_back_to_cached_headlines_silently(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "market_news.json")
+            cached = [{"headline": "Old news", "url": "https://a", "source": "CNBC", "datetime": 1}]
+            save_market_news_state({"headlines": cached}, path)
+
+            def failing_fetch():
+                raise RuntimeError("finnhub is down")
+
+            result = check_for_market_news(fetch_news_fn=failing_fetch, path=path)
+
+            self.assertFalse(result["pending"])
+            self.assertEqual(result["headlines"], cached)
+
+    def test_failed_fetch_with_no_cache_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "market_news.json")
+
+            def failing_fetch():
+                raise RuntimeError("finnhub is down")
+
+            result = check_for_market_news(fetch_news_fn=failing_fetch, path=path)
+
+            self.assertFalse(result["pending"])
+            self.assertEqual(result["headlines"], [])
 
 
 if __name__ == "__main__":

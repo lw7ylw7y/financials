@@ -304,26 +304,62 @@ def _render_ma_cell(price: float, ma: float | None) -> str:
     )
 
 
+def _render_change_cell(change: float | None, change_percent: float | None) -> str:
+    """Today's price move vs. the previous close -- same never-color-
+    alone convention as the moving-average cells (Section 5.2b of the
+    tech design): a signed arrow + percentage alongside the color, plus
+    the absolute $ change. "n/a" if Finnhub's quote response didn't
+    carry these fields.
+    """
+    if change is None or change_percent is None:
+        return '<td class="num muted">n/a</td>'
+
+    if change > 0:
+        css_class, arrow, color = "up", "&#9650;", SPARKLINE_UP_COLOR
+    elif change < 0:
+        css_class, arrow, color = "down", "&#9660;", SPARKLINE_DOWN_COLOR
+    else:
+        css_class, arrow, color = "flat", "", SPARKLINE_FLAT_COLOR
+
+    return (
+        f'<td class="num">{change:+,.2f} '
+        f'<span class="ma-delta {css_class}" style="color:{color};">{arrow}{abs(change_percent):.2f}%</span></td>'
+    )
+
+
+def _render_pct_off_high_cell(pct_off_high: float | None) -> str:
+    """How far below the 52-week high the current price sits, as a
+    plain number -- a precise complement to the range bar's visual
+    read, which already carries the color signal (Section 5.2b of the
+    tech design), so this cell deliberately doesn't repeat it.
+    """
+    if pct_off_high is None:
+        return '<td class="num muted">n/a</td>'
+    return f'<td class="num">{pct_off_high:.1f}%</td>'
+
+
 def _render_ticker_row(card: dict) -> str:
     if card["pending"]:
         return f"""
               <tr>
                 <td>{escape(card['symbol'])}</td>
-                <td colspan="5" class="muted">Loading&hellip;</td>
+                <td colspan="7" class="muted">Loading&hellip;</td>
               </tr>"""
 
     if card["error"]:
         return f"""
               <tr>
                 <td>{escape(card['symbol'])}</td>
-                <td colspan="5" class="muted">Unable to load data.</td>
+                <td colspan="7" class="muted">Unable to load data.</td>
               </tr>"""
 
     return f"""
               <tr>
                 <td>{escape(card['symbol'])}</td>
                 <td class="num">${card['price']:,.2f}</td>
+                {_render_change_cell(card['change'], card['change_percent'])}
                 <td class="range-bar-cell">{_render_range_bar(card['symbol'], card['week52_low'], card['week52_high'], card['price'])}</td>
+                {_render_pct_off_high_cell(card['pct_off_high'])}
                 {_render_ma_cell(card['price'], card['ma20'])}
                 {_render_ma_cell(card['price'], card['ma50'])}
                 {_render_ma_cell(card['price'], card['ma200'])}
@@ -349,7 +385,9 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
               <tr>
                 <th>Ticker</th>
                 <th class="num">Price</th>
+                <th class="num">Change</th>
                 <th>52-Week Range</th>
+                <th class="num">% Off High</th>
                 <th class="num">20d MA</th>
                 <th class="num">50d MA</th>
                 <th class="num">200d MA</th>
@@ -363,15 +401,51 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
     return "".join(sections)
 
 
-def render_ticker_dashboard_page(grouped_cards: dict) -> str:
-    """`grouped_cards` per ticker_dashboard.get_initial_ticker_page_data:
-    `{group_name: [card, ...]}` in file order, built entirely from the
-    local snapshot cache -- so this renders instantly, same as the
-    Indicator Digest Page. A ticker with no cached snapshot yet renders
-    as a "Loading..." placeholder row. The page's own script then calls
-    /api/check-tickers in the background to fetch live and patch
-    #ticker-groups in place; a "Checking for updates..." indicator is
-    shown for the duration and removed once it settles either way.
+def _render_market_news(market_news: dict) -> str:
+    """A single page-level feed of general market headlines shown once
+    at the top of the Ticker Dashboard (Story 6) -- deliberately
+    distinct from the per-ticker news column that was tried and removed
+    (Section 5.1 of the tech design): one feed, not one list per row, so
+    it doesn't have the table-clutter problem that got that removed.
+    """
+    if market_news["pending"]:
+        return """
+        <section class="card">
+          <p class="muted">Loading market news&hellip;</p>
+        </section>"""
+
+    headlines = market_news["headlines"]
+    if not headlines:
+        return """
+        <section class="card">
+          <p class="muted">Market news unavailable.</p>
+        </section>"""
+
+    items = []
+    for h in headlines:
+        source = f' <span class="muted">&middot; {escape(h["source"])}</span>' if h.get("source") else ""
+        items.append(
+            f'<li><a href="{escape(h["url"])}" target="_blank" rel="noopener">{escape(h["headline"])}</a>{source}</li>'
+        )
+
+    return f"""
+        <section class="card">
+          <p class="category-label">Market News</p>
+          <ul class="market-news-list">{''.join(items)}</ul>
+        </section>"""
+
+
+def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
+    """`grouped_cards` per ticker_dashboard.get_initial_ticker_page_data,
+    `market_news` per ticker_dashboard.get_initial_market_news -- both
+    built entirely from local caches, so this renders instantly, same
+    as the Indicator Digest Page. A ticker with no cached snapshot yet
+    renders as a "Loading..." placeholder row; market news with no
+    cache yet renders its own "Loading..." placeholder. The page's own
+    script then calls /api/check-tickers in the background to fetch
+    both live and patch #ticker-groups/#market-news in place; a
+    "Checking for updates..." indicator is shown for the duration and
+    removed once it settles either way.
     """
     return f"""<!doctype html>
 <html lang="en">
@@ -389,9 +463,10 @@ def render_ticker_dashboard_page(grouped_cards: dict) -> str:
         <span class="checking-indicator muted" id="checking-indicator">Checking for updates&hellip;</span>
       </div>
     </header>
+    <div id="market-news">{_render_market_news(market_news)}</div>
     <div id="ticker-groups">{_render_ticker_groups(grouped_cards)}</div>
     <footer class="page-footer">
-      <p class="muted">Price and 52-week range from Finnhub &middot; moving averages from Yahoo Finance &middot; free tier may lag by up to ~20 minutes</p>
+      <p class="muted">Price, change, and 52-week range from Finnhub &middot; moving averages from Yahoo Finance &middot; free tier may lag by up to ~20 minutes</p>
     </footer>
   </main>
   <script>
@@ -402,18 +477,23 @@ def render_ticker_dashboard_page(grouped_cards: dict) -> str:
     fetch('/api/check-tickers').then(function(r) {{ return r.json(); }}).then(function(data) {{
       hideCheckingIndicator();
       document.getElementById('ticker-groups').innerHTML = data.groups_html;
+      document.getElementById('market-news').innerHTML = data.news_html;
     }}).catch(function() {{ hideCheckingIndicator(); /* stay on the stored snapshot already shown */ }});
   </script>
 </body>
 </html>"""
 
 
-def render_ticker_check_response(grouped_cards: dict) -> dict:
-    """HTML fragment for /api/check-tickers, called once
-    check_for_ticker_updates finishes its live pull (which always
-    re-fetches -- there's no "nothing changed" gate for tickers the way
-    there is for the AI-backed indicator digest)."""
-    return {"groups_html": _render_ticker_groups(grouped_cards)}
+def render_ticker_check_response(grouped_cards: dict, market_news: dict) -> dict:
+    """HTML fragments for /api/check-tickers, called once
+    check_for_ticker_updates/check_for_market_news finish their live
+    pulls (both always re-fetch -- there's no "nothing changed" gate
+    for tickers or market news the way there is for the AI-backed
+    indicator digest)."""
+    return {
+        "groups_html": _render_ticker_groups(grouped_cards),
+        "news_html": _render_market_news(market_news),
+    }
 
 
 def render_check_response(content: dict) -> dict:

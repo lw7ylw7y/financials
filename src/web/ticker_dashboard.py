@@ -32,6 +32,14 @@ A ticker whose live fetch fails falls back to its last stored snapshot
 silently (no visible stale/live distinction, matching the Indicator
 Digest Page's dropped Live/Saved badge -- see CLAUDE.md); only a ticker
 that has *never* been successfully fetched renders as a genuine error.
+
+`get_initial_market_news`/`check_for_market_news` (Story 6) are the
+same split applied to one more thing: a page-level feed of general
+market headlines, cached in `data/market_news.json` -- separate from
+the per-ticker cache since it's a single item, not one per symbol.
+Folded into the same `/api/check-tickers` background check as the
+ticker prices rather than given its own route (Section 5b of the tech
+design).
 """
 
 import json
@@ -41,7 +49,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from finnhub_client import fetch_52_week_range, fetch_quote
+from finnhub_client import fetch_52_week_range, fetch_market_news, fetch_quote
 from yahoo_client import fetch_daily_closes
 
 CONFIG_PATH = os.path.join(
@@ -50,10 +58,16 @@ CONFIG_PATH = os.path.join(
 TICKER_DATA_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "data", "tickers.json"
 )
+MARKET_NEWS_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "data", "market_news.json"
+)
 
 _TICKER_RE = re.compile(r"^[A-Za-z0-9]+$")
 MA_WINDOWS = (20, 50, 200)
-_SNAPSHOT_FIELDS = ("price", "week52_low", "week52_high", "ma20", "ma50", "ma200")
+_SNAPSHOT_FIELDS = (
+    "price", "change", "change_percent", "week52_low", "week52_high",
+    "pct_off_high", "ma20", "ma50", "ma200",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,16 +118,22 @@ def _build_card(
     fetch_closes_fn,
 ) -> dict:
     try:
-        price = fetch_quote_fn(symbol)["price"]
+        quote = fetch_quote_fn(symbol)
+        price = quote["price"]
         week52 = fetch_week52_fn(symbol)
         closes = fetch_closes_fn(symbol)
         ma20, ma50, ma200 = (_simple_moving_average(closes, w) for w in MA_WINDOWS)
+        week52_high = week52["high"]
+        pct_off_high = (week52_high - price) / week52_high * 100 if week52_high else None
         return {
             "symbol": symbol,
             "group": group_name,
             "price": price,
+            "change": quote.get("change"),
+            "change_percent": quote.get("change_percent"),
             "week52_low": week52["low"],
-            "week52_high": week52["high"],
+            "week52_high": week52_high,
+            "pct_off_high": pct_off_high,
             "ma20": ma20,
             "ma50": ma50,
             "ma200": ma200,
@@ -126,8 +146,11 @@ def _build_card(
             "symbol": symbol,
             "group": group_name,
             "price": None,
+            "change": None,
+            "change_percent": None,
             "week52_low": None,
             "week52_high": None,
+            "pct_off_high": None,
             "ma20": None,
             "ma50": None,
             "ma200": None,
@@ -157,10 +180,11 @@ def build_ticker_cards(
     the result is grouped/ordered exactly as if this were still
     sequential, regardless of which ticker's fetch finishes first.
 
-    Each card is `{symbol, group, price, week52_low, week52_high, ma20,
-    ma50, ma200, error, pending}` -- `error` is `None` on success, or a
-    message with every other field left as `None` if that ticker's
-    fetch failed. `pending` is always `False` here (this function only
+    Each card is `{symbol, group, price, change, change_percent,
+    week52_low, week52_high, pct_off_high, ma20, ma50, ma200, error,
+    pending}` -- `error` is `None` on success, or a message with every
+    other field left as `None` if that ticker's fetch failed. `pending`
+    is always `False` here (this function only
     ever returns the result of an attempted fetch); see
     `get_initial_ticker_page_data` for the stored-only, not-yet-fetched
     case. One ticker's failure (from either data source) never affects
@@ -291,3 +315,62 @@ def check_for_ticker_updates(
 
     save_ticker_state(stored, state_path)
     return grouped_cards
+
+
+def load_market_news_state(path: str = MARKET_NEWS_PATH) -> dict | None:
+    """`{"headlines": [...], "fetched_at": ...}`, or `None` if the file
+    doesn't exist yet (first run) or is corrupted -- distinguished from
+    `{}` deliberately, so callers can tell "never fetched" apart from
+    "fetched, turned out empty"."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def save_market_news_state(state: dict, path: str = MARKET_NEWS_PATH) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(state, f, indent=2)
+        f.write("\n")
+
+
+def get_initial_market_news(path: str = MARKET_NEWS_PATH) -> dict:
+    """What "/tickers" renders for the market-news section -- instantly,
+    from the local cache only, no network call. Story 6: a single
+    page-level feed, not per-ticker, so unlike ticker cards there's only
+    one pending/not-pending state for the whole section, not one per
+    row. Returns `{"headlines": [...], "pending": bool}`.
+    """
+    stored = load_market_news_state(path)
+    if stored is None:
+        return {"headlines": [], "pending": True}
+    return {"headlines": stored.get("headlines", []), "pending": False}
+
+
+def check_for_market_news(
+    fetch_news_fn=fetch_market_news, path: str = MARKET_NEWS_PATH, now: datetime | None = None
+) -> dict:
+    """The real live pull for the market-news section, called alongside
+    `check_for_ticker_updates` by the page's background script (Section
+    5b of the tech design: folded into the same `/api/check-tickers`
+    round trip rather than given its own route/cache lifecycle, since
+    there's no evidence yet that news needs to refresh on a different
+    cadence than prices).
+
+    On failure, falls back to the last cached headlines if any exist --
+    same silent-stale-fallback behavior as `check_for_ticker_updates`.
+    If there's nothing cached either, returns an empty list (Story 6's
+    AC: degrade to an empty/muted section, never take down the rest of
+    the page).
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        headlines = fetch_news_fn()
+        save_market_news_state({"headlines": headlines, "fetched_at": now.isoformat()}, path)
+        return {"headlines": headlines, "pending": False}
+    except Exception as e:
+        logger.error("market news fetch failed error=%s", e)
+        stored = load_market_news_state(path)
+        return {"headlines": stored.get("headlines", []) if stored else [], "pending": False}

@@ -55,7 +55,7 @@ source .env && set +a`) before running anything that needs them.
 | `FRED_API_KEY` | any ingestion (Stories 1-3) |
 | `GEMINI_API_KEY` | AI interpretation — optional; both the email and the web page degrade gracefully (no AI section) without it |
 | `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | sending the digest email |
-| `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range fetch — without it, the background check's live fetch fails for every ticker, falling back to `data/tickers.json`'s cached snapshot where one exists, or that ticker's error state where one doesn't; Story 2's config loading needs no API key |
+| `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range fetch and the market-news feed — without it, the background check's live fetch fails for every ticker and for market news, each falling back to its own cached data (`data/tickers.json`/`data/market_news.json`) where a cache exists, or an error/unavailable state where none does; Story 2's config loading needs no API key |
 
 ## Architecture
 
@@ -263,6 +263,27 @@ callables for this.
   version did, regardless of which fetch resolves first — covered by
   tests that force out-of-order completion via `time.sleep` and assert
   the order didn't scramble.
+- **Built 2026-09-14:** two more Ticker Dashboard table columns —
+  `pct_off_high` (`(week52_high - price) / week52_high * 100`, computed
+  client-side, no new fetch) and `change`/`change_percent` (confirmed live
+  that Finnhub's `/quote` already returns these as `d`/`dp`, so
+  `finnhub_client.fetch_quote()` grew a return field rather than needing a
+  new endpoint) — plus a US-stock-market-news feed
+  (`finnhub_client.fetch_market_news()`, `/news?category=general` filtered
+  to Finnhub's own `"top news"` tag since the raw feed turned out to be a
+  broad wire, not market-specific) shown once at the top of `/tickers`,
+  above the grouped tables (Story 6 — deliberately distinct from the
+  per-ticker news column removed earlier; one page-level feed, not
+  one-per-row). Market news gets its own gitignored cache,
+  `data/market_news.json`, and its own `get_initial_market_news()`/
+  `check_for_market_news()` pair mirroring the ticker-card split at
+  whole-section granularity, but rides along in the same
+  `/api/check-tickers` round trip rather than a new route (its JSON
+  response grew a `news_html` field). Verified live end-to-end: cold
+  `/tickers` shows "Loading…" everywhere, `/api/check-tickers` populates
+  both `data/tickers.json` and `data/market_news.json`, a warm reload
+  renders instantly from cache. Full design in
+  `docs/v1.1_technical_design.md` Sections 5.2b/5b.
 - When behavior actually changes, keep these in sync (all checkbox/prose
   acceptance-criteria style, not auto-generated): `docs/investment_dashboard_requirements.md`,
   `docs/v1.1_user_stories.md`, `docs/v1.1_technical_design.md`,

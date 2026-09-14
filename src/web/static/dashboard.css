@@ -207,6 +207,17 @@ body {
   white-space: nowrap;
 }
 
+.market-news-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0 0;
+  font-size: 13px;
+}
+
+.market-news-list li { margin-bottom: 6px; }
+
+.market-news-list a { color: inherit; }
+
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;

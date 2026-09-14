@@ -165,8 +165,11 @@ def make_card(**overrides):
         "symbol": "SPY",
         "group": "stocks",
         "price": 452.31,
+        "change": 3.81,
+        "change_percent": 0.85,
         "week52_low": 400.0,
         "week52_high": 480.0,
+        "pct_off_high": 5.8,
         "ma20": 448.5,
         "ma50": 440.0,
         "ma200": 430.2,
@@ -179,15 +182,26 @@ def make_card(**overrides):
 
 def make_pending_card(**overrides):
     return make_card(
-        price=None, week52_low=None, week52_high=None,
-        ma20=None, ma50=None, ma200=None, error=None, pending=True,
+        price=None, change=None, change_percent=None, week52_low=None, week52_high=None,
+        pct_off_high=None, ma20=None, ma50=None, ma200=None, error=None, pending=True,
         **overrides,
     )
 
 
+NO_NEWS = {"headlines": [], "pending": False}
+PENDING_NEWS = {"headlines": [], "pending": True}
+SAMPLE_NEWS = {
+    "headlines": [
+        {"headline": "Stocks rally on rate-cut hopes", "url": "https://example.com/a", "source": "CNBC", "datetime": 1},
+        {"headline": "Tech leads Monday gains", "url": "https://example.com/b", "source": "Reuters", "datetime": 2},
+    ],
+    "pending": False,
+}
+
+
 class TestRenderTickerDashboardPage(unittest.TestCase):
     def test_renders_row_fields_as_a_table(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card()]})
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
 
         self.assertIn("<table", html)
         self.assertIn("SPY", html)
@@ -199,40 +213,42 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn("430.20", html)
 
     def test_renders_column_headers(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card()]})
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
 
         self.assertIn("<th>Ticker</th>", html)
+        self.assertIn(">Change<", html)
         self.assertIn("52-Week Range", html)
+        self.assertIn("% Off High", html)
         self.assertIn("20d MA", html)
         self.assertIn("50d MA", html)
         self.assertIn("200d MA", html)
 
-    def test_no_news_content_anywhere(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card()]})
+    def test_no_per_ticker_news_list(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
 
-        self.assertNotIn("news", html.lower())
+        self.assertNotIn("market-news-list", html)
 
     def test_renders_nav_linking_to_indicator_digest(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card()]})
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
 
         self.assertIn('class="site-nav"', html)
         self.assertIn('href="/" ', html)
         self.assertIn('href="/tickers" class="active"', html)
 
     def test_group_header_derived_from_config_key(self):
-        html = render_ticker_dashboard_page({"sector_and_individual": [make_card()]})
+        html = render_ticker_dashboard_page({"sector_and_individual": [make_card()]}, NO_NEWS)
 
         self.assertIn("Sector And Individual", html)
 
     def test_new_group_key_renders_with_no_code_change(self):
-        html = render_ticker_dashboard_page({"crypto": [make_card(symbol="BTC")]})
+        html = render_ticker_dashboard_page({"crypto": [make_card(symbol="BTC")]}, NO_NEWS)
 
         self.assertIn("Crypto", html)
         self.assertIn("BTC", html)
 
     def test_groups_render_in_file_order(self):
         html = render_ticker_dashboard_page(
-            {"bonds": [make_card(symbol="VGIT")], "stocks": [make_card(symbol="SPY")]}
+            {"bonds": [make_card(symbol="VGIT")], "stocks": [make_card(symbol="SPY")]}, NO_NEWS
         )
 
         self.assertLess(html.index("Bonds"), html.index("Stocks"))
@@ -240,15 +256,18 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
     def test_errored_row_shows_error_state_without_crashing(self):
         error_card = make_card(
             price=None,
+            change=None,
+            change_percent=None,
             week52_low=None,
             week52_high=None,
+            pct_off_high=None,
             ma20=None,
             ma50=None,
             ma200=None,
             error="no quote data for SPY",
         )
 
-        html = render_ticker_dashboard_page({"stocks": [error_card]})
+        html = render_ticker_dashboard_page({"stocks": [error_card]}, NO_NEWS)
 
         self.assertIn("Unable to load data.", html)
 
@@ -256,8 +275,11 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         error_card = make_card(
             symbol="BADSYM",
             price=None,
+            change=None,
+            change_percent=None,
             week52_low=None,
             week52_high=None,
+            pct_off_high=None,
             ma20=None,
             ma50=None,
             ma200=None,
@@ -265,55 +287,83 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         )
         ok_card = make_card(symbol="SPY")
 
-        html = render_ticker_dashboard_page({"stocks": [error_card, ok_card]})
+        html = render_ticker_dashboard_page({"stocks": [error_card, ok_card]}, NO_NEWS)
 
         self.assertIn("Unable to load data.", html)
         self.assertIn("452.31", html)
 
     def test_missing_ma200_renders_not_available(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(ma200=None)]})
+        html = render_ticker_dashboard_page({"stocks": [make_card(ma200=None)]}, NO_NEWS)
 
         self.assertIn("n/a", html)
 
     def test_price_above_ma_colored_as_up(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(price=500.0, ma20=450.0)]})
+        html = render_ticker_dashboard_page({"stocks": [make_card(price=500.0, ma20=450.0)]}, NO_NEWS)
 
         self.assertIn('class="ma-delta up"', html)
 
     def test_price_below_ma_colored_as_down(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(price=400.0, ma20=450.0)]})
+        html = render_ticker_dashboard_page({"stocks": [make_card(price=400.0, ma20=450.0)]}, NO_NEWS)
 
         self.assertIn('class="ma-delta down"', html)
 
+    def test_positive_change_colored_up(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(change=3.81, change_percent=0.85)]}, NO_NEWS)
+
+        self.assertIn('class="ma-delta up"', html)
+        self.assertIn("+3.81", html)
+        self.assertIn("0.85%", html)
+
+    def test_negative_change_colored_down(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(change=-2.08, change_percent=-0.27)]}, NO_NEWS)
+
+        self.assertIn('class="ma-delta down"', html)
+        self.assertIn("-2.08", html)
+
+    def test_missing_change_renders_not_available(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(change=None, change_percent=None)]}, NO_NEWS)
+
+        self.assertIn("n/a", html)
+
+    def test_renders_pct_off_high(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(pct_off_high=5.8)]}, NO_NEWS)
+
+        self.assertIn("5.8%", html)
+
+    def test_missing_pct_off_high_renders_not_available(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(pct_off_high=None)]}, NO_NEWS)
+
+        self.assertIn("n/a", html)
+
     def test_renders_range_bar_gradient_and_marker(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card()]})
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
 
         self.assertIn('<svg class="range-bar"', html)
         self.assertIn("linearGradient", html)
         self.assertIn("<circle", html)
 
     def test_html_escapes_ticker_symbol(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(symbol="<script>alert(1)</script>")]})
+        html = render_ticker_dashboard_page({"stocks": [make_card(symbol="<script>alert(1)</script>")]}, NO_NEWS)
 
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn("&lt;script&gt;", html)
 
     def test_pending_row_shows_loading_placeholder(self):
-        html = render_ticker_dashboard_page({"stocks": [make_pending_card()]})
+        html = render_ticker_dashboard_page({"stocks": [make_pending_card()]}, NO_NEWS)
 
         self.assertIn("Loading&hellip;", html)
         self.assertNotIn("Unable to load data.", html)
 
     def test_pending_row_does_not_affect_sibling_row(self):
         html = render_ticker_dashboard_page(
-            {"stocks": [make_pending_card(symbol="NEWTICKER"), make_card(symbol="SPY")]}
+            {"stocks": [make_pending_card(symbol="NEWTICKER"), make_card(symbol="SPY")]}, NO_NEWS
         )
 
         self.assertIn("Loading&hellip;", html)
         self.assertIn("452.31", html)
 
     def test_renders_ticker_groups_wrapper_and_checking_indicator(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card()]})
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
 
         self.assertIn('id="ticker-groups"', html)
         self.assertIn('id="checking-indicator"', html)
@@ -321,20 +371,61 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn("/api/check-tickers", html)
         self.assertIn("hideCheckingIndicator", html)
 
+    def test_renders_market_news_headlines_above_ticker_groups(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, SAMPLE_NEWS)
+
+        self.assertIn('id="market-news"', html)
+        self.assertIn("Stocks rally on rate-cut hopes", html)
+        self.assertIn("https://example.com/a", html)
+        self.assertIn("CNBC", html)
+        self.assertLess(html.index('id="market-news"'), html.index('id="ticker-groups"'))
+
+    def test_market_news_pending_shows_loading_placeholder(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, PENDING_NEWS)
+
+        self.assertIn("Loading market news", html)
+
+    def test_market_news_empty_shows_unavailable_message(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
+
+        self.assertIn("Market news unavailable.", html)
+
+    def test_market_news_html_escapes_headline(self):
+        news = {
+            "headlines": [{"headline": "<script>alert(1)</script>", "url": "https://example.com", "source": "X", "datetime": 1}],
+            "pending": False,
+        }
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, news)
+
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_market_news_patched_by_script(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
+
+        self.assertIn("data.news_html", html)
+
 
 class TestRenderTickerCheckResponse(unittest.TestCase):
     def test_returns_groups_html_for_the_same_cards(self):
-        fragments = render_ticker_check_response({"stocks": [make_card()]})
+        fragments = render_ticker_check_response({"stocks": [make_card()]}, NO_NEWS)
 
         self.assertIn("groups_html", fragments)
         self.assertIn("SPY", fragments["groups_html"])
         self.assertIn("452.31", fragments["groups_html"])
 
+    def test_returns_news_html(self):
+        fragments = render_ticker_check_response({"stocks": [make_card()]}, SAMPLE_NEWS)
+
+        self.assertIn("news_html", fragments)
+        self.assertIn("Stocks rally on rate-cut hopes", fragments["news_html"])
+
     def test_does_not_include_the_full_page_shell(self):
-        fragments = render_ticker_check_response({"stocks": [make_card()]})
+        fragments = render_ticker_check_response({"stocks": [make_card()]}, NO_NEWS)
 
         self.assertNotIn("<!doctype html>", fragments["groups_html"])
         self.assertNotIn("<html", fragments["groups_html"])
+        self.assertNotIn("<!doctype html>", fragments["news_html"])
 
 
 if __name__ == "__main__":
