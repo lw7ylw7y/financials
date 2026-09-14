@@ -65,7 +65,8 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - Web app, no login required
 - Tickers grouped by asset type; group names come entirely from a config file, not a fixed list — add, rename, split, or remove groups just by editing the file (see Section 7)
 - Initial watchlist (from config): SPY, IVW, DGRO (stocks) · VGIT, VGLT (bonds) · VIGI, VYMI, EMB (international) · FTEC + other Fidelity sector ETFs (sector) · MSFT, RELY + other trusted individual stocks (individual)
-- **One table per group** (not per-ticker cards). Columns: Ticker, Price, Change, 52-Week Range, % Off High, 20-day MA, 50-day MA, 200-day MA
+- **One table per group** (not per-ticker cards). Columns: Ticker, Price, Change, 52-Week Range, % Off High, Market Cap, P/E, 20-day MA, 50-day MA, 200-day MA
+- **Market Cap** and **P/E (trailing)** — both from the same Finnhub `/stock/metric` call already used for the 52-week range, so no new fetch. Market cap formats to $T/B/M; either renders "n/a" (not an error) when Finnhub has no value for that symbol
 - **52-week range** rendered as a green (near the low)→amber→red (near the high) gradient bar with a marker at the current price's position, plus the low/high printed as text — not color-alone
 - **Each moving average** shows the value plus how far the current price sits above/below it, as both a color (green above, red below — same convention as the AI directional badges) and a signed arrow+percentage
 - **Percent off 52-week high** — its own column, the exact number behind the range bar's visual read; drives the buy decision directly
@@ -74,7 +75,7 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - No recent-news column
 - **US stock market news**, shown once at the top of the page, above the grouped ticker tables — a short feed of general market headlines
 - **Loads instantly from a local snapshot cache, then refreshes live in the background** — same pattern as the Indicator Digest Page. A ticker with no cached data yet renders as a loading placeholder; a ticker whose live fetch fails falls back silently to its last cached values, with an error state reserved for a ticker that's never been fetched successfully. Unlike the indicator pipeline, this background check always re-fetches every ticker live — there's no AI call to gate around
-- **In-app editing**: each group has a remove button per ticker and an add-ticker field, writing straight to `config/tickers.json`. Adding, renaming, or removing a whole *group* still needs a hand-edit (backlog, Section 5)
+- **In-app editing**: each group has a remove button per ticker (the row's trailing column, out of the way of the data readers scan first) and an add-ticker field, writing straight to `config/tickers.json`. Adding, renaming, or removing a whole *group* still needs a hand-edit (backlog, Section 5)
 
 ### 4.3 Cross-page navigation
 - Both v2 pages show a small nav linking to the other, so you can move between the Indicator Digest Page and the Ticker Dashboard by clicking

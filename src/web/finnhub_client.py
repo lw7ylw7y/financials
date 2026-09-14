@@ -1,15 +1,16 @@
 """Thin client for the Finnhub REST endpoints the Ticker Dashboard needs
-(Stories 3/6): quote, 52-week range, and general market news. Each
-endpoint is independently callable so one ticker's failure (bad
-symbol, rate limit, request error) can't affect another's --
-ticker_dashboard.py catches failures per-ticker, not here.
+(Stories 3/6/8): quote, 52-week range + market cap + P/E, and general
+market news. Each endpoint is independently callable so one ticker's
+failure (bad symbol, rate limit, request error) can't affect another's
+-- ticker_dashboard.py catches failures per-ticker, not here.
 
 `/stock/candle` (historical daily closes) is deliberately not used here
 -- confirmed returning 403 "You don't have access to this resource."
 for every symbol/resolution/asset-class tried, a free-tier restriction
 Finnhub has put in place, not a request-shape problem. The 52-week
-range is still free via `/stock/metric`; moving averages need the
-daily close series itself, which comes from `yahoo_client.py` instead.
+range, market cap, and P/E are still free via `/stock/metric`; moving
+averages need the daily close series itself, which comes from
+`yahoo_client.py` instead.
 """
 
 import os
@@ -66,10 +67,24 @@ def fetch_quote(symbol: str, api_key: str | None = None) -> dict:
     }
 
 
-def fetch_52_week_range(symbol: str, api_key: str | None = None) -> dict:
-    """52-week high/low for `symbol`, from Finnhub's own precomputed
-    metric (free tier, unlike `/stock/candle`). Returns
-    {"low": float, "high": float}.
+def fetch_stock_metrics(symbol: str, api_key: str | None = None) -> dict:
+    """52-week high/low, market cap, and trailing P/E for `symbol`, all
+    from Finnhub's own precomputed `/stock/metric` (free tier, unlike
+    `/stock/candle`) -- one call covers all four, no extra request per
+    field. Returns {"low": float, "high": float, "market_cap": float |
+    None, "pe_ratio": float | None}.
+
+    52-week low/high are required -- a response missing either raises,
+    same as before this also covered market cap/P/E. `market_cap`
+    (Finnhub's `marketCapitalization`, in millions of USD) and
+    `pe_ratio` degrade to `None` (not a raised error) when absent --
+    common for micro-caps, non-US-listed symbols, or a company with no
+    trailing twelve months of earnings; the UI shows "n/a" rather than
+    erroring the whole row over an optional field. `pe_ratio` prefers
+    `peTTM`, falling back to `peBasicExclExtraTTM` then
+    `peNormalizedAnnual` -- Finnhub doesn't populate `peTTM` for every
+    symbol, and the fallbacks are the closest equivalents it does
+    usually have.
     """
     api_key = _require_api_key(api_key)
 
@@ -87,7 +102,20 @@ def fetch_52_week_range(symbol: str, api_key: str | None = None) -> dict:
     low, high = metric.get("52WeekLow"), metric.get("52WeekHigh")
     if low is None or high is None:
         raise FinnhubApiError(f"no 52-week range for {symbol}")
-    return {"low": float(low), "high": float(high)}
+
+    market_cap = metric.get("marketCapitalization")
+    pe_ratio = metric.get("peTTM")
+    if pe_ratio is None:
+        pe_ratio = metric.get("peBasicExclExtraTTM")
+    if pe_ratio is None:
+        pe_ratio = metric.get("peNormalizedAnnual")
+
+    return {
+        "low": float(low),
+        "high": float(high),
+        "market_cap": float(market_cap) if market_cap is not None else None,
+        "pe_ratio": float(pe_ratio) if pe_ratio is not None else None,
+    }
 
 
 def fetch_market_news(api_key: str | None = None, limit: int = 10) -> list[dict]:

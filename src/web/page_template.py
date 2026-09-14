@@ -42,7 +42,7 @@ SPARKLINE_FLAT_COLOR = "#64748b"
 RANGE_GOOD_COLOR = SPARKLINE_UP_COLOR
 RANGE_WARNING_COLOR = "#f59e0b"
 RANGE_CRITICAL_COLOR = SPARKLINE_DOWN_COLOR
-RANGE_BAR_WIDTH = 100
+RANGE_BAR_WIDTH = 90
 RANGE_BAR_HEIGHT = 10
 
 NAV_LINKS = [("/", "Indicator Digest"), ("/tickers", "Ticker Dashboard")]
@@ -339,6 +339,35 @@ def _render_pct_off_high_cell(pct_off_high: float | None) -> str:
     return f'<td class="num">{pct_off_high:.1f}%</td>'
 
 
+def _format_market_cap(market_cap: float) -> str:
+    """`market_cap` is Finnhub's `marketCapitalization`, in millions of
+    USD -- convert to dollars, then pick the largest suffix (T/B/M)
+    that keeps the number readable at a glance rather than printing a
+    raw multi-digit millions figure."""
+    value = market_cap * 1_000_000
+    if value >= 1_000_000_000_000:
+        return f"${value / 1_000_000_000_000:.2f}T"
+    if value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.2f}B"
+    return f"${value / 1_000_000:.2f}M"
+
+
+def _render_market_cap_cell(market_cap: float | None) -> str:
+    if market_cap is None:
+        return '<td class="num muted">n/a</td>'
+    return f'<td class="num">{_format_market_cap(market_cap)}</td>'
+
+
+def _render_pe_cell(pe_ratio: float | None) -> str:
+    """Trailing P/E as a plain number -- "n/a" when Finnhub has none
+    (common for money-losing or thinly-covered companies, see
+    `finnhub_client.fetch_stock_metrics`), not an error.
+    """
+    if pe_ratio is None:
+        return '<td class="num muted">n/a</td>'
+    return f'<td class="num">{pe_ratio:.1f}</td>'
+
+
 TOP_DISCOUNT_HIGHLIGHT_DIVISOR = 4  # highlight the top ~1/4 of each group (rounded up)
 
 
@@ -368,8 +397,10 @@ def _top_discount_symbols(cards: list[dict]) -> set[str]:
 def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
     """A small "x" on every row (pending/errored/live alike -- removal
     doesn't depend on a successful fetch) that posts to
-    /api/tickers/remove (Story 7). Event-delegated in the page's own
-    script rather than bound per-button, since these rows get replaced
+    /api/tickers/remove (Story 7). Rendered as the row's own trailing
+    cell rather than next to the ticker symbol, so it doesn't crowd the
+    column readers scan first. Event-delegated in the page's own script
+    rather than bound per-button, since these rows get replaced
     wholesale by the /api/check-tickers response."""
     return (
         f'<button type="button" class="remove-ticker" data-group="{escape(group_name)}" '
@@ -378,34 +409,42 @@ def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
     )
 
 
+_TICKER_DATA_COLUMN_COUNT = 9  # Price, Change, 52-Week Range, % Off High, Market Cap, P/E, 20d/50d/200d MA
+
+
 def _render_ticker_row(card: dict, highlighted: bool = False) -> str:
     row_class = ' class="row-highlight"' if highlighted else ""
-    remove_button = _render_remove_ticker_button(card["symbol"], card["group"])
+    remove_cell = f"<td>{_render_remove_ticker_button(card['symbol'], card['group'])}</td>"
 
     if card["pending"]:
         return f"""
               <tr{row_class}>
-                <td>{escape(card['symbol'])} {remove_button}</td>
-                <td colspan="7" class="muted">Loading&hellip;</td>
+                <td>{escape(card['symbol'])}</td>
+                <td colspan="{_TICKER_DATA_COLUMN_COUNT}" class="muted">Loading&hellip;</td>
+                {remove_cell}
               </tr>"""
 
     if card["error"]:
         return f"""
               <tr{row_class}>
-                <td>{escape(card['symbol'])} {remove_button}</td>
-                <td colspan="7" class="muted">Unable to load data.</td>
+                <td>{escape(card['symbol'])}</td>
+                <td colspan="{_TICKER_DATA_COLUMN_COUNT}" class="muted">Unable to load data.</td>
+                {remove_cell}
               </tr>"""
 
     return f"""
               <tr{row_class}>
-                <td>{escape(card['symbol'])} {remove_button}</td>
+                <td>{escape(card['symbol'])}</td>
                 <td class="num">${card['price']:,.2f}</td>
                 {_render_change_cell(card['change'], card['change_percent'])}
                 <td class="range-bar-cell">{_render_range_bar(card['symbol'], card['week52_low'], card['week52_high'], card['price'])}</td>
                 {_render_pct_off_high_cell(card['pct_off_high'])}
+                {_render_market_cap_cell(card['market_cap'])}
+                {_render_pe_cell(card['pe_ratio'])}
                 {_render_ma_cell(card['price'], card['ma20'])}
                 {_render_ma_cell(card['price'], card['ma50'])}
                 {_render_ma_cell(card['price'], card['ma200'])}
+                {remove_cell}
               </tr>"""
 
 
@@ -453,9 +492,12 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
                 <th class="num">Change</th>
                 <th>52-Week Range</th>
                 <th class="num">% Off High</th>
+                <th class="num">Market Cap</th>
+                <th class="num">P/E</th>
                 <th class="num">20d MA</th>
                 <th class="num">50d MA</th>
                 <th class="num">200d MA</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>

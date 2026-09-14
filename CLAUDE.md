@@ -56,7 +56,7 @@ source .env && set +a`) before running anything that needs them.
 | `FRED_API_KEY` | any ingestion (Stories 1-3) |
 | `GEMINI_API_KEY` | AI interpretation — optional; both the email and the web page degrade gracefully (no AI section) without it |
 | `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | sending the digest email |
-| `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range fetch and the market-news feed — without it, the background check's live fetch fails for every ticker and for market news, each falling back to its own cached data (`data/tickers.json`/`data/market_news.json`) where a cache exists, or an error/unavailable state where none does; Story 2's config loading needs no API key |
+| `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range/market-cap/P-E fetch and the market-news feed — without it, the background check's live fetch fails for every ticker and for market news, each falling back to its own cached data (`data/tickers.json`/`data/market_news.json`) where a cache exists, or an error/unavailable state where none does; Story 2's config loading needs no API key |
 
 ## Architecture
 
@@ -93,9 +93,10 @@ src/
             ticker_dashboard.py (load_ticker_config() reads
             config/tickers.json's groups as an open map in file order,
             skips malformed symbols; build_ticker_cards() does the
-            per-ticker quote/52wk-range/change fetch from Finnhub plus
-            daily closes from Yahoo for the 20d/50d/200d SMA and
-            pct_off_high, with a per-ticker try/except so one bad
+            per-ticker quote/52wk-range/market-cap/P-E/change fetch
+            from Finnhub plus daily closes from Yahoo for the
+            20d/50d/200d SMA and pct_off_high, with a per-ticker
+            try/except so one bad
             symbol can't take down the rest; get_initial_ticker_page_data()
             /check_for_ticker_updates() and get_initial_market_news()/
             check_for_market_news() are the stored-render/live-check
@@ -105,8 +106,9 @@ src/
             add_ticker_to_group()/remove_ticker_from_group()
             read-modify-write config/tickers.json for the in-app
             editor, tickers only — not group create/rename/remove),
-            finnhub_client.py (quote/52wk-range/general-news REST
-            wrapper, raises FinnhubApiError per-call — NOT candles: see
+            finnhub_client.py (quote/52wk-range+market-cap+P-E
+            (fetch_stock_metrics)/general-news REST wrapper, raises
+            FinnhubApiError per-call — NOT candles: see
             its docstring, Finnhub's free tier blocks `/stock/candle`
             outright), yahoo_client.py (daily closes
             from Yahoo's public chart endpoint, no API key — the only
@@ -208,27 +210,33 @@ callables for this.
   + `ticker_dashboard.load_ticker_config()` (open group map read in file
   order, malformed symbols skipped and logged), and `finnhub_client.py` +
   `yahoo_client.py` + `ticker_dashboard.build_ticker_cards()` +
-  `page_template.render_ticker_dashboard_page()` (per-ticker price/52wk-range
-  from Finnhub, 20d/50d/200d SMA from Yahoo daily closes, grouped under
-  headers title-cased from the config keys, one row's fetch failure — from
-  either provider — rendered as that row's own error state without affecting
-  the rest of the page).
+  `page_template.render_ticker_dashboard_page()` (per-ticker
+  price/52wk-range/market-cap/P-E from Finnhub, 20d/50d/200d SMA from
+  Yahoo daily closes, grouped under headers title-cased from the
+  config keys, one row's fetch failure — from either provider —
+  rendered as that row's own error state without affecting the rest of
+  the page).
   **Data-source note:** Finnhub's free tier 403s `/stock/candle`
-  unconditionally, so `/stock/metric` covers the 52-week range but moving
-  averages need daily closes from Yahoo Finance's public, unauthenticated
-  chart endpoint instead, via a plain `requests` call (`yahoo_client.py`)
-  rather than the `yfinance` library, to avoid its much heavier dependency
-  tree. stooq.io was tried and rejected — its requests require solving a
-  client-side JS proof-of-work challenge.
+  unconditionally, so `/stock/metric` (`finnhub_client.fetch_stock_metrics`)
+  covers the 52-week range, market cap, and trailing P/E in one call, but
+  moving averages need daily closes from Yahoo Finance's public,
+  unauthenticated chart endpoint instead, via a plain `requests` call
+  (`yahoo_client.py`) rather than the `yfinance` library, to avoid its
+  much heavier dependency tree. stooq.io was tried and rejected — its
+  requests require solving a client-side JS proof-of-work challenge.
 - Rendering is one `<table>` per group (not per-ticker cards), with no
   per-ticker news column — both were tried and dropped as harder to scan /
   low-value. Don't re-add either without the user explicitly asking. Columns
-  include a 50-day moving average alongside 20d/200d, a green→amber→red
-  gradient bar showing where price sits in its 52-week range, and a colored
-  arrow+percentage on each MA showing how far price is above/below it (same
-  palette as the AI directional badges/sparklines) — both encodings
-  deliberately avoid color-alone. Both pages share a nav
-  (`page_template._render_nav`) linking to the other.
+  include a 50-day moving average alongside 20d/200d, market cap and
+  trailing P/E (either "n/a" when Finnhub has no value for that symbol), a
+  green→amber→red gradient bar showing where price sits in its 52-week
+  range, and a colored arrow+percentage on each MA showing how far price is
+  above/below it (same palette as the AI directional badges/sparklines) —
+  both encodings deliberately avoid color-alone. A trailing, unlabeled
+  column holds each row's remove button (Story 7), placed there rather
+  than beside the ticker symbol so it doesn't crowd the column read
+  first. Both pages share a nav (`page_template._render_nav`) linking
+  to the other.
   `finnhub_client.fetch_company_news` (a per-ticker news column, tried and
   dropped) was removed rather than left as dead code.
 - `/tickers` renders instantly from the `data/tickers.json` snapshot cache (a
@@ -273,6 +281,13 @@ callables for this.
   ranked per group, not globally. How many get highlighted scales with
   group size (`ceil(group_size / TOP_DISCOUNT_HIGHLIGHT_DIVISOR)`,
   `DIVISOR = 4`, minimum 1) rather than a fixed count.
+- Market Cap and trailing P/E: `finnhub_client.fetch_stock_metrics()` (the
+  successor to the old `fetch_52_week_range()` — same `/stock/metric` call,
+  now also pulling `marketCapitalization` and `peTTM` with fallback through
+  `peBasicExclExtraTTM`/`peNormalizedAnnual`) so there's no new fetch per
+  ticker. `page_template._format_market_cap()` renders the raw
+  millions-of-USD figure as `$T`/`$B`/`$M`; either column renders "n/a"
+  (not an error) when Finnhub has no value for that symbol.
 - In-app ticker editing (Story 7): `ticker_dashboard.add_ticker_to_group`/
   `remove_ticker_from_group` read-modify-write `config/tickers.json`
   directly; `/api/tickers/add`/`/remove` (`app.py`) wrap them, 400 on

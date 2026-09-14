@@ -148,33 +148,34 @@ Thin wrapper around Yahoo Finance's public, unauthenticated chart endpoint (`que
 
 ### 5.2 `ticker_dashboard.py`
 For each ticker in `config/tickers.json`, independently:
-1. Fetch quote + 52-week range from Finnhub and daily closes from Yahoo.
+1. Fetch quote + 52-week range/market cap/P/E (`finnhub_client.fetch_stock_metrics`, one `/stock/metric` call) from Finnhub and daily closes from Yahoo.
 2. Compute the three moving averages (`MA_WINDOWS = (20, 50, 200)`) from the Yahoo close series.
 3. On any failure for that ticker, catch it locally and mark that ticker's row as errored — the loop continues (same per-item isolation pattern as v1's `run_ingestion`). The row fails as a whole rather than partially.
 4. Compute `pct_off_high = (week52_high - price) / week52_high * 100` (no new fetch).
-5. Assemble one card dict per ticker: `{symbol, group, price, change, change_percent, week52_low, week52_high, pct_off_high, ma20, ma50, ma200, error: str | None}`.
+5. Assemble one card dict per ticker: `{symbol, group, price, change, change_percent, week52_low, week52_high, pct_off_high, market_cap, pe_ratio, ma20, ma50, ma200, error: str | None}`. `market_cap`/`pe_ratio` can independently be `None` on an otherwise-successful card — Finnhub doesn't populate them for every symbol.
 
 Cards are grouped for rendering using the `groups` structure from `config/tickers.json`, in file order — each group's display header is derived from its config key (e.g. `sector` → "Sector"). An unrecognized/invalid symbol is skipped with a logged warning before it reaches either client.
 
 Fetches run concurrently via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since maxing out Finnhub's free-tier rate limit risks trading slow-but-successful fetches for fast 429s). `main.run_ingestion()`/`update_release_calendar()` use the same pattern, one thread per indicator. Only the fetch calls run concurrently; state mutation and result-building run single-threaded afterward, and `executor.map`'s output-order guarantee keeps results grouped/ordered exactly as a sequential version would.
 
 ### 5.2a Rendering: one table per group
-Columns: Ticker, Price, Change, 52-Week Range, % Off High, 20d/50d/200d MA. Two encodings follow the "status" pattern (a small fixed good→warning→critical scale, never color-alone):
+Columns: Ticker, Price, Change, 52-Week Range, % Off High, Market Cap, P/E, 20d/50d/200d MA, then a trailing unlabeled remove-button column (Section 5.2c). Two encodings follow the "status" pattern (a small fixed good→warning→critical scale, never color-alone):
 - **52-week range** — an SVG gradient bar (green at the low end → amber at the midpoint → red at the high end) with a marker circle at the current price's position within `[low, high]`. Low/high are also printed as plain text below the bar.
 - **Each moving average** — the value plus a signed `▲`/`▼` and percentage showing how far price sits above/below that average, colored green (above)/red (below).
 - `pct_off_high` renders as a plain, uncolored number (the range bar already carries the status signal).
 - `change`/`change_percent` render with the same signed `▲`/`▼` + color convention as the moving-average cells, plus the absolute $ change.
+- `market_cap` (`page_template._format_market_cap`) renders as `$` plus the largest T/B/M suffix that keeps it readable (Finnhub's `marketCapitalization` comes back in millions of USD); `pe_ratio` renders as a plain one-decimal number. Either renders "n/a" when Finnhub has no value for that symbol — not an error, since it's common for micro-caps, non-US listings, or companies with no trailing earnings.
 - A ticker with `ma20`/`ma50`/`ma200` as `None` (fewer closes than that window, e.g. a recent IPO) renders "n/a" in that cell.
-- An errored ticker renders as a single row with `colspan` across the data columns and "Unable to load data."
+- An errored ticker renders as a single row with `colspan` across the data columns (`_TICKER_DATA_COLUMN_COUNT`) and "Unable to load data.", followed by its own remove-button cell — removal doesn't depend on a successful fetch.
 
 ### 5.2b Top-discount row highlight
 `page_template._top_discount_symbols(cards)` sorts a group's cards by `pct_off_high` descending and returns the top `n = math.ceil(len(cards) / TOP_DISCOUNT_HIGHLIGHT_DIVISOR)` symbols (`DIVISOR = 4`, `ceil` so any non-empty group highlights at least 1), skipping any card with `pct_off_high is None`. Computed per group, not globally. `_render_ticker_row(card, highlighted)` adds `class="row-highlight"` to the `<tr>`. CSS: `.indicator-table tr.row-highlight { background: rgba(21, 128, 61, 0.14); }` — translucent so it reads consistently in both themes.
 
 ### 5.2c In-app ticker editing
-`ticker_dashboard.add_ticker_to_group`/`remove_ticker_from_group` read-modify-write `config/tickers.json` directly. Only mutate an existing group's ticker list — creating/renaming/removing a group is still a hand-edit. `POST /api/tickers/add`/`/remove` (`app.py`) wrap these; invalid input raises `TickerConfigError`, returned as a 400. Each row's remove button and each group's add form (`page_template._render_remove_ticker_button`/`_render_add_ticker_form`) post to these routes and reload the page on success. Buttons are event-delegated on `#ticker-groups`, since that div's contents get replaced wholesale by `/api/check-tickers`.
+`ticker_dashboard.add_ticker_to_group`/`remove_ticker_from_group` read-modify-write `config/tickers.json` directly. Only mutate an existing group's ticker list — creating/renaming/removing a group is still a hand-edit. `POST /api/tickers/add`/`/remove` (`app.py`) wrap these; invalid input raises `TickerConfigError`, returned as a 400. Each row's remove button and each group's add form (`page_template._render_remove_ticker_button`/`_render_add_ticker_form`) post to these routes and reload the page on success. The remove button renders as the row's own trailing `<td>`, not next to the ticker symbol, so it doesn't crowd the column readers scan first. Buttons are event-delegated on `#ticker-groups`, since that div's contents get replaced wholesale by `/api/check-tickers`.
 
 ### 5.3 Freshness
-- **`data/tickers.json`** (gitignored — a cache, not the historical record `data/indicators.json` is) stores one snapshot per ticker: `{symbol: {price, change, change_percent, week52_low, week52_high, pct_off_high, ma20, ma50, ma200, fetched_at}}`.
+- **`data/tickers.json`** (gitignored — a cache, not the historical record `data/indicators.json` is) stores one snapshot per ticker: `{symbol: {price, change, change_percent, week52_low, week52_high, pct_off_high, market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`.
 - **`ticker_dashboard.get_initial_ticker_page_data()`** — stored-only, no network, mirrors `live_pull.get_initial_page_data()`. A ticker with no cached snapshot renders as a pending/"Loading…" row.
 - **`ticker_dashboard.check_for_ticker_updates()`** — the real live pull, mirrors `live_pull.check_for_updates()`, with one difference: no "skip if nothing changed" gate — every check re-fetches every ticker live via `build_ticker_cards()` and persists every success back to the cache. A ticker whose live fetch fails resolves to its last cached snapshot silently if one exists, or the error state if not.
 - **`/api/check-tickers`** calls `check_for_ticker_updates()` and returns `{"groups_html": ..., "news_html": ...}` (`page_template.render_ticker_check_response`) for the page's script to swap into `#ticker-groups` and `#market-news`.

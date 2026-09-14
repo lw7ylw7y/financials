@@ -94,7 +94,7 @@
 | Task | Status |
 |---|---|
 | 3.1 `finnhub_client.py` — quote endpoint | done |
-| 3.2 `finnhub_client.py` — 52-week range via `/stock/metric` | done |
+| 3.2 `finnhub_client.py` — 52-week range + market cap + P/E via `/stock/metric` (`fetch_stock_metrics`) | done |
 | 3.3 20/50/200-day simple moving average calculation from Yahoo daily closes | done |
 | 3.4 `ticker_dashboard.py` — per-ticker assembly with independent try/catch per ticker | done |
 | 3.5 `page_template.py` — grouped tables, per-row error state | done |
@@ -102,6 +102,7 @@
 | 3.7 `pct_off_high` computed from existing price/week52_high, no new fetch | done |
 | 3.8 `finnhub_client.fetch_quote()` — parse `d`/`dp` alongside `c` | done |
 | 3.9 Two new table columns (% off high, change) with the signed-value + green/red-arrow convention | done |
+| 3.10 Market Cap + P/E table columns, "n/a" when Finnhub has no value | done |
 
 **Tests**
 - Mocked Finnhub/Yahoo responses → row shows correct price, 52-week range, both moving averages
@@ -162,7 +163,7 @@
 |---|---|
 | 7.1 `ticker_dashboard.py` — `add_ticker_to_group`/`remove_ticker_from_group`, read-modify-write `config/tickers.json` | done |
 | 7.2 `app.py` — `/api/tickers/add`/`/remove` routes | done |
-| 7.3 `page_template.py` — remove button per row, add-ticker form per group, event-delegated JS | done |
+| 7.3 `page_template.py` — remove button per row (row's trailing cell), add-ticker form per group, event-delegated JS | done |
 
 **Tests**
 - Add/remove correctly mutates the right group, preserves other groups and order, is idempotent

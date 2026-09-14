@@ -63,6 +63,7 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] **Percent off 52-week high** — its own column, computed from price + the existing 52-week range, no new data source
 - [x] **Change since last close** — its own column, current session's absolute and % move versus the previous close, colored with the same green-up/red-down convention as the moving-average deltas
 - [x] **Top-discount row highlight** — within each group, roughly the top quarter of tickers (rounded up, minimum 1) by percent off their 52-week high get a faint green row background. Ranked per group, not across the whole page; pending/errored rows are never eligible
+- [x] **Market Cap** and **P/E (trailing)** — their own columns, sourced from the same Finnhub call already used for the 52-week range (no new fetch); either renders "n/a" rather than erroring the row when Finnhub has no value for that symbol
 
 ---
 
@@ -103,7 +104,7 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 **As** the investor, **I want** to add or remove a ticker from within an existing group right on the Ticker Dashboard, **so that** I don't have to open the config file for a routine watchlist change.
 
 **Acceptance Criteria**
-- [x] Each ticker row has a remove control; each group has an add-ticker field. Both write straight to `config/tickers.json`
+- [x] Each ticker row has a remove control, placed as the row's trailing column rather than beside the ticker symbol; each group has an add-ticker field. Both write straight to `config/tickers.json`
 - [x] Adding or removing a whole group is still a hand-edit of the file — out of scope here
 - [x] An invalid symbol or unknown group is rejected with an error, not silently accepted
 - [x] Neither page requires user authentication

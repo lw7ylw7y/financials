@@ -183,9 +183,17 @@ body {
   font-size: 11px;
 }
 
-.ticker-table th, .ticker-table td { white-space: nowrap; }
+/* Tighter than .indicator-table's default padding/font-size -- the
+   ticker table has 11 columns (vs. the Indicator Digest table's 4-5)
+   and needs every column as narrow as it can be to fit the page width
+   without horizontal scroll. Headers are allowed to wrap to a second
+   line (`th` deliberately left out of the nowrap rule below) so a
+   short data cell (e.g. "$3.68T" under "Market Cap") isn't forced
+   wide just to fit its own one-line label. */
+.ticker-table th, .ticker-table td { padding: 8px 6px; }
+.ticker-table td { font-size: 13px; white-space: nowrap; }
 
-.range-bar-cell { min-width: 116px; }
+.range-bar-cell { min-width: 108px; }
 
 .range-cell {
   display: flex;

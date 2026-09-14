@@ -170,6 +170,8 @@ def make_card(**overrides):
         "week52_low": 400.0,
         "week52_high": 480.0,
         "pct_off_high": 5.8,
+        "market_cap": 3500000.0,
+        "pe_ratio": 34.2,
         "ma20": 448.5,
         "ma50": 440.0,
         "ma200": 430.2,
@@ -183,7 +185,8 @@ def make_card(**overrides):
 def make_pending_card(**overrides):
     return make_card(
         price=None, change=None, change_percent=None, week52_low=None, week52_high=None,
-        pct_off_high=None, ma20=None, ma50=None, ma200=None, error=None, pending=True,
+        pct_off_high=None, market_cap=None, pe_ratio=None, ma20=None, ma50=None, ma200=None,
+        error=None, pending=True,
         **overrides,
     )
 
@@ -200,10 +203,10 @@ SAMPLE_NEWS = {
 
 
 def row_for(html: str, symbol: str) -> str:
-    """The full <tr>...</tr> markup for the row whose Ticker cell
-    starts with `symbol` -- a space (not </td>) follows the symbol now
-    that each row also carries a remove-ticker button in that cell."""
-    cell_start = html.index(f"<td>{symbol} ")
+    """The full <tr>...</tr> markup for the row whose Ticker cell holds
+    `symbol` -- the remove-ticker button lives in its own trailing
+    cell, not the Ticker cell, so this matches on the plain `<td>` here."""
+    cell_start = html.index(f"<td>{symbol}</td>")
     row_start = html.rfind("<tr", 0, cell_start)
     row_end = html.index("</tr>", cell_start) + len("</tr>")
     return html[row_start:row_end]
@@ -229,9 +232,38 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn(">Change<", html)
         self.assertIn("52-Week Range", html)
         self.assertIn("% Off High", html)
+        self.assertIn("Market Cap", html)
+        self.assertIn(">P/E<", html)
         self.assertIn("20d MA", html)
         self.assertIn("50d MA", html)
         self.assertIn("200d MA", html)
+
+    def test_renders_market_cap_formatted_with_suffix(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(market_cap=3500000.0)]}, NO_NEWS)
+
+        self.assertIn("$3.50T", html)
+
+    def test_missing_market_cap_renders_not_available(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(market_cap=None)]}, NO_NEWS)
+
+        self.assertIn("n/a", html)
+
+    def test_renders_pe_ratio(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(pe_ratio=34.2)]}, NO_NEWS)
+
+        self.assertIn("34.2", html)
+
+    def test_missing_pe_ratio_renders_not_available(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(pe_ratio=None)]}, NO_NEWS)
+
+        self.assertIn("n/a", html)
+
+    def test_remove_button_is_the_rows_trailing_cell(self):
+        row = row_for(render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS), "SPY")
+
+        self.assertTrue(row.rstrip().endswith("</tr>"))
+        last_cell = row[row.rindex("<td>") :]
+        self.assertIn("remove-ticker", last_cell)
 
     def test_no_per_ticker_news_list(self):
         html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)

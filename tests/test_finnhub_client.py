@@ -13,9 +13,9 @@ for _p in (
 import requests
 from finnhub_client import (
     FinnhubApiError,
-    fetch_52_week_range,
     fetch_market_news,
     fetch_quote,
+    fetch_stock_metrics,
 )
 
 
@@ -56,30 +56,67 @@ class TestFetchQuote(unittest.TestCase):
             fetch_quote("SPY", api_key=None)
 
 
-class TestFetch52WeekRange(unittest.TestCase):
+class TestFetchStockMetrics(unittest.TestCase):
     @patch("finnhub_client.requests.get")
-    def test_parses_range(self, mock_get):
+    def test_parses_range_market_cap_and_pe(self, mock_get):
+        mock_get.return_value = Mock(
+            json=lambda: {
+                "metric": {
+                    "52WeekLow": 629.28,
+                    "52WeekHigh": 779.37,
+                    "marketCapitalization": 3500000.0,
+                    "peTTM": 34.2,
+                }
+            }
+        )
+
+        result = fetch_stock_metrics("SPY", api_key="test-key")
+
+        self.assertEqual(
+            result,
+            {"low": 629.28, "high": 779.37, "market_cap": 3500000.0, "pe_ratio": 34.2},
+        )
+
+    @patch("finnhub_client.requests.get")
+    def test_missing_market_cap_and_pe_degrade_to_none(self, mock_get):
         mock_get.return_value = Mock(
             json=lambda: {"metric": {"52WeekLow": 629.28, "52WeekHigh": 779.37}}
         )
 
-        result = fetch_52_week_range("SPY", api_key="test-key")
+        result = fetch_stock_metrics("SPY", api_key="test-key")
 
-        self.assertEqual(result, {"low": 629.28, "high": 779.37})
+        self.assertIsNone(result["market_cap"])
+        self.assertIsNone(result["pe_ratio"])
+
+    @patch("finnhub_client.requests.get")
+    def test_pe_falls_back_through_alternate_fields(self, mock_get):
+        mock_get.return_value = Mock(
+            json=lambda: {
+                "metric": {
+                    "52WeekLow": 1.0,
+                    "52WeekHigh": 2.0,
+                    "peBasicExclExtraTTM": 18.5,
+                }
+            }
+        )
+
+        result = fetch_stock_metrics("SPY", api_key="test-key")
+
+        self.assertEqual(result["pe_ratio"], 18.5)
 
     @patch("finnhub_client.requests.get")
     def test_raises_on_missing_metric(self, mock_get):
         mock_get.return_value = Mock(json=lambda: {"metric": {}})
 
         with self.assertRaises(FinnhubApiError):
-            fetch_52_week_range("BADSYM", api_key="test-key")
+            fetch_stock_metrics("BADSYM", api_key="test-key")
 
     @patch("finnhub_client.requests.get")
     def test_raises_on_request_exception(self, mock_get):
         mock_get.side_effect = requests.ConnectionError("boom")
 
         with self.assertRaises(FinnhubApiError):
-            fetch_52_week_range("SPY", api_key="test-key")
+            fetch_stock_metrics("SPY", api_key="test-key")
 
 
 class TestFetchMarketNews(unittest.TestCase):

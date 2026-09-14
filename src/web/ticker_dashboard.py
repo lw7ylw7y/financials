@@ -8,9 +8,10 @@ hardcoded here or in `page_template.py`, the dashboard renders whatever
 group keys are present, in file order, so adding, renaming, or removing
 a group is a config-only edit (Story 2's AC, Section 3.2 of the tech
 design). For each ticker, `build_ticker_cards` independently fetches a
-quote + 52-week range from Finnhub and a year of daily closes from
-Yahoo (for the moving averages -- Finnhub's free tier doesn't serve
-candles, see finnhub_client.py's docstring); a failure for one ticker
+quote + 52-week range/market cap/P/E from Finnhub and a year of daily
+closes from Yahoo (for the moving averages -- Finnhub's free tier
+doesn't serve candles, see finnhub_client.py's docstring); a failure
+for one ticker
 (bad symbol, rate limit, request error, from either provider) is caught
 locally and turned into that ticker's error state rather than aborting
 the rest of the dashboard (Story 3's AC, Section 5.2 of the tech
@@ -57,7 +58,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from finnhub_client import fetch_52_week_range, fetch_market_news, fetch_quote
+from finnhub_client import fetch_market_news, fetch_quote, fetch_stock_metrics
 from yahoo_client import fetch_daily_closes
 
 CONFIG_PATH = os.path.join(
@@ -74,7 +75,7 @@ _TICKER_RE = re.compile(r"^[A-Za-z0-9]+$")
 MA_WINDOWS = (20, 50, 200)
 _SNAPSHOT_FIELDS = (
     "price", "change", "change_percent", "week52_low", "week52_high",
-    "pct_off_high", "ma20", "ma50", "ma200",
+    "pct_off_high", "market_cap", "pe_ratio", "ma20", "ma50", "ma200",
 )
 
 logger = logging.getLogger(__name__)
@@ -178,16 +179,16 @@ def _build_card(
     symbol: str,
     group_name: str,
     fetch_quote_fn,
-    fetch_week52_fn,
+    fetch_metrics_fn,
     fetch_closes_fn,
 ) -> dict:
     try:
         quote = fetch_quote_fn(symbol)
         price = quote["price"]
-        week52 = fetch_week52_fn(symbol)
+        metrics = fetch_metrics_fn(symbol)
         closes = fetch_closes_fn(symbol)
         ma20, ma50, ma200 = (_simple_moving_average(closes, w) for w in MA_WINDOWS)
-        week52_high = week52["high"]
+        week52_high = metrics["high"]
         pct_off_high = (week52_high - price) / week52_high * 100 if week52_high else None
         return {
             "symbol": symbol,
@@ -195,9 +196,11 @@ def _build_card(
             "price": price,
             "change": quote.get("change"),
             "change_percent": quote.get("change_percent"),
-            "week52_low": week52["low"],
+            "week52_low": metrics["low"],
             "week52_high": week52_high,
             "pct_off_high": pct_off_high,
+            "market_cap": metrics.get("market_cap"),
+            "pe_ratio": metrics.get("pe_ratio"),
             "ma20": ma20,
             "ma50": ma50,
             "ma200": ma200,
@@ -215,6 +218,8 @@ def _build_card(
             "week52_low": None,
             "week52_high": None,
             "pct_off_high": None,
+            "market_cap": None,
+            "pe_ratio": None,
             "ma20": None,
             "ma50": None,
             "ma200": None,
@@ -226,7 +231,7 @@ def _build_card(
 def build_ticker_cards(
     config: dict[str, list[str]] | None = None,
     fetch_quote_fn=fetch_quote,
-    fetch_week52_fn=fetch_52_week_range,
+    fetch_metrics_fn=fetch_stock_metrics,
     fetch_closes_fn=fetch_daily_closes,
     max_workers: int = 5,
 ) -> dict[str, list[dict]]:
@@ -245,9 +250,12 @@ def build_ticker_cards(
     sequential, regardless of which ticker's fetch finishes first.
 
     Each card is `{symbol, group, price, change, change_percent,
-    week52_low, week52_high, pct_off_high, ma20, ma50, ma200, error,
-    pending}` -- `error` is `None` on success, or a message with every
-    other field left as `None` if that ticker's fetch failed. `pending`
+    week52_low, week52_high, pct_off_high, market_cap, pe_ratio, ma20,
+    ma50, ma200, error, pending}` -- `error` is `None` on success, or a
+    message with every other field left as `None` if that ticker's
+    fetch failed. `market_cap`/`pe_ratio` can independently be `None`
+    even on an otherwise-successful card (Finnhub doesn't always carry
+    them -- see `finnhub_client.fetch_stock_metrics`). `pending`
     is always `False` here (this function only
     ever returns the result of an attempted fetch); see
     `get_initial_ticker_page_data` for the stored-only, not-yet-fetched
@@ -271,7 +279,7 @@ def build_ticker_cards(
             symbols,
             task_group_names,
             [fetch_quote_fn] * n,
-            [fetch_week52_fn] * n,
+            [fetch_metrics_fn] * n,
             [fetch_closes_fn] * n,
         )
         for (group_name, _symbol), card in zip(tasks, cards):
@@ -282,7 +290,8 @@ def build_ticker_cards(
 
 def load_ticker_state(path: str = TICKER_DATA_PATH) -> dict:
     """The local snapshot cache: `{symbol: {price, week52_low,
-    week52_high, ma20, ma50, ma200, fetched_at}}`. `{}` if the file
+    week52_high, market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`.
+    `{}` if the file
     doesn't exist yet (first run) or is corrupted."""
     try:
         with open(path) as f:
@@ -337,7 +346,7 @@ def get_initial_ticker_page_data(
 def check_for_ticker_updates(
     config: dict[str, list[str]] | None = None,
     fetch_quote_fn=fetch_quote,
-    fetch_week52_fn=fetch_52_week_range,
+    fetch_metrics_fn=fetch_stock_metrics,
     fetch_closes_fn=fetch_daily_closes,
     state_path: str = TICKER_DATA_PATH,
     now: datetime | None = None,
@@ -359,7 +368,7 @@ def check_for_ticker_updates(
     config = config if config is not None else load_ticker_config()
     stored = load_ticker_state(state_path)
 
-    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_week52_fn, fetch_closes_fn)
+    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn, fetch_closes_fn)
 
     grouped_cards = {}
     for group_name, cards in live_cards.items():

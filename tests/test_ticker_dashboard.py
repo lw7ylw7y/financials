@@ -112,7 +112,7 @@ class TestBuildTickerCards(unittest.TestCase):
         def fake_quote(symbol):
             return {"price": 452.31}
 
-        def fake_week52(symbol):
+        def fake_metrics(symbol):
             return {"low": 400.0, "high": 480.0}
 
         def fake_closes(symbol):
@@ -121,7 +121,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=fake_quote,
-            fetch_week52_fn=fake_week52,
+            fetch_metrics_fn=fake_metrics,
             fetch_closes_fn=fake_closes,
         )
 
@@ -142,7 +142,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"stocks": ["NEWCO"]},
             fetch_quote_fn=lambda s: {"price": 10.0},
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 50.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 50.0},
             fetch_closes_fn=lambda s: closes,
         )
 
@@ -161,7 +161,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"stocks": ["SPY", "BADSYM", "IVW"]},
             fetch_quote_fn=fake_quote,
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 3.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 3.0},
             fetch_closes_fn=lambda s: [1.0, 2.0, 3.0],
         )
 
@@ -173,13 +173,13 @@ class TestBuildTickerCards(unittest.TestCase):
         self.assertIsNone(badsym["price"])
 
     def test_week52_failure_also_errors_the_card(self):
-        def fake_week52(symbol):
+        def fake_metrics(symbol):
             raise RuntimeError("no 52-week range for SPY")
 
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 100.0},
-            fetch_week52_fn=fake_week52,
+            fetch_metrics_fn=fake_metrics,
             fetch_closes_fn=lambda s: [1.0, 2.0, 3.0],
         )
 
@@ -194,7 +194,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 100.0},
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 3.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 3.0},
             fetch_closes_fn=fake_closes,
         )
 
@@ -206,7 +206,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"bonds": ["VGIT", "VGLT"], "stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 1.0},
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
@@ -217,7 +217,7 @@ class TestBuildTickerCards(unittest.TestCase):
     def test_defaults_to_loading_config_from_disk(self):
         cards = build_ticker_cards(
             fetch_quote_fn=lambda s: {"price": 1.0},
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
@@ -228,7 +228,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 450.0, "change": -2.5, "change_percent": -0.55},
-            fetch_week52_fn=lambda s: {"low": 400.0, "high": 500.0},
+            fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
@@ -241,7 +241,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 450.0},  # no change/change_percent keys
-            fetch_week52_fn=lambda s: {"low": 400.0, "high": 500.0},
+            fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
@@ -250,11 +250,37 @@ class TestBuildTickerCards(unittest.TestCase):
         self.assertIsNone(card["change_percent"])
         self.assertIsNotNone(card["pct_off_high"])
 
+    def test_passes_through_market_cap_and_pe_ratio(self):
+        cards = build_ticker_cards(
+            config={"stocks": ["SPY"]},
+            fetch_quote_fn=lambda s: {"price": 450.0},
+            fetch_metrics_fn=lambda s: {
+                "low": 400.0, "high": 500.0, "market_cap": 3500000.0, "pe_ratio": 34.2,
+            },
+            fetch_closes_fn=lambda s: [1.0, 2.0],
+        )
+
+        card = cards["stocks"][0]
+        self.assertEqual(card["market_cap"], 3500000.0)
+        self.assertEqual(card["pe_ratio"], 34.2)
+
+    def test_missing_market_cap_and_pe_ratio_degrade_to_none(self):
+        cards = build_ticker_cards(
+            config={"stocks": ["SPY"]},
+            fetch_quote_fn=lambda s: {"price": 450.0},
+            fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},  # no market_cap/pe_ratio keys
+            fetch_closes_fn=lambda s: [1.0, 2.0],
+        )
+
+        card = cards["stocks"][0]
+        self.assertIsNone(card["market_cap"])
+        self.assertIsNone(card["pe_ratio"])
+
     def test_successful_card_is_not_pending(self):
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 1.0},
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
@@ -273,7 +299,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"stocks": ["SPY", "IVW", "DGRO"]},
             fetch_quote_fn=fake_quote,
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
@@ -292,7 +318,7 @@ class TestBuildTickerCards(unittest.TestCase):
         build_ticker_cards(
             config={"stocks": symbols},
             fetch_quote_fn=slow_quote,
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
         )
         elapsed = time.monotonic() - started
@@ -305,7 +331,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"stocks": symbols},
             fetch_quote_fn=lambda s: {"price": 1.0},
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
             max_workers=5,
         )
@@ -320,7 +346,7 @@ class TestBuildTickerCards(unittest.TestCase):
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=failing_quote,
-            fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
             fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
@@ -401,7 +427,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
             cards = check_for_ticker_updates(
                 config={"stocks": ["SPY"]},
                 fetch_quote_fn=lambda s: {"price": 452.31},
-                fetch_week52_fn=lambda s: {"low": 400.0, "high": 480.0},
+                fetch_metrics_fn=lambda s: {"low": 400.0, "high": 480.0},
                 fetch_closes_fn=lambda s: [1.0] * 200,
                 state_path=state_path,
             )
@@ -429,7 +455,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
             cards = check_for_ticker_updates(
                 config={"stocks": ["SPY"]},
                 fetch_quote_fn=failing_quote,
-                fetch_week52_fn=lambda s: {"low": 400.0, "high": 480.0},
+                fetch_metrics_fn=lambda s: {"low": 400.0, "high": 480.0},
                 fetch_closes_fn=lambda s: [1.0] * 200,
                 state_path=state_path,
             )
@@ -449,7 +475,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
             cards = check_for_ticker_updates(
                 config={"stocks": ["NEWTICKER"]},
                 fetch_quote_fn=failing_quote,
-                fetch_week52_fn=lambda s: {"low": 1.0, "high": 2.0},
+                fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
                 fetch_closes_fn=lambda s: [1.0, 2.0],
                 state_path=state_path,
             )
@@ -475,7 +501,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
             cards = check_for_ticker_updates(
                 config={"stocks": ["SPY"]},
                 fetch_quote_fn=counting_quote,
-                fetch_week52_fn=lambda s: {"low": 90.0, "high": 110.0},
+                fetch_metrics_fn=lambda s: {"low": 90.0, "high": 110.0},
                 fetch_closes_fn=lambda s: [1.0] * 200,
                 state_path=state_path,
             )
