@@ -80,29 +80,37 @@ src/
             Gmail strips inline <svg>, so the email needs a raster image
             embedded via Content-ID; the web page instead renders sparklines
             as plain inline SVG, since browsers don't have that limitation)
-  web/      app.py (Flask routes: "/", "/tickers", "/api/check",
-            "/api/check-tickers"), live_pull.py (stored-only render +
+  web/      app.py (Flask routes: GET "/", GET "/tickers", GET "/api/check",
+            GET "/api/check-tickers", POST "/api/tickers/add", POST
+            "/api/tickers/remove"), live_pull.py (stored-only render +
             gated background live-check for the Indicator Digest Page),
             page_template.py (HTML string rendering for both pages,
             mirrors email_template.py's plain-string-building
             convention — no templating engine; also renders the shared
-            _render_nav() linking the two pages), ticker_dashboard.py
-            (load_ticker_config() reads config/tickers.json's groups as
-            an open map in file order, skips malformed symbols;
-            build_ticker_cards() does the per-ticker quote + 52wk range
-            fetch from Finnhub plus daily closes from Yahoo for the
-            20d/50d/200d SMA, with a per-ticker try/except so one bad
+            _render_nav() linking the two pages, the top-discount row
+            highlight, and the inline ticker-editor controls),
+            ticker_dashboard.py (load_ticker_config() reads
+            config/tickers.json's groups as an open map in file order,
+            skips malformed symbols; build_ticker_cards() does the
+            per-ticker quote/52wk-range/change fetch from Finnhub plus
+            daily closes from Yahoo for the 20d/50d/200d SMA and
+            pct_off_high, with a per-ticker try/except so one bad
             symbol can't take down the rest; get_initial_ticker_page_data()
-            + check_for_ticker_updates() are the stored-render/live-check
-            split, backed by load_ticker_state()/save_ticker_state()
-            reading/writing data/tickers.json), finnhub_client.py
-            (quote/52wk-range REST wrapper, raises FinnhubApiError
-            per-call — NOT candles: see its docstring, Finnhub's free
-            tier blocks `/stock/candle` outright; company-news was
-            built and then removed, see Status below), yahoo_client.py
-            (daily closes from Yahoo's public chart endpoint, no API
-            key — the only source for moving averages; raises
-            YahooApiError per-call)
+            /check_for_ticker_updates() and get_initial_market_news()/
+            check_for_market_news() are the stored-render/live-check
+            splits, backed by load_ticker_state()/save_ticker_state()
+            (data/tickers.json) and load_market_news_state()/
+            save_market_news_state() (data/market_news.json);
+            add_ticker_to_group()/remove_ticker_from_group()
+            read-modify-write config/tickers.json for the in-app
+            editor, tickers only — not group create/rename/remove),
+            finnhub_client.py (quote/52wk-range/general-news REST
+            wrapper, raises FinnhubApiError per-call — NOT candles: see
+            its docstring, Finnhub's free tier blocks `/stock/candle`
+            outright; company-news, i.e. per-ticker, was built and then
+            removed, see Status below), yahoo_client.py (daily closes
+            from Yahoo's public chart endpoint, no API key — the only
+            source for moving averages; raises YahooApiError per-call)
   main.py       v1 entrypoint: run_ingestion + update_release_calendar +
                 run_post_release — what the scheduled workflow calls
   backfill.py   one-time manual seed of sparse history
@@ -150,7 +158,7 @@ src/
    no-op).
 
 ### Storage model
-Two separate local JSON files — not a database, and not the same file:
+Three separate local JSON files under `data/` — not a database, and not the same file:
 
 - **`data/indicators.json`** (committed) — the v1 historical record. Shape:
   `{"indicators": {key: {name, category, fred_series_id, fred_release_id,
@@ -163,12 +171,17 @@ Two separate local JSON files — not a database, and not the same file:
   discarded — expected and harmless, since ingestion is idempotent (dedup by
   date never double-counts or corrupts history).
 - **`data/tickers.json`** (gitignored, v1.1 addition) — a pure local cache, one
-  snapshot per ticker: `{symbol: {price, week52_low, week52_high, ma20, ma50,
-  ma200, fetched_at}}`. Never committed and never scheduled — it's written only
-  when you run the Flask app locally and `/api/check-tickers` fires, purely so
-  the *next* local page load has something better than a blank "Loading…" row
-  to show instantly. Losing it is harmless (everything just shows as pending
-  again until the next live fetch).
+  snapshot per ticker: `{symbol: {price, change, change_percent, week52_low,
+  week52_high, pct_off_high, ma20, ma50, ma200, fetched_at}}`. Never committed
+  and never scheduled — it's written only when you run the Flask app locally
+  and `/api/check-tickers` fires, purely so the *next* local page load has
+  something better than a blank "Loading…" row to show instantly. Losing it
+  is harmless (everything just shows as pending again until the next live
+  fetch).
+- **`data/market_news.json`** (gitignored) — same idea as `data/tickers.json`,
+  one cached snapshot for the whole market-news feed instead of one per
+  ticker: `{"headlines": [...], "fetched_at": ...}`. Also written by
+  `/api/check-tickers`, also harmless to lose.
 
 ### Testing conventions
 There are no package `__init__.py` files — every module (in `src/` and in
@@ -301,7 +314,9 @@ callables for this.
   (`page_template._render_remove_ticker_button`/`_render_add_ticker_form`),
   event-delegated on `#ticker-groups` and reloading the page on success
   rather than patching the DOM directly. Tickers only — adding/renaming/
-  removing a whole group is still a hand-edit of the file.
+  removing a whole group is still a hand-edit of the file. Confirmed
+  working by the user's own live add/remove testing through the running
+  app, not just automated tests.
   **Caution:** reassigning `ticker_dashboard.CONFIG_PATH` after import
   does *not* redirect a call using the default arg (Python binds
   defaults at def-time) — always pass `path=`/`state_path=` explicitly
