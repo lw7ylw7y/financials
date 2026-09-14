@@ -1,10 +1,13 @@
 """Local Flask app for the v1.1 web dashboard: the Indicator Digest Page
-(Story 1/1a, "/") and the Ticker Dashboard (Story 2/3, "/tickers").
-Bound to loopback only (127.0.0.1), never 0.0.0.0, so it is unreachable
-from anything but the machine it's running on, per the local-only
-hosting decision in Section 4.1 of investment_dashboard_requirements.md.
-No authentication layer: unnecessary when the app can never be reached
-from outside the machine itself.
+(Story 1/1a, "/") and the Ticker Dashboard (Story 2/3, "/tickers",
+plus its inline watchlist editor, Story 7, "/api/tickers/add" and
+"/api/tickers/remove"). Bound to loopback only (127.0.0.1), never
+0.0.0.0, so it is unreachable from anything but the machine it's
+running on, per the local-only hosting decision in Section 4.1 of
+investment_dashboard_requirements.md. No authentication layer:
+unnecessary when the app can never be reached from outside the machine
+itself -- including for the editor routes, which write to
+config/tickers.json on disk.
 """
 
 import os
@@ -17,7 +20,7 @@ for _subdir in ("fred", "storage", "digest", "mailer"):
 sys.path.insert(0, _SRC_DIR)
 sys.path.insert(0, _WEB_DIR)
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 from live_pull import check_for_updates, get_initial_page_data
 from page_template import (
@@ -27,10 +30,13 @@ from page_template import (
     render_ticker_dashboard_page,
 )
 from ticker_dashboard import (
+    TickerConfigError,
+    add_ticker_to_group,
     check_for_market_news,
     check_for_ticker_updates,
     get_initial_market_news,
     get_initial_ticker_page_data,
+    remove_ticker_from_group,
 )
 
 app = Flask(__name__)
@@ -69,6 +75,33 @@ def api_check_tickers():
     grouped_cards = check_for_ticker_updates()
     market_news = check_for_market_news()
     return jsonify(render_ticker_check_response(grouped_cards, market_news))
+
+
+@app.route("/api/tickers/add", methods=["POST"])
+def api_add_ticker():
+    """Called by the /tickers page's inline "add a ticker" form (Story
+    7). Writes straight to config/tickers.json; the browser reloads the
+    page on success so the new (pending) ticker and everything else
+    stay in sync through the same stored-render + background-check path
+    as any other page load -- no separate client-side patching for this."""
+    body = request.get_json(silent=True) or {}
+    try:
+        add_ticker_to_group(body.get("symbol", ""), body.get("group", ""))
+    except TickerConfigError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/tickers/remove", methods=["POST"])
+def api_remove_ticker():
+    """Called by the /tickers page's inline "remove" button on each row
+    (Story 7). See api_add_ticker."""
+    body = request.get_json(silent=True) or {}
+    try:
+        remove_ticker_from_group(body.get("symbol", ""), body.get("group", ""))
+    except TickerConfigError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

@@ -199,6 +199,16 @@ SAMPLE_NEWS = {
 }
 
 
+def row_for(html: str, symbol: str) -> str:
+    """The full <tr>...</tr> markup for the row whose Ticker cell
+    starts with `symbol` -- a space (not </td>) follows the symbol now
+    that each row also carries a remove-ticker button in that cell."""
+    cell_start = html.index(f"<td>{symbol} ")
+    row_start = html.rfind("<tr", 0, cell_start)
+    row_end = html.index("</tr>", cell_start) + len("</tr>")
+    return html[row_start:row_end]
+
+
 class TestRenderTickerDashboardPage(unittest.TestCase):
     def test_renders_row_fields_as_a_table(self):
         html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
@@ -349,7 +359,7 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
                 self.assertEqual(html.count('class="row-highlight"'), expected_highlighted)
                 for i in range(expected_highlighted):
                     symbol = f"S{i}"
-                    row = html[html.rfind("<tr", 0, html.index(f"<td>{symbol}</td>")) : html.index(f"<td>{symbol}</td>")]
+                    row = row_for(html, symbol)
                     self.assertIn('class="row-highlight"', row, f"{symbol} should be highlighted in a group of {group_size}")
 
     def test_small_group_still_highlights_at_least_one(self):
@@ -358,8 +368,7 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         html = render_ticker_dashboard_page({"stocks": cards}, NO_NEWS)
 
         self.assertEqual(html.count('class="row-highlight"'), 1)
-        b_row = html[html.rfind("<tr", 0, html.index("<td>B</td>")) : html.index("<td>B</td>")]
-        self.assertIn('class="row-highlight"', b_row)
+        self.assertIn('class="row-highlight"', row_for(html, "B"))
 
     def test_pending_and_errored_rows_are_never_highlighted(self):
         cards = [
@@ -371,8 +380,7 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         html = render_ticker_dashboard_page({"stocks": cards}, NO_NEWS)
 
         self.assertEqual(html.count('class="row-highlight"'), 1)
-        ok_row = html[html.rfind("<tr", 0, html.index("<td>OK</td>")) : html.index("<td>OK</td>")]
-        self.assertIn('class="row-highlight"', ok_row)
+        self.assertIn('class="row-highlight"', row_for(html, "OK"))
 
     def test_ranking_is_per_group_not_global(self):
         # "stocks" has 8 tickers with generally higher pct_off_high than
@@ -386,13 +394,10 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
 
         html = render_ticker_dashboard_page({"stocks": stocks, "bonds": bonds}, NO_NEWS)
 
-        x_row = html[html.rfind("<tr", 0, html.index("<td>X</td>")) : html.index("<td>X</td>")]
-        self.assertIn('class="row-highlight"', x_row)
-        y_row = html[html.rfind("<tr", 0, html.index("<td>Y</td>")) : html.index("<td>Y</td>")]
-        self.assertNotIn("row-highlight", y_row)
+        self.assertIn('class="row-highlight"', row_for(html, "X"))
+        self.assertNotIn("row-highlight", row_for(html, "Y"))
         # stocks (8 tickers) highlights 2 (A, B), not down through H
-        h_row = html[html.rfind("<tr", 0, html.index("<td>H</td>")) : html.index("<td>H</td>")]
-        self.assertNotIn("row-highlight", h_row)
+        self.assertNotIn("row-highlight", row_for(html, "H"))
 
     def test_renders_range_bar_gradient_and_marker(self):
         html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
@@ -406,6 +411,34 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
 
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn("&lt;script&gt;", html)
+
+    def test_renders_remove_button_on_every_row_shape(self):
+        cards = [make_card(symbol="SPY"), make_pending_card(symbol="NEWTICKER"), make_card(symbol="BADSYM", error="boom")]
+
+        html = render_ticker_dashboard_page({"stocks": cards}, NO_NEWS)
+
+        for symbol in ("SPY", "NEWTICKER", "BADSYM"):
+            row = row_for(html, symbol)
+            self.assertIn('class="remove-ticker"', row)
+            self.assertIn(f'data-symbol="{symbol}"', row)
+            self.assertIn('data-group="stocks"', row)
+
+    def test_renders_add_ticker_form_per_group(self):
+        html = render_ticker_dashboard_page(
+            {"stocks": [make_card()], "bonds": [make_card(symbol="VGIT")]}, NO_NEWS
+        )
+
+        self.assertEqual(html.count('class="add-ticker-form"'), 2)
+        self.assertIn('data-group="stocks"', html)
+        self.assertIn('data-group="bonds"', html)
+
+    def test_editor_actions_wired_up_in_script(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
+
+        self.assertIn("/api/tickers/remove", html)
+        self.assertIn("/api/tickers/add", html)
+        self.assertIn("remove-ticker", html)
+        self.assertIn("add-ticker-form", html)
 
     def test_pending_row_shows_loading_placeholder(self):
         html = render_ticker_dashboard_page({"stocks": [make_pending_card()]}, NO_NEWS)

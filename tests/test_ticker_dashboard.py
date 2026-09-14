@@ -14,6 +14,8 @@ for _p in (
 
 from ticker_dashboard import (
     CONFIG_PATH,
+    TickerConfigError,
+    add_ticker_to_group,
     build_ticker_cards,
     check_for_market_news,
     check_for_ticker_updates,
@@ -22,6 +24,7 @@ from ticker_dashboard import (
     load_market_news_state,
     load_ticker_config,
     load_ticker_state,
+    remove_ticker_from_group,
     save_market_news_state,
     save_ticker_state,
 )
@@ -571,6 +574,111 @@ class TestCheckForMarketNews(unittest.TestCase):
 
             self.assertFalse(result["pending"])
             self.assertEqual(result["headlines"], [])
+
+
+class TestAddTickerToGroup(unittest.TestCase):
+    def test_appends_to_group(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY", "IVW"]})
+
+            add_ticker_to_group("DGRO", "stocks", path)
+
+            self.assertEqual(load_ticker_config(path)["stocks"], ["SPY", "IVW", "DGRO"])
+
+    def test_normalizes_case_and_whitespace(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY"]})
+
+            add_ticker_to_group("  dgro  ", "stocks", path)
+
+            self.assertEqual(load_ticker_config(path)["stocks"], ["SPY", "DGRO"])
+
+    def test_idempotent_if_already_present(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY", "IVW"]})
+
+            add_ticker_to_group("SPY", "stocks", path)
+
+            self.assertEqual(load_ticker_config(path)["stocks"], ["SPY", "IVW"])
+
+    def test_rejects_malformed_symbol(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY"]})
+
+            with self.assertRaises(TickerConfigError):
+                add_ticker_to_group("BAD TICKER", "stocks", path)
+            self.assertEqual(load_ticker_config(path)["stocks"], ["SPY"])
+
+    def test_rejects_unknown_group(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY"]})
+
+            with self.assertRaises(TickerConfigError):
+                add_ticker_to_group("DGRO", "crypto", path)
+
+    def test_does_not_create_a_new_group(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY"]})
+
+            with self.assertRaises(TickerConfigError):
+                add_ticker_to_group("BTC", "crypto", path)
+
+            self.assertEqual(list(load_ticker_config(path).keys()), ["stocks"])
+
+    def test_other_groups_and_order_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"bonds": ["VGIT"], "stocks": ["SPY", "IVW"]})
+
+            add_ticker_to_group("DGRO", "stocks", path)
+
+            groups = load_ticker_config(path)
+            self.assertEqual(list(groups.keys()), ["bonds", "stocks"])
+            self.assertEqual(groups["bonds"], ["VGIT"])
+
+
+class TestRemoveTickerFromGroup(unittest.TestCase):
+    def test_removes_from_group(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY", "IVW", "DGRO"]})
+
+            remove_ticker_from_group("IVW", "stocks", path)
+
+            self.assertEqual(load_ticker_config(path)["stocks"], ["SPY", "DGRO"])
+
+    def test_idempotent_if_not_present(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY", "IVW"]})
+
+            remove_ticker_from_group("DGRO", "stocks", path)
+
+            self.assertEqual(load_ticker_config(path)["stocks"], ["SPY", "IVW"])
+
+    def test_rejects_unknown_group(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY"]})
+
+            with self.assertRaises(TickerConfigError):
+                remove_ticker_from_group("SPY", "crypto", path)
+
+    def test_other_groups_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"bonds": ["VGIT"], "stocks": ["SPY", "IVW"]})
+
+            remove_ticker_from_group("SPY", "stocks", path)
+
+            groups = load_ticker_config(path)
+            self.assertEqual(groups["bonds"], ["VGIT"])
+            self.assertEqual(groups["stocks"], ["IVW"])
+
+    def test_can_empty_a_group_without_removing_it(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY"]})
+
+            remove_ticker_from_group("SPY", "stocks", path)
+
+            groups = load_ticker_config(path)
+            self.assertIn("stocks", groups)
+            self.assertEqual(groups["stocks"], [])
 
 
 if __name__ == "__main__":

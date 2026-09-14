@@ -224,6 +224,47 @@ body {
    flat hex so it reads consistently against either theme's row background. */
 .indicator-table tr.row-highlight { background: rgba(21, 128, 61, 0.14); }
 
+.remove-ticker {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.remove-ticker:hover { color: #b91c1c; }
+
+.add-ticker-form {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.add-ticker-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.add-ticker-form button {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.add-ticker-form button:hover { border-color: #2563eb; color: #2563eb; }
+
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;

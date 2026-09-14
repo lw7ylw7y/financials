@@ -365,26 +365,40 @@ def _top_discount_symbols(cards: list[dict]) -> set[str]:
     return {c["symbol"] for c in ranked[:n]}
 
 
+def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
+    """A small "x" on every row (pending/errored/live alike -- removal
+    doesn't depend on a successful fetch) that posts to
+    /api/tickers/remove (Story 7). Event-delegated in the page's own
+    script rather than bound per-button, since these rows get replaced
+    wholesale by the /api/check-tickers response."""
+    return (
+        f'<button type="button" class="remove-ticker" data-group="{escape(group_name)}" '
+        f'data-symbol="{escape(symbol)}" title="Remove {escape(symbol)} from {escape(group_name)}" '
+        f'aria-label="Remove {escape(symbol)}">&times;</button>'
+    )
+
+
 def _render_ticker_row(card: dict, highlighted: bool = False) -> str:
     row_class = ' class="row-highlight"' if highlighted else ""
+    remove_button = _render_remove_ticker_button(card["symbol"], card["group"])
 
     if card["pending"]:
         return f"""
               <tr{row_class}>
-                <td>{escape(card['symbol'])}</td>
+                <td>{escape(card['symbol'])} {remove_button}</td>
                 <td colspan="7" class="muted">Loading&hellip;</td>
               </tr>"""
 
     if card["error"]:
         return f"""
               <tr{row_class}>
-                <td>{escape(card['symbol'])}</td>
+                <td>{escape(card['symbol'])} {remove_button}</td>
                 <td colspan="7" class="muted">Unable to load data.</td>
               </tr>"""
 
     return f"""
               <tr{row_class}>
-                <td>{escape(card['symbol'])}</td>
+                <td>{escape(card['symbol'])} {remove_button}</td>
                 <td class="num">${card['price']:,.2f}</td>
                 {_render_change_cell(card['change'], card['change_percent'])}
                 <td class="range-bar-cell">{_render_range_bar(card['symbol'], card['week52_low'], card['week52_high'], card['price'])}</td>
@@ -393,6 +407,17 @@ def _render_ticker_row(card: dict, highlighted: bool = False) -> str:
                 {_render_ma_cell(card['price'], card['ma50'])}
                 {_render_ma_cell(card['price'], card['ma200'])}
               </tr>"""
+
+
+def _render_add_ticker_form(group_name: str) -> str:
+    """A small inline form under each group's table (Story 7) that
+    posts to /api/tickers/add. Only adds within this existing group --
+    creating a new group is still a hand-edit of config/tickers.json."""
+    return f"""
+          <form class="add-ticker-form" data-group="{escape(group_name)}">
+            <input type="text" name="symbol" class="add-ticker-input" placeholder="Add ticker&hellip;" maxlength="10" autocomplete="off">
+            <button type="submit">Add</button>
+          </form>"""
 
 
 def _render_ticker_groups(grouped_cards: dict) -> str:
@@ -437,6 +462,7 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
               {row_html}
             </tbody>
           </table>
+          {_render_add_ticker_form(group_name)}
         </div>""")
     return "".join(sections)
 
@@ -519,6 +545,37 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
       document.getElementById('ticker-groups').innerHTML = data.groups_html;
       document.getElementById('market-news').innerHTML = data.news_html;
     }}).catch(function() {{ hideCheckingIndicator(); /* stay on the stored snapshot already shown */ }});
+
+    var tickerGroups = document.getElementById('ticker-groups');
+    tickerGroups.addEventListener('click', function(e) {{
+      var btn = e.target.closest('.remove-ticker');
+      if (!btn) return;
+      var group = btn.dataset.group, symbol = btn.dataset.symbol;
+      if (!confirm('Remove ' + symbol + ' from ' + group + '?')) return;
+      fetch('/api/tickers/remove', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{group: group, symbol: symbol}})
+      }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+        if (data.error) {{ alert(data.error); return; }}
+        window.location.reload();
+      }}).catch(function() {{ alert('Failed to remove ' + symbol + '.'); }});
+    }});
+    tickerGroups.addEventListener('submit', function(e) {{
+      var form = e.target.closest('.add-ticker-form');
+      if (!form) return;
+      e.preventDefault();
+      var group = form.dataset.group, symbol = form.symbol.value.trim();
+      if (!symbol) return;
+      fetch('/api/tickers/add', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{group: group, symbol: symbol}})
+      }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+        if (data.error) {{ alert(data.error); return; }}
+        window.location.reload();
+      }}).catch(function() {{ alert('Failed to add ' + symbol + '.'); }});
+    }});
   </script>
 </body>
 </html>"""

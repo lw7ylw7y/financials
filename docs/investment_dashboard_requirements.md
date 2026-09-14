@@ -78,7 +78,7 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - No recent-news column (dropped after initial use — found it cluttered the table without adding enough value)
 - **US stock market news**, shown once at the top of the page, above the grouped ticker tables (added after using the dashboard live) — a short feed of general market headlines, so you can see what's moving the market before looking at individual prices. Distinct from the per-ticker news column above: that was dropped for cluttering a 30+ row table with one headline list per row; a single page-level feed doesn't have that problem
 - **Loads instantly from a local snapshot cache, then refreshes live in the background** (added after initial use — the page previously blocked on every ticker's Finnhub+Yahoo fetch before showing anything). Same pattern as the Indicator Digest Page (Section 4.1): the initial render never waits on a live pull, a background check fetches for real afterward, and a "checking for updates" indicator shows while it's in flight. A ticker with no cached data yet renders as a loading placeholder rather than an error; a ticker whose live fetch fails falls back silently to its last cached values, with the error state reserved for a ticker that's never been fetched successfully at all. Unlike the indicator pipeline, the background check always re-fetches every ticker live — there's no expensive AI call to gate around
-- Add/remove tickers, and add/remove/rename groups, via a local config file (JSON), editable by hand — no separate editor UI in v1.1 (an in-app editor remains a backlog item, Section 5)
+- **In-app editing**: each group on the page has a remove button per ticker and an add-ticker field, writing straight to `config/tickers.json`. Adding, renaming, or removing a whole *group* still needs a hand-edit (backlog, Section 5)
 
 ### 4.3 Cross-page navigation
 - Both v1.1 pages show a small nav linking to the other, so you can move between the Indicator Digest Page and the Ticker Dashboard by clicking rather than typing a URL
@@ -88,7 +88,7 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - Shiller P/E ratio — deferred, no clean free API; add via scraping or manual periodic entry
 - User accounts / authentication
 - Multi-device sync (currently single-device, config-file based)
-- In-app ticker management UI (no-login-required editor) as an alternative to hand-editing the config file
+- In-app group management (add/rename/remove a whole group) — ticker-level add/remove within existing groups is built (Section 4.2)
 - Cycle-change / "market top" composite indicator (combining macro + sector signals) to support your rare sell decisions
 - **Ticker Email Alerts** (moved out of v1.1 on 2026-09-12) — email delivery, mirroring current Fidelity behavior, via a background job that checks prices periodically independent of whether the dashboard is open; trigger conditions: price crosses a set threshold, price crosses the 20-day or 200-day moving average, price moves a set % above 52-week low or below 52-week high
 - **Discount-Buy Thresholds** (moved out of v1.1 on 2026-09-12) — alert when a ticker is a configurable % off its 52-week high, with a global default threshold and per-ticker override; was designed to reuse the Ticker Email Alerts pipeline above

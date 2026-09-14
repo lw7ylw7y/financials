@@ -40,6 +40,14 @@ the per-ticker cache since it's a single item, not one per symbol.
 Folded into the same `/api/check-tickers` background check as the
 ticker prices rather than given its own route (Section 5b of the tech
 design).
+
+`add_ticker_to_group`/`remove_ticker_from_group` (Story 7, added
+2026-09-14) let the /tickers page itself edit config/tickers.json --
+adding or removing a ticker within an existing group, not creating or
+renaming groups (that's still a hand-edit of the file). Both read-
+modify-write the raw file directly rather than going through
+`load_ticker_config`'s cleanup pass, so an edit never silently drops
+an unrelated malformed entry elsewhere in the file.
 """
 
 import json
@@ -99,6 +107,62 @@ def load_ticker_config(path: str = CONFIG_PATH) -> dict[str, list[str]]:
         groups[group_name] = valid_symbols
 
     return groups
+
+
+class TickerConfigError(Exception):
+    """Raised for an invalid add/remove request from the /tickers page's
+    inline editor -- an unknown group or a malformed symbol. Distinct
+    from the malformed-entry-in-the-file case in `load_ticker_config`
+    (logged and skipped, not raised), since this path is driven by live
+    user input from a form, where the right response is telling the
+    user what's wrong, not silently dropping their edit."""
+
+
+def _load_raw_config(path: str) -> dict:
+    with open(path) as f:
+        return json.load(f)
+
+
+def _save_raw_config(raw: dict, path: str) -> None:
+    with open(path, "w") as f:
+        json.dump(raw, f, indent=2)
+        f.write("\n")
+
+
+def add_ticker_to_group(symbol: str, group_name: str, path: str = CONFIG_PATH) -> None:
+    """Append `symbol` to `group_name`'s ticker list in
+    config/tickers.json and write the file back -- the in-app
+    alternative to hand-editing that file (Story 2's original AC still
+    holds: the file itself remains a perfectly valid way to make the
+    same edit). No-op if `symbol` is already in that group. Only adds
+    to an existing group -- creating a new group is still a hand-edit
+    of the file, out of scope for this editor.
+    """
+    symbol = symbol.strip().upper()
+    if not _is_valid_ticker(symbol):
+        raise TickerConfigError(f"{symbol!r} isn't a valid ticker symbol")
+
+    raw = _load_raw_config(path)
+    groups = raw.setdefault("groups", {})
+    if group_name not in groups:
+        raise TickerConfigError(f"unknown group: {group_name!r}")
+
+    if symbol not in groups[group_name]:
+        groups[group_name].append(symbol)
+        _save_raw_config(raw, path)
+
+
+def remove_ticker_from_group(symbol: str, group_name: str, path: str = CONFIG_PATH) -> None:
+    """Remove `symbol` from `group_name`'s ticker list and write the
+    file back. No-op if `symbol` isn't in that group."""
+    raw = _load_raw_config(path)
+    groups = raw.setdefault("groups", {})
+    if group_name not in groups:
+        raise TickerConfigError(f"unknown group: {group_name!r}")
+
+    if symbol in groups[group_name]:
+        groups[group_name] = [s for s in groups[group_name] if s != symbol]
+        _save_raw_config(raw, path)
 
 
 def _simple_moving_average(closes: list[float], window: int) -> float | None:

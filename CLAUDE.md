@@ -293,6 +293,19 @@ callables for this.
   `DIVISOR = 4`, minimum 1) rather than a fixed count, since a flat
   number either over- or under-highlighted depending on group size.
   Verified live against the real 36-ticker watchlist.
+- **Also built 2026-09-14:** in-app ticker editing (Story 7) —
+  `ticker_dashboard.add_ticker_to_group`/`remove_ticker_from_group`
+  read-modify-write `config/tickers.json` directly; `/api/tickers/add`/
+  `/remove` (`app.py`) wrap them, 400 on `TickerConfigError`. Each row
+  has a remove button, each group an add-ticker field
+  (`page_template._render_remove_ticker_button`/`_render_add_ticker_form`),
+  event-delegated on `#ticker-groups` and reloading the page on success
+  rather than patching the DOM directly. Tickers only — adding/renaming/
+  removing a whole group is still a hand-edit of the file.
+  **Caution:** reassigning `ticker_dashboard.CONFIG_PATH` after import
+  does *not* redirect a call using the default arg (Python binds
+  defaults at def-time) — always pass `path=`/`state_path=` explicitly
+  when testing against a throwaway file, as the test suite already does.
 - When behavior actually changes, keep these in sync (all checkbox/prose
   acceptance-criteria style, not auto-generated): `docs/investment_dashboard_requirements.md`,
   `docs/v1.1_user_stories.md`, `docs/v1.1_technical_design.md`,
