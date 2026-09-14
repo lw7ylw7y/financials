@@ -11,6 +11,7 @@ drift out of sync on wording or meaning, even though the markup itself
 is page-specific.
 """
 
+import math
 import os
 import sys
 from html import escape
@@ -338,23 +339,51 @@ def _render_pct_off_high_cell(pct_off_high: float | None) -> str:
     return f'<td class="num">{pct_off_high:.1f}%</td>'
 
 
-def _render_ticker_row(card: dict) -> str:
+TOP_DISCOUNT_HIGHLIGHT_DIVISOR = 4  # highlight the top ~1/4 of each group (rounded up)
+
+
+def _top_discount_symbols(cards: list[dict]) -> set[str]:
+    """The top ~1/4 of `cards` (rounded up, so any non-empty group
+    highlights at least 1) by `pct_off_high` -- i.e. furthest below
+    their own 52-week high, the biggest discount from peak within the
+    group. A fixed count would either over-highlight a small group or
+    barely register in a large one, so this scales with the group's
+    size: 3 tickers -> 1, 8 -> 2, 10 -> 3. The quota is based on the
+    group's full size (including any pending/errored cards), but only
+    cards with a `pct_off_high` are eligible to actually fill it --
+    pending/errored tickers can't be ranked, so they're skipped rather
+    than counted as "highlighted". Ties beyond the cutoff aren't
+    included -- a plain positional top-N, not "all tickers tied for
+    last place".
+    """
+    n = math.ceil(len(cards) / TOP_DISCOUNT_HIGHLIGHT_DIVISOR)
+    ranked = sorted(
+        (c for c in cards if c.get("pct_off_high") is not None),
+        key=lambda c: c["pct_off_high"],
+        reverse=True,
+    )
+    return {c["symbol"] for c in ranked[:n]}
+
+
+def _render_ticker_row(card: dict, highlighted: bool = False) -> str:
+    row_class = ' class="row-highlight"' if highlighted else ""
+
     if card["pending"]:
         return f"""
-              <tr>
+              <tr{row_class}>
                 <td>{escape(card['symbol'])}</td>
                 <td colspan="7" class="muted">Loading&hellip;</td>
               </tr>"""
 
     if card["error"]:
         return f"""
-              <tr>
+              <tr{row_class}>
                 <td>{escape(card['symbol'])}</td>
                 <td colspan="7" class="muted">Unable to load data.</td>
               </tr>"""
 
     return f"""
-              <tr>
+              <tr{row_class}>
                 <td>{escape(card['symbol'])}</td>
                 <td class="num">${card['price']:,.2f}</td>
                 {_render_change_cell(card['change'], card['change_percent'])}
@@ -373,10 +402,21 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
     config keys (see `_group_header`), never a fixed list, and a
     pending/errored ticker stands in for any row not yet fetched or
     whose fetch failed, without affecting the other rows.
+
+    Within each group, the top ~1/4 of tickers (see
+    `_top_discount_symbols`) by `pct_off_high` (furthest below their own
+    52-week high) get a faint green row highlight -- ranked per group,
+    not across the whole page, since a "biggest discount" comparison
+    across unrelated asset classes (bonds vs. individual stocks, say)
+    wouldn't mean much.
     """
     sections = []
     for group_name, cards in grouped_cards.items():
-        row_html = "".join(_render_ticker_row(card) for card in cards)
+        highlighted_symbols = _top_discount_symbols(cards)
+        row_html = "".join(
+            _render_ticker_row(card, highlighted=card["symbol"] in highlighted_symbols)
+            for card in cards
+        )
         sections.append(f"""
         <div class="category-block">
           <p class="category-label">{escape(_group_header(group_name))}</p>

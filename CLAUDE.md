@@ -284,6 +284,15 @@ callables for this.
   both `data/tickers.json` and `data/market_news.json`, a warm reload
   renders instantly from cache. Full design in
   `docs/v1.1_technical_design.md` Sections 5.2b/5b.
+- **Also built 2026-09-14:** within each ticker group, the tickers with
+  the highest `pct_off_high` (biggest discount from their own 52-week
+  high) get a faint green `.row-highlight` background
+  (`page_template._top_discount_symbols`, Section 5.2c of the tech
+  design) — ranked per group, not globally. How many get highlighted
+  scales with group size (`ceil(group_size / TOP_DISCOUNT_HIGHLIGHT_DIVISOR)`,
+  `DIVISOR = 4`, minimum 1) rather than a fixed count, since a flat
+  number either over- or under-highlighted depending on group size.
+  Verified live against the real 36-ticker watchlist.
 - When behavior actually changes, keep these in sync (all checkbox/prose
   acceptance-criteria style, not auto-generated): `docs/investment_dashboard_requirements.md`,
   `docs/v1.1_user_stories.md`, `docs/v1.1_technical_design.md`,

@@ -218,6 +218,12 @@ body {
 
 .market-news-list a { color: inherit; }
 
+/* .indicator-table tr.row-highlight matches .indicator-table
+   tr:nth-child(even)'s specificity exactly and is declared later, so it
+   wins the zebra stripe on tie-break. A translucent green rather than a
+   flat hex so it reads consistently against either theme's row background. */
+.indicator-table tr.row-highlight { background: rgba(21, 128, 61, 0.14); }
+
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
