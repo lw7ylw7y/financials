@@ -109,6 +109,42 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] Neither page requires user authentication
 
 ---
+
+## Epic: Hosted Live Dashboard (v2.1)
+
+### Story 8 — Password-Protected Public Hosting
+**As** the investor, **I want** both dashboard pages reachable from anywhere behind a password, **so that** I can check them without needing my own laptop running, while keeping them private to me.
+
+**Acceptance Criteria**
+- [ ] Both pages are served from a single hosted web service reachable over the public internet — no VPN, tunnel, or laptop required
+- [ ] Every route requires a username + password before rendering any content; there is no page reachable without authenticating
+- [ ] Credentials are configured via environment variables on the host, never hardcoded or committed to the repo
+- [ ] Traffic is served over HTTPS (provided by the host), so credentials are never sent in plaintext
+- [ ] Local development is unaffected — running `src/web/app.py` locally with no auth env vars set behaves exactly as it does today, with no password prompt
+
+---
+
+### Story 9 — Durable Ticker Config & Caches on a Host With No Persistent Disk
+**As** the investor, **I want** my watchlist edits and cached prices to survive a restart of the hosted app, **so that** the in-app ticker editor and the instant-load caches keep working the same way they do when run locally.
+
+**Acceptance Criteria**
+- [ ] When a Redis connection is configured (hosted deployment), `config/tickers.json`'s content, `data/tickers.json`'s cache, and `data/market_news.json`'s cache are all read from and written to Redis instead of local files
+- [ ] When no Redis connection is configured (local development), behavior is unchanged — the same local JSON files are used as today
+- [ ] On first read with nothing yet in Redis, the ticker config is seeded from the repo's committed `config/tickers.json`, so a fresh deploy starts with the existing watchlist rather than an empty one
+- [ ] Adding or removing a ticker through the in-app editor on the hosted deployment persists in Redis and survives a container restart
+- [ ] A Redis outage degrades gracefully: the ticker/news caches fall back to their existing "no cache yet" pending/error states rather than crashing the page; a failed ticker-config load fails loudly with a clear error rather than silently rendering an empty watchlist
+
+---
+
+### Story 10 — Indicator Data Stays Git-Sourced When Hosted
+**As** the investor, **I want** the hosted Indicator Digest Page to keep reading from the same committed history the email pipeline uses, **so that** I don't need a second data store just for indicators.
+
+**Acceptance Criteria**
+- [ ] The hosted deployment reads `data/indicators.json` from its own git checkout, same as local — no Redis involvement for indicator history or the AI response cache
+- [ ] The host's auto-deploy-on-push means a GitHub Actions ingestion commit automatically refreshes the hosted page's stored data on its own schedule, with no manual redeploy step
+- [ ] A live pull triggered by a page visit (`/api/check`) still fetches and displays fresh data for that visit even though the write to disk won't survive a restart; the next scheduled Actions commit is what makes it durable
+
+---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)
 - [x] Neither page requires user authentication
 - [x] Both pages are usable on a desktop/web browser (no mobile app)

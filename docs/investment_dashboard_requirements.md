@@ -1,6 +1,6 @@
 # Investment Dashboard — Software Requirements
 
-**Status:** v1 shipped; v2 in progress
+**Status:** v1 shipped; v2 shipped (local); v2.1 in planning (hosted)
 **Owner:** You (customer) / Claude (PM)
 
 ## 1. Problem Statement
@@ -79,6 +79,13 @@ v1's entire product surface is a single digest email — there is no webpage/das
 ### 4.3 Cross-page navigation
 - Both v2 pages show a small nav linking to the other, so you can move between the Indicator Digest Page and the Ticker Dashboard by clicking
 
+### 4.4 Hosted Live Dashboard (v2.1)
+- Both v2 pages move from local-only `localhost` to a single free hosted web service, reachable from anywhere without your laptop running or a server started by hand
+- **Password-protected**, not public: every route requires a username/password before rendering anything. No user accounts, no signup — just you
+- `data/indicators.json` stays git-committed, updated by the existing GitHub Actions workflow exactly as today; the host auto-deploys on every push to `main`, so a scheduled ingestion commit also refreshes the hosted page automatically
+- The ticker watchlist (`config/tickers.json`) and the two local snapshot caches (`data/tickers.json`, `data/market_news.json`) move to a small free external key-value store when hosted, since a free host's filesystem doesn't persist across restarts — without this, an in-app ticker edit or a cached snapshot would silently vanish the next time the app restarts. Local development keeps using the plain JSON files as today
+- A fresh deploy seeds the hosted ticker config from the repo's committed `config/tickers.json`; after that, in-app edits on the hosted deployment update the external store only — the repo file stops being the hosted deployment's live source of truth (it remains authoritative for local dev)
+
 ## 5. Backlog (not yet scheduled)
 - ISM Manufacturing New Orders — no free open data feed; add once a paid vendor or workaround is chosen
 - Shiller P/E ratio — no clean free API; add via scraping or manual periodic entry
@@ -88,7 +95,6 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - Cycle-change / "market top" composite indicator (combining macro + sector signals) to support rare sell decisions
 - **Ticker Email Alerts** — email delivery, mirroring current Fidelity behavior, via a background job that checks prices independent of whether the dashboard is open; trigger conditions: price crosses a set threshold, price crosses the 20-day or 200-day moving average, price moves a set % above 52-week low or below 52-week high
 - **Discount-Buy Thresholds** — alert when a ticker is a configurable % off its 52-week high, with a global default and per-ticker override; reuses the Ticker Email Alerts pipeline above
-- **Hosted (non-local) live dashboard** — move the Indicator Digest Page and/or Ticker Dashboard off `localhost` onto somewhere reachable without your laptop running, once a hosting approach is chosen that avoids both a paid domain and public exposure
 
 ## 6. Data Sources
 | Need | Source | Notes |
@@ -101,6 +107,7 @@ v1's entire product surface is a single digest email — there is no webpage/das
 | *(v2, ticker dashboard)* Percent off 52-week high | *(computed, no new source)* | `(week52_high - price) / week52_high` |
 | *(v2, ticker dashboard)* Change since last close | Finnhub | Returned by the existing quote call (`d`/`dp` fields) |
 | *(v2, ticker dashboard)* US stock market news | Finnhub | `/news?category=general`, filtered to Finnhub's `"top news"` tag |
+| *(v2.1, hosted dashboard)* Persistent ticker config + caches when hosted | Upstash Redis (REST API) | Free tier, no auto-pause; stores `config/tickers.json`'s content plus the two local snapshot caches as JSON blobs, since the host has no persistent disk |
 | *(backlog)* Shiller P/E | multpl.com or similar | No single clean free API; may need light scraping or manual entry |
 | *(backlog)* ISM Manufacturing New Orders | Paid vendor or workaround TBD | No free open feed available |
 
@@ -119,9 +126,9 @@ v1's entire product surface is a single digest email — there is no webpage/das
 `groups` is an open map, not a fixed set of keys — the dashboard renders whatever group names and tickers are in this file, in the order they appear. Add a group, rename one, or move a ticker between groups just by editing the file; no code change needed.
 
 ## 8. Open Questions / Risks
-- The Indicator Digest Page's live-pull-on-reload requirement (Section 4.1) means v2 needs a server that can run the fetch/AI-interpretation logic on demand, not just a static page reading committed JSON — resolved by running that server locally; revisit if the Hosted live dashboard backlog item (Section 5) is picked up
+- The Indicator Digest Page's live-pull-on-reload requirement (Section 4.1) means v2 needs a server that can run the fetch/AI-interpretation logic on demand, not just a static page reading committed JSON — resolved by running that server locally, and (Section 4.4) on a hosted free web service
 - A background check happens on every page visit, so FRED calls happen per-visit rather than only on the fixed ingestion schedule — worth checking this stays within free-tier rate limits. Gemini calls only happen when the check actually finds new data
-- Local-only hosting means the Indicator Digest Page and Ticker Dashboard are only reachable when you've started the server on your own machine — unlike the v1 email, which arrives regardless of whether your laptop is on
+- Local-only hosting means the Indicator Digest Page and Ticker Dashboard are only reachable when you've started the server on your own machine — unlike the v1 email, which arrives regardless of whether your laptop is on. Section 4.4's hosted deployment removes this limitation, at the cost of a cold-start delay after idle periods on the free tier
 - Release calendar dates occasionally shift — pre-release timing should tolerate last-minute date changes
 - Free-tier data APIs (v2 ticker dashboard) carry rate limits and/or ~20 min delay; acceptable given usage pattern, flagged as a future constraint if needs change
 - Gmail requires generating an "app password" (not your regular password) to send via SMTP from a script

@@ -222,3 +222,49 @@ All v1 secrets (`FRED_API_KEY`, `GEMINI_API_KEY`, etc.) are reused as-is by the 
 - [ ] Create a free Finnhub API key, add `FINNHUB_API_KEY` to local `.env`
 - [ ] Create `config/tickers.json` from the format in Section 7 of the requirements doc
 - [ ] Verify `app.run(host="127.0.0.1", ...)` — confirm the app is unreachable from another device on the same network
+
+## 11. Hosted Live Dashboard (v2.1)
+
+**Hosting:** Render free web service, connected to the GitHub repo with auto-deploy on push to `main`. The free tier spins the container down after ~15 minutes idle; the next request pays a cold start (tens of seconds) — an accepted tradeoff, since easy setup mattered more than avoiding that delay for a single low-traffic user.
+
+### 11.1 Architecture
+
+```mermaid
+graph TD
+    subgraph "Render free web service (public, HTTPS, password-gated)"
+        REQ[Any request] --> AUTH{HTTP Basic Auth<br/>DASHBOARD_USERNAME/PASSWORD}
+        AUTH -->|fail| R401[401 Unauthorized]
+        AUTH -->|pass| ROUTES[Existing routes: / /tickers<br/>/api/check /api/check-tickers ...]
+        ROUTES --> IND[data/indicators.json<br/>read from git checkout,<br/>refreshed by Actions + auto-redeploy]
+        ROUTES --> KV[kv_store.py -> Upstash Redis REST API<br/>ticker config + ticker cache + news cache]
+    end
+    GH[GitHub Actions<br/>indicator-check.yml] -->|commits + pushes indicators.json| REPO[main branch]
+    REPO -->|auto-deploy webhook| RENDER[Render redeploy]
+```
+
+Nothing about the existing route logic changes — `app.py`, `live_pull.py`, and `ticker_dashboard.py`'s business logic are the same whether run locally or hosted. Only two things are added in front of/underneath them: an auth gate, and a storage backend swap for the two ticker-related JSON blobs that have no other durable home.
+
+### 11.2 Auth gate
+- `app.py` gains a `before_request` hook comparing the request's `Authorization: Basic` header against `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` env vars — hand-rolled, no new dependency, matching this project's minimal-dependency convention
+- If neither env var is set (the local-dev default), the hook is a no-op — local behavior is unchanged
+- If set, every route (including `/api/check*`) requires valid credentials; a missing/incorrect header returns 401 with a `WWW-Authenticate` challenge so the browser prompts for credentials natively
+
+### 11.3 `kv_store.py` — Upstash Redis wrapper
+- Thin wrapper using `requests` against Upstash's REST API (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, bearer-token auth) — no Redis client library needed, matching `finnhub_client.py`/`yahoo_client.py`'s plain-`requests` convention
+- Two functions: `get_json(key) -> dict | None`, `set_json(key, value: dict)` — GET/SET against Upstash's REST command endpoint, JSON-encoded values
+- Backend selection lives in `ticker_dashboard.py`: its config/cache load and save functions check whether `UPSTASH_REDIS_REST_URL` is set; if so, they route through `kv_store.py`, else they use the existing local-file `open()` calls unchanged — one function per operation, one branch inside it, not two parallel code paths per caller
+- Keys: `ticker_config`, `ticker_cache`, `market_news_cache`
+
+### 11.4 Seeding
+`load_ticker_config()`, when Redis-backed and the `ticker_config` key doesn't exist yet, reads the repo's bundled `config/tickers.json` once and writes it to Redis before returning it — so a fresh deploy starts with the existing watchlist rather than an empty one. After that first write, the repo file is no longer consulted for a hosted deployment; local development is unaffected since it never touches Redis.
+
+### 11.5 Deployment mechanics
+- Flask's built-in dev server (`app.run(...)`) isn't meant for production; Render's start command instead runs `gunicorn` — add `gunicorn` to `requirements.txt`
+- `app.py` binds `127.0.0.1` for local dev; Render needs `0.0.0.0` on the `$PORT` it assigns — gunicorn's `-b 0.0.0.0:$PORT` handles the bind, so `app.py`'s own `app.run(host="127.0.0.1", ...)` call stays under `if __name__ == "__main__":` and simply isn't what Render invokes
+- This project has no `__init__.py`/package imports — every module does its own `sys.path.insert`. Confirm gunicorn (which imports `app.py` as a module rather than running it as `__main__`) still executes those inserts before the route handlers' imports run; add a minimal shim if the import order doesn't hold up under gunicorn's loader
+- Render env vars needed, in addition to the existing `FRED_API_KEY`/`GEMINI_API_KEY`/`FINNHUB_API_KEY`: `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. `GMAIL_*` are not needed on Render — the digest email still only sends from the GitHub Actions workflow
+
+### 11.6 Open Questions / Risks
+- Cold starts (seconds to under a minute) after idle spin-down — accepted tradeoff for free hosting
+- Upstash's free-tier request quota (10K commands/day) should comfortably cover one user's occasional page loads, but worth confirming once real usage is observed
+- gunicorn + this project's `sys.path.insert` import convention hasn't been verified together yet — flagged as the first thing to confirm once deployment is attempted
