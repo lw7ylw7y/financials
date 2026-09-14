@@ -1,4 +1,4 @@
-"""HTML rendering for both v1.1 pages: the Indicator Digest Page
+"""HTML rendering for both v2 pages: the Indicator Digest Page
 (Story 1/1a) and the Ticker Dashboard (Story 2/3).
 
 A browser page, not an email, so this doesn't inherit email_template.py's
@@ -97,7 +97,7 @@ def _render_sparkline_svg(values: list[float]) -> str:
     )
 
 def _render_nav(active_path: str) -> str:
-    """Shared nav so either v1.1 page links to the other -- clicking
+    """Shared nav so either v2 page links to the other -- clicking
     between the Indicator Digest Page and the Ticker Dashboard doesn't
     require typing a URL."""
     links = []

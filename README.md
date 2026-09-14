@@ -1,6 +1,9 @@
 # Investment Dashboard
 
-See `docs/investment_dashboard_requirements.md`, `docs/v1_user_stories.md`, `docs/v1_technical_design.md`, and `docs/v1_task_breakdown.md` for the full spec.
+See `docs/investment_dashboard_requirements.md` for the full spec, plus
+`docs/v1_user_stories.md`/`docs/v1_technical_design.md`/`docs/v1_task_breakdown.md`
+(v1, the digest email) and `docs/v2_user_stories.md`/`docs/v2_technical_design.md`/
+`docs/v2_task_breakdown.md` (v2, the web dashboard).
 
 ## Story 1 — Indicator Data Ingestion (prototype)
 
@@ -123,70 +126,62 @@ No network calls in tests — `fetch_fred.requests.get`, the Gemini API
 client, and `smtplib.SMTP` are all mocked, and `run_ingestion` is
 exercised with a fake `fetch_fn`.
 
-## V1.1 Story 1/1a — Indicator Digest Page (local web dashboard)
+## V2 — Web Dashboard
 
-See `docs/investment_dashboard_requirements.md` (Section 4.1),
-`docs/v1.1_user_stories.md`, and `docs/v1.1_technical_design.md` for the
-full spec. A local-only web page (no domain, no login, never reachable
-outside your machine) that shows the same content as the digest email —
-holistic AI interpretation, indicator table, next-release countdown —
-but refreshable on demand instead of waiting for the next email.
+See `docs/investment_dashboard_requirements.md` (Section 4),
+`docs/v2_user_stories.md`, and `docs/v2_technical_design.md` for the
+full spec. Two local-only web pages (no domain, no login, never
+reachable outside your machine): the **Indicator Digest Page**, which
+shows the same content as the digest email — holistic AI
+interpretation, indicator table, next-release countdown — refreshable
+on demand instead of waiting for the next email; and the **Ticker
+Dashboard**, a Finnhub + Yahoo Finance–backed watchlist grouped by
+asset type, with moving averages, 52-week range, and general market
+news.
 
 - `src/digest/build_digest_content.py` — the table/countdown/AI-assembly
-  logic, extracted out of `post_release.py` so the weekly email and this
-  page build identical content from identical code. A successful AI call
-  is persisted to `data/indicators.json`'s new `last_ai_response` field
-  (v1 never saved it — it was generated fresh per email and discarded).
-- `src/web/live_pull.py` — split in two so the page never blocks on a
-  live pull just to render: `get_initial_page_data()` builds the page
-  entirely from stored data (no network calls, near-instant), and
-  `check_for_updates()` — called by the page's own background script
-  right after load — does the real FRED pull. If nothing's genuinely
-  new (or the check fails outright), it reports "no update" and costs a
-  FRED call but **never** a Gemini call; only when at least one
-  indicator actually has a new value does it refresh the release
-  calendar, re-run the AI interpretation, and persist. The indicator
-  table and the AI section carry *independent* freshness — e.g. FRED
-  can find new data while Gemini fails, updating a live table next to
-  an unchanged Saved AI section.
-- `src/web/page_template.py` — HTML rendering. Reuses `email_template.py`'s
-  copy/color constants (disclaimer text, category labels, directional
-  badge colors) so the two surfaces can't drift on wording, but has its
-  own markup (a browser page doesn't need email's Outlook-safe inline
-  styles or CID-embedded sparkline images — each table row instead gets
-  a small inline-`<svg>` trend line, since a browser renders SVG
-  natively). A "Checking for updates..." indicator shows for the
-  duration of the background check and disappears once it settles,
-  found or not — there is no persistent Live/Saved freshness badge or
-  timestamp (an earlier version had both; dropped as distracting).
-  `render_check_response` reuses the same private section-renderers as
-  the initial page, so the two can't render the same data differently.
-- `src/web/app.py` — the Flask app. `GET /` renders instantly from
-  stored data; `GET /api/check` is what the page's inline `<script>`
-  calls in the background, returning HTML fragments (as JSON) that get
-  patched into `#table-section`/`#countdown-section`/`#ai-section` only
-  when something actually changed. Bound explicitly to `127.0.0.1`
-  (never `0.0.0.0`), so it's unreachable from anything but the machine
-  running it — no authentication layer, since none is needed for a page
-  that's never network-reachable.
+  logic, shared by `post_release.py` (the weekly email) and
+  `live_pull.py` (the page), so both build identical content from
+  identical code. A successful AI call is persisted to
+  `data/indicators.json`'s `last_ai_response` field.
+- `src/web/live_pull.py` — `get_initial_page_data()` builds the
+  Indicator Digest Page entirely from stored data (no network calls);
+  `check_for_updates()`, called by the page's own background script,
+  does the real FRED pull. Nothing new (or a failed check) costs a FRED
+  call but never a Gemini call; only a genuinely new value triggers a
+  release-calendar refresh, a fresh AI interpretation, and a save. The
+  table and the AI section carry independent freshness.
+- `src/web/page_template.py` — HTML rendering for both pages (plain
+  string-building, matching `mailer/email_template.py`'s convention).
+  Each Indicator Digest Page row gets an inline-SVG trend sparkline. A
+  "Checking for updates..." indicator shows for the duration of each
+  page's background check.
+- `src/web/ticker_dashboard.py` — reads `config/tickers.json`'s groups,
+  fetches quote/52-week-range from Finnhub and daily closes from Yahoo
+  per ticker (concurrently, `ThreadPoolExecutor`), computes moving
+  averages and percent-off-high, and persists a snapshot cache
+  (`data/tickers.json`) so `/tickers` renders instantly and refreshes
+  live in the background.
+- `src/web/app.py` — the Flask app: `GET /` and `GET /tickers` render
+  instantly from stored data; `GET /api/check` and
+  `GET /api/check-tickers` are what each page's inline `<script>` calls
+  in the background, returning HTML fragments as JSON. Bound explicitly
+  to `127.0.0.1` (never `0.0.0.0`) — no authentication layer, since the
+  app is never network-reachable.
 
 ### Run it
 
 ```
 pip install -r requirements.txt
-export FRED_API_KEY=your_key_here
-export GEMINI_API_KEY=your_key_here        # optional — page still works without it, AI section just stays absent
+set -a && source .env && set +a
 python3 src/web/app.py
 ```
 
-Then open `http://127.0.0.1:5000/` in a browser. It renders immediately
-from stored data, then checks for updates in the background — you'll
-only see anything change if the check finds a genuinely new value.
+Then open `http://127.0.0.1:5000/`. Both pages render immediately from
+stored data, then check for updates in the background.
 
-**Known trade-off:** a background check that finds new data writes to
-the same `data/indicators.json` the GitHub Actions workflow commits, so
-that run will leave the file modified in your working tree (`git
-status` will show it dirty) until you commit or discard it. This never
-corrupts history or double-counts a value — ingestion is idempotent
-(dedup by date) — it's purely a local working-tree diff. A check that
-finds nothing new never touches the file at all.
+**Known trade-off:** a background check that finds new indicator data
+writes to the same `data/indicators.json` the GitHub Actions workflow
+commits, leaving the file modified in your working tree until you
+commit or discard it. Ingestion is idempotent (dedup by date), so this
+is a working-tree diff, not a data-integrity issue.

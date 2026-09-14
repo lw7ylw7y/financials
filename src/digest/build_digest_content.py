@@ -1,5 +1,5 @@
 """Shared table/countdown/AI-assembly logic (Stories 4/5/6), extracted
-out of post_release.py so the weekly digest email and the v1.1
+out of post_release.py so the weekly digest email and the v2
 Indicator Digest Page's on-demand live pull build identical content
 from identical logic — one code path, not two divergent ones.
 

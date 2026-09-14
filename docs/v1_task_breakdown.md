@@ -19,7 +19,7 @@
 - Mock FRED response → correct value/date parsed and returned
 - One indicator's mocked call raises an exception → other 7 still process, error is logged with indicator name + timestamp
 - Re-running with an unchanged value → no duplicate processing triggered (per Story 1 AC)
-- An older-dated or same-date-but-revised value (simulating a stale/cached FRED response) is ignored, not appended, and logged as a warning — only a strictly newer date is treated as new (found while building Story 2; fixed in `main.py`'s dedup check alongside it)
+- An older-dated or same-date-but-revised value (simulating a stale/cached FRED response) is ignored, not appended, and logged as a warning — only a strictly newer date is treated as new
 - Each returned indicator record carries the correct category tag
 
 ---
@@ -64,13 +64,10 @@
 ## Story 4/5/6 — Digest Email (Holistic AI + Table + Countdown)
 
 One email, one module (`post_release.py`) — not three separately-shipped
-features. All done: `interpret.py`'s Gemini call now reasons holistically
-across all 8 indicators in one call per run (not per indicator),
-`post_release.py` builds the table (Story 5) and countdown (Story 6),
-and the send itself is throttled to a weekly rollup (added after real
-end-to-end testing showed daily-updating indicators, e.g. the yield
-curve spread, would otherwise trigger an email on nearly every 6-hour
-ingestion check) — sent only when something's updated since the last
+features. `interpret.py`'s Gemini call reasons holistically across all 8
+indicators in one call per run, `post_release.py` builds the table
+(Story 5) and countdown (Story 6), and the send is throttled to a
+weekly rollup — sent only when something's updated since the last
 digest AND at least a week has passed since then.
 
 | Task | Status |
@@ -111,14 +108,11 @@ digest AND at least a week has passed since then.
 | Secrets set on the repo (`gh secret set --env-file`, from local `.env`) — `FRED_API_KEY`, `GEMINI_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | done |
 | Git commit-and-push step from within the workflow, with explicit `permissions: contents: write` so it doesn't depend on the repo's default token permission setting | done |
 
-End-to-end dry run against real FRED + Gemini + Gmail (not mocks) is
-**done** — verified manually (both the earlier per-indicator-email
-design and, later, the current consolidated digest email with real AI
-content confirmed delivered).
+End-to-end dry run against real FRED + Gemini + Gmail (not mocks) is done.
 
 **Tests**
-- [x] Full workflow run on a manual trigger (`workflow_dispatch`) completes without error against live APIs — run [34648940255](https://github.com/lw7ylw7y/financials/actions/runs/34648940255): secrets correctly masked, a real Gemini `503` was retried and succeeded, digest email sent (first-ever send under the new throttle, since `last_digest_sent_at` didn't exist in the data before this)
-- [x] Workflow correctly commits and pushes updated `indicators.json` — commit `ef4f518`, pushed by the workflow itself
+- [x] Full workflow run on a manual trigger (`workflow_dispatch`) completes without error against live APIs — secrets correctly masked, a real Gemini `503` was retried and succeeded, digest email sent
+- [x] Workflow correctly commits and pushes updated `indicators.json`
 - [ ] Scheduled trigger fires at the expected cron time — not yet verified; needs ≥24h of real elapsed time to observe in Actions run history
 
 ---

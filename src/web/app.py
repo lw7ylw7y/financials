@@ -1,4 +1,4 @@
-"""Local Flask app for the v1.1 web dashboard: the Indicator Digest Page
+"""Local Flask app for the v2 web dashboard: the Indicator Digest Page
 (Story 1/1a, "/") and the Ticker Dashboard (Story 2/3, "/tickers",
 plus its inline watchlist editor, Story 7, "/api/tickers/add" and
 "/api/tickers/remove"). Bound to loopback only (127.0.0.1), never
