@@ -166,8 +166,10 @@ news.
   instantly from stored data; `GET /api/check` and
   `GET /api/check-tickers` are what each page's inline `<script>` calls
   in the background, returning HTML fragments as JSON. Bound explicitly
-  to `127.0.0.1` (never `0.0.0.0`) — no authentication layer, since the
-  app is never network-reachable.
+  to `127.0.0.1` (never `0.0.0.0`) for local dev. Every route (including
+  the `/api/*` ones) sits behind an HTTP Basic Auth gate when
+  `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` are both set (for a hosted
+  deployment); with neither set, as in local dev, auth is a no-op.
 
 ### Run it
 

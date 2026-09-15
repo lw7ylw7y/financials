@@ -195,19 +195,19 @@ Dependency-driven:
 
 ## Epic: Hosted Live Dashboard (v2.1)
 
-| Task | Estimate |
-|---|---|
-| H.1 Add `gunicorn` to `requirements.txt`; confirm it can import `app.py` given the project's `sys.path.insert` convention (add a thin entry-point shim if not) | 1h |
-| H.2 `app.py` — Basic Auth `before_request` hook gated on `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` being set | 1h |
-| H.3 `src/web/kv_store.py` — Upstash REST wrapper (`get_json`/`set_json`) | 1h |
-| H.4 `ticker_dashboard.py` — branch config/cache load+save through `kv_store.py` when `UPSTASH_REDIS_REST_URL` is set, else local files (unchanged path) | 2h |
-| H.5 Seed-on-first-read: Redis-backed `load_ticker_config()` initializes from the repo's `config/tickers.json` when the Redis key is empty | 1h |
-| H.6 Render setup: create the web service, connect the GitHub repo, enable auto-deploy on push to `main`, set all required env vars | 0.5h |
-| H.7 Tests (below) | 2h |
-| **Subtotal** | **8.5h** |
+| Task | Estimate | Status |
+|---|---|---|
+| H.1 Add `gunicorn` to `requirements.txt`; confirm it can import `app.py` given the project's `sys.path.insert` convention (add a thin entry-point shim if not) | 1h | not started |
+| H.2 `app.py` — Basic Auth `before_request` hook gated on `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` being set | 1h | done |
+| H.3 `src/web/kv_store.py` — Upstash REST wrapper (`get_json`/`set_json`) | 1h | not started |
+| H.4 `ticker_dashboard.py` — branch config/cache load+save through `kv_store.py` when `UPSTASH_REDIS_REST_URL` is set, else local files (unchanged path) | 2h | not started |
+| H.5 Seed-on-first-read: Redis-backed `load_ticker_config()` initializes from the repo's `config/tickers.json` when the Redis key is empty | 1h | not started |
+| H.6 Render setup: create the web service, connect the GitHub repo, enable auto-deploy on push to `main`, set all required env vars | 0.5h | not started |
+| H.7 Tests (below) | 2h | partial — auth tests done (`tests/test_app.py`); kv_store/ticker_dashboard Redis tests pending Story 9 |
+| **Subtotal** | **8.5h** | |
 
 **Tests**
-- Auth: a request with no/invalid credentials gets 401 when `DASHBOARD_USERNAME`/`PASSWORD` are set; unauthenticated access works when they're unset (local-dev default)
+- Auth: a request with no/invalid credentials gets 401 when `DASHBOARD_USERNAME`/`PASSWORD` are set; unauthenticated access works when they're unset (local-dev default) — done, `tests/test_app.py`
 - `kv_store`: mocked Upstash REST responses → `get_json`/`set_json` round-trip correctly; a non-200 response is surfaced as an error, not silently swallowed
 - `ticker_dashboard`: with a mocked Redis backend configured, config load/save and cache read/write go through `kv_store` instead of the filesystem
 - `ticker_dashboard`: with no Redis env vars set, behavior is identical to the existing local-file tests (regression)

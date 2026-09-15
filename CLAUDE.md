@@ -57,6 +57,7 @@ source .env && set +a`) before running anything that needs them.
 | `GEMINI_API_KEY` | AI interpretation — optional; both the email and the web page degrade gracefully (no AI section) without it |
 | `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | sending the digest email |
 | `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range/market-cap/P-E fetch and the market-news feed — without it, the background check's live fetch fails for every ticker and for market news, each falling back to its own cached data (`data/tickers.json`/`data/market_news.json`) where a cache exists, or an error/unavailable state where none does; Story 2's config loading needs no API key |
+| `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` | HTTP Basic Auth in front of every `src/web/app.py` route (Story 8) — set on a hosted deployment; both unset (the local-dev default) leaves auth off entirely, unchanged from before Story 8 |
 
 ## Architecture
 
@@ -83,7 +84,10 @@ src/
             as plain inline SVG, since browsers don't have that limitation)
   web/      app.py (Flask routes: GET "/", GET "/tickers", GET "/api/check",
             GET "/api/check-tickers", POST "/api/tickers/add", POST
-            "/api/tickers/remove"), live_pull.py (stored-only render +
+            "/api/tickers/remove"; _require_auth() before_request hook
+            gates every route behind HTTP Basic Auth when
+            DASHBOARD_USERNAME/PASSWORD are both set, no-op otherwise
+            — Story 8), live_pull.py (stored-only render +
             gated background live-check for the Indicator Digest Page),
             page_template.py (HTML string rendering for both pages,
             mirrors email_template.py's plain-string-building
@@ -311,6 +315,19 @@ callables for this.
   *not* redirect a call using the default arg (Python binds defaults at
   def-time) — always pass `path=`/`state_path=` explicitly when testing
   against a throwaway file, as the test suite already does.
+- Auth gate (Story 8, app-code half only — see `docs/v2_technical_design.md`
+  Section 11.2): `app.py`'s `_require_auth` `before_request` hook requires
+  HTTP Basic Auth matching `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` on
+  every route, including the `/api/*` ones, using `secrets.compare_digest`
+  for a timing-safe comparison. It's a no-op unless *both* env vars are
+  set, so local dev (where neither is set) is unaffected — this is the
+  intentional interpretation of "if set" in Story 8's AC for the
+  partially-configured case (only one of the two set), to avoid an
+  accidental lockout from a typo'd env var name. Covered by
+  `tests/test_app.py`. The rest of Story 8 (actually hosting the app
+  publicly over HTTPS — task H.6, Render setup) is still open; the
+  Redis-backed persistence work needed for a stateless host (Story 9) is
+  also still open.
 - When behavior actually changes, keep these in sync (all checkbox/prose
   acceptance-criteria style, not auto-generated): `docs/investment_dashboard_requirements.md`,
   `docs/v2_user_stories.md`, `docs/v2_technical_design.md`,

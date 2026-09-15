@@ -4,13 +4,17 @@ plus its inline watchlist editor, Story 7, "/api/tickers/add" and
 "/api/tickers/remove"). Bound to loopback only (127.0.0.1), never
 0.0.0.0, so it is unreachable from anything but the machine it's
 running on, per the local-only hosting decision in Section 4.1 of
-investment_dashboard_requirements.md. No authentication layer:
-unnecessary when the app can never be reached from outside the machine
-itself -- including for the editor routes, which write to
-config/tickers.json on disk.
+investment_dashboard_requirements.md.
+
+Auth (Story 8, Section 11.2 of the tech design): `_require_auth` gates
+every route behind HTTP Basic Auth when both `DASHBOARD_USERNAME` and
+`DASHBOARD_PASSWORD` are set (the hosted deployment) -- it's a no-op
+when either is unset, which is local development's default, so running
+this file locally with no env vars behaves exactly as it always has.
 """
 
 import os
+import secrets
 import sys
 
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,7 +24,7 @@ for _subdir in ("fred", "storage", "digest", "mailer"):
 sys.path.insert(0, _SRC_DIR)
 sys.path.insert(0, _WEB_DIR)
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 from live_pull import check_for_updates, get_initial_page_data
 from page_template import (
@@ -40,6 +44,34 @@ from ticker_dashboard import (
 )
 
 app = Flask(__name__)
+
+
+@app.before_request
+def _require_auth():
+    """HTTP Basic Auth in front of every route (Story 8). Both
+    `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` must be set to turn
+    this on -- e.g. the hosted deployment's env vars -- otherwise it's
+    a no-op, which is local development's default. `secrets.compare_digest`
+    avoids leaking credential length/prefix through timing.
+    """
+    username = os.environ.get("DASHBOARD_USERNAME")
+    password = os.environ.get("DASHBOARD_PASSWORD")
+    if not username or not password:
+        return None
+
+    auth = request.authorization
+    if (
+        auth
+        and secrets.compare_digest(auth.username or "", username)
+        and secrets.compare_digest(auth.password or "", password)
+    ):
+        return None
+
+    return Response(
+        "Authentication required.",
+        401,
+        {"WWW-Authenticate": 'Basic realm="Investment Dashboard"'},
+    )
 
 
 @app.route("/")
