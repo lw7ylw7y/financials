@@ -228,7 +228,7 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
     def test_renders_column_headers(self):
         html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
 
-        self.assertIn("<th>Ticker</th>", html)
+        self.assertIn('<th class="sortable" data-sort-key="symbol">Ticker</th>', html)
         self.assertIn(">Change<", html)
         self.assertIn("52-Week Range", html)
         self.assertIn("% Off High", html)
@@ -377,59 +377,29 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
 
         self.assertIn("n/a", html)
 
-    def test_highlight_count_scales_with_group_size(self):
-        # ceil(group_size / 4): 3 tickers -> 1, 8 -> 2, 10 -> 3.
-        for group_size, expected_highlighted in ((3, 1), (8, 2), (10, 3)):
-            with self.subTest(group_size=group_size):
-                cards = [
-                    make_card(symbol=f"S{i}", pct_off_high=float(group_size - i))
-                    for i in range(group_size)
-                ]  # S0 has the highest pct_off_high, S1 next, etc.
+    def test_renders_sort_data_attributes_on_rows(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(symbol="SPY", pct_off_high=5.8)]}, NO_NEWS)
 
-                html = render_ticker_dashboard_page({"stocks": cards}, NO_NEWS)
+        row = row_for(html, "SPY")
+        self.assertIn('data-symbol="SPY"', row)
+        self.assertIn('data-pct-off-high="5.8"', row)
 
-                self.assertEqual(html.count('class="row-highlight"'), expected_highlighted)
-                for i in range(expected_highlighted):
-                    symbol = f"S{i}"
-                    row = row_for(html, symbol)
-                    self.assertIn('class="row-highlight"', row, f"{symbol} should be highlighted in a group of {group_size}")
-
-    def test_small_group_still_highlights_at_least_one(self):
-        cards = [make_card(symbol="A", pct_off_high=1.0), make_card(symbol="B", pct_off_high=2.0)]
-
-        html = render_ticker_dashboard_page({"stocks": cards}, NO_NEWS)
-
-        self.assertEqual(html.count('class="row-highlight"'), 1)
-        self.assertIn('class="row-highlight"', row_for(html, "B"))
-
-    def test_pending_and_errored_rows_are_never_highlighted(self):
+    def test_pending_and_errored_rows_have_empty_pct_off_high_attribute(self):
         cards = [
             make_pending_card(symbol="PENDING"),
             make_card(symbol="ERRORED", pct_off_high=None, price=None, error="boom"),
-            make_card(symbol="OK", pct_off_high=1.0),
         ]
 
         html = render_ticker_dashboard_page({"stocks": cards}, NO_NEWS)
 
-        self.assertEqual(html.count('class="row-highlight"'), 1)
-        self.assertIn('class="row-highlight"', row_for(html, "OK"))
+        self.assertIn('data-pct-off-high=""', row_for(html, "PENDING"))
+        self.assertIn('data-pct-off-high=""', row_for(html, "ERRORED"))
 
-    def test_ranking_is_per_group_not_global(self):
-        # "stocks" has 8 tickers with generally higher pct_off_high than
-        # "bonds" -- bonds' own top pick must still get highlighted even
-        # though it's far below stocks' cutoff, since ranking is per-group.
-        stocks = [
-            make_card(symbol=s, pct_off_high=v)
-            for s, v in [("A", 90), ("B", 80), ("C", 70), ("D", 60), ("E", 50), ("F", 40), ("G", 30), ("H", 20)]
-        ]
-        bonds = [make_card(symbol=s, pct_off_high=v) for s, v in [("X", 5.0), ("Y", 2.0)]]
+    def test_renders_sortable_headers_with_sort_keys(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
 
-        html = render_ticker_dashboard_page({"stocks": stocks, "bonds": bonds}, NO_NEWS)
-
-        self.assertIn('class="row-highlight"', row_for(html, "X"))
-        self.assertNotIn("row-highlight", row_for(html, "Y"))
-        # stocks (8 tickers) highlights 2 (A, B), not down through H
-        self.assertNotIn("row-highlight", row_for(html, "H"))
+        self.assertIn('<th class="sortable" data-sort-key="symbol">Ticker</th>', html)
+        self.assertIn('<th class="num sortable" data-sort-key="pctOffHigh">% Off High</th>', html)
 
     def test_renders_range_bar_gradient_and_marker(self):
         html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)

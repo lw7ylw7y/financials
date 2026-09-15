@@ -71,7 +71,7 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - **Each moving average** shows the value plus how far the current price sits above/below it, as both a color (green above, red below — same convention as the AI directional badges) and a signed arrow+percentage
 - **Percent off 52-week high** — its own column, the exact number behind the range bar's visual read; drives the buy decision directly
 - **Change since last close** — its own column, current session's move versus the previous close (absolute and %), colored green-up/red-down
-- **Top-discount row highlight** — within each group, roughly the top quarter of tickers (rounded up, minimum 1) by percent off their 52-week high get a faint green row background. Ranked per group, not across the whole page
+- **Sortable columns** — clicking the Ticker or % Off High header sorts that group's table by it (ascending, click again for descending); pending/errored rows (no ranking value) always sort last regardless of direction. Sorting is per table/group, purely client-side, and resets on the next live refresh
 - No recent-news column
 - **US stock market news**, shown once at the top of the page, above the grouped ticker tables — a short feed of general market headlines
 - **Loads instantly from a local snapshot cache, then refreshes live in the background** — same pattern as the Indicator Digest Page. A ticker with no cached data yet renders as a loading placeholder; a ticker whose live fetch fails falls back silently to its last cached values, with an error state reserved for a ticker that's never been fetched successfully. Unlike the indicator pipeline, this background check always re-fetches every ticker live — there's no AI call to gate around

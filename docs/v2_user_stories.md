@@ -62,7 +62,7 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] The page's initial paint shows the last cached snapshot instantly, with a background check re-fetching live moments later (Story 5)
 - [x] **Percent off 52-week high** — its own column, computed from price + the existing 52-week range, no new data source
 - [x] **Change since last close** — its own column, current session's absolute and % move versus the previous close, colored with the same green-up/red-down convention as the moving-average deltas
-- [x] **Top-discount row highlight** — within each group, roughly the top quarter of tickers (rounded up, minimum 1) by percent off their 52-week high get a faint green row background. Ranked per group, not across the whole page; pending/errored rows are never eligible
+- [x] **Sortable columns** — the Ticker and % Off High column headers are clickable and sort that group's table (ascending, then descending on a second click); pending/errored rows always sort last regardless of direction; sorting is independent per group table
 - [x] **Market Cap** and **P/E (trailing)** — their own columns, sourced from the same Finnhub call already used for the 52-week range (no new fetch); either renders "n/a" rather than erroring the row when Finnhub has no value for that symbol
 
 ---

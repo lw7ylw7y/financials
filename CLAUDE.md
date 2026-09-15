@@ -88,8 +88,8 @@ src/
             page_template.py (HTML string rendering for both pages,
             mirrors email_template.py's plain-string-building
             convention — no templating engine; also renders the shared
-            _render_nav() linking the two pages, the top-discount row
-            highlight, and the inline ticker-editor controls),
+            _render_nav() linking the two pages, the click-to-sort
+            ticker-table headers, and the inline ticker-editor controls),
             ticker_dashboard.py (load_ticker_config() reads
             config/tickers.json's groups as an open map in file order,
             skips malformed symbols; build_ticker_cards() does the
@@ -275,12 +275,16 @@ callables for this.
   ticker-card split at whole-section granularity, riding along in the same
   `/api/check-tickers` round trip rather than a new route (its JSON response
   carries a `news_html` field).
-- Within each ticker group, the tickers with the highest `pct_off_high`
-  (biggest discount from their own 52-week high) get a faint green
-  `.row-highlight` background (`page_template._top_discount_symbols`) —
-  ranked per group, not globally. How many get highlighted scales with
-  group size (`ceil(group_size / TOP_DISCOUNT_HIGHLIGHT_DIVISOR)`,
-  `DIVISOR = 4`, minimum 1) rather than a fixed count.
+- Each group's table can be sorted by clicking the Ticker or % Off High
+  header (ascending, then descending on a second click) — pure client-side
+  DOM reordering (`render_ticker_dashboard_page`'s inline `<script>`, event-
+  delegated on `#ticker-groups`), driven by `data-symbol`/`data-pct-off-high`
+  attributes `_render_ticker_row` puts on each `<tr>` and `data-sort-key` on
+  the two `<th>`s. Pending/errored rows (empty `data-pct-off-high`) always
+  sort last regardless of direction. Sorting is per table/group and resets
+  on the next `/api/check-tickers` refresh, since that swaps `#ticker-groups`
+  wholesale. The earlier top-discount row highlight (Story 3) was removed
+  in favor of this — don't re-add it without the user explicitly asking.
 - Market Cap and trailing P/E: `finnhub_client.fetch_stock_metrics()` (the
   successor to the old `fetch_52_week_range()` — same `/stock/metric` call,
   now also pulling `marketCapitalization` and `peTTM` with fallback through

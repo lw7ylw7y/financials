@@ -226,11 +226,23 @@ body {
 
 .market-news-list a { color: inherit; }
 
-/* .indicator-table tr.row-highlight matches .indicator-table
-   tr:nth-child(even)'s specificity exactly and is declared later, so it
-   wins the zebra stripe on tie-break. A translucent green rather than a
-   flat hex so it reads consistently against either theme's row background. */
-.indicator-table tr.row-highlight { background: rgba(21, 128, 61, 0.14); }
+.ticker-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ticker-table th.sortable:hover { color: var(--text); }
+
+.ticker-table th.sortable::after {
+  content: "\21C5";
+  display: inline-block;
+  margin-left: 4px;
+  opacity: 0.5;
+  font-size: 10px;
+}
+
+.ticker-table th.sortable.sort-asc::after { content: "\25B2"; opacity: 1; }
+.ticker-table th.sortable.sort-desc::after { content: "\25BC"; opacity: 1; }
 
 .remove-ticker {
   border: none;

@@ -11,7 +11,6 @@ drift out of sync on wording or meaning, even though the markup itself
 is page-specific.
 """
 
-import math
 import os
 import sys
 from html import escape
@@ -368,32 +367,6 @@ def _render_pe_cell(pe_ratio: float | None) -> str:
     return f'<td class="num">{pe_ratio:.1f}</td>'
 
 
-TOP_DISCOUNT_HIGHLIGHT_DIVISOR = 4  # highlight the top ~1/4 of each group (rounded up)
-
-
-def _top_discount_symbols(cards: list[dict]) -> set[str]:
-    """The top ~1/4 of `cards` (rounded up, so any non-empty group
-    highlights at least 1) by `pct_off_high` -- i.e. furthest below
-    their own 52-week high, the biggest discount from peak within the
-    group. A fixed count would either over-highlight a small group or
-    barely register in a large one, so this scales with the group's
-    size: 3 tickers -> 1, 8 -> 2, 10 -> 3. The quota is based on the
-    group's full size (including any pending/errored cards), but only
-    cards with a `pct_off_high` are eligible to actually fill it --
-    pending/errored tickers can't be ranked, so they're skipped rather
-    than counted as "highlighted". Ties beyond the cutoff aren't
-    included -- a plain positional top-N, not "all tickers tied for
-    last place".
-    """
-    n = math.ceil(len(cards) / TOP_DISCOUNT_HIGHLIGHT_DIVISOR)
-    ranked = sorted(
-        (c for c in cards if c.get("pct_off_high") is not None),
-        key=lambda c: c["pct_off_high"],
-        reverse=True,
-    )
-    return {c["symbol"] for c in ranked[:n]}
-
-
 def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
     """A small "x" on every row (pending/errored/live alike -- removal
     doesn't depend on a successful fetch) that posts to
@@ -412,13 +385,21 @@ def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
 _TICKER_DATA_COLUMN_COUNT = 9  # Price, Change, 52-Week Range, % Off High, Market Cap, P/E, 20d/50d/200d MA
 
 
-def _render_ticker_row(card: dict, highlighted: bool = False) -> str:
-    row_class = ' class="row-highlight"' if highlighted else ""
+def _render_ticker_row(card: dict) -> str:
+    """`data-symbol`/`data-pct-off-high` on the `<tr>` are read by the
+    page's own client-side sort script (see render_ticker_dashboard_page)
+    so a click on the Ticker/% Off High header can reorder rows without a
+    server round trip; `data-pct-off-high` is left empty for a pending or
+    errored card, which the sort script treats as sorting last rather than
+    as zero."""
+    symbol_attr = escape(card["symbol"], quote=True)
+    pct_off_high_attr = "" if card["pct_off_high"] is None else f"{card['pct_off_high']}"
+    row_attrs = f' data-symbol="{symbol_attr}" data-pct-off-high="{pct_off_high_attr}"'
     remove_cell = f"<td>{_render_remove_ticker_button(card['symbol'], card['group'])}</td>"
 
     if card["pending"]:
         return f"""
-              <tr{row_class}>
+              <tr{row_attrs}>
                 <td>{escape(card['symbol'])}</td>
                 <td colspan="{_TICKER_DATA_COLUMN_COUNT}" class="muted">Loading&hellip;</td>
                 {remove_cell}
@@ -426,14 +407,14 @@ def _render_ticker_row(card: dict, highlighted: bool = False) -> str:
 
     if card["error"]:
         return f"""
-              <tr{row_class}>
+              <tr{row_attrs}>
                 <td>{escape(card['symbol'])}</td>
                 <td colspan="{_TICKER_DATA_COLUMN_COUNT}" class="muted">Unable to load data.</td>
                 {remove_cell}
               </tr>"""
 
     return f"""
-              <tr{row_class}>
+              <tr{row_attrs}>
                 <td>{escape(card['symbol'])}</td>
                 <td class="num">${card['price']:,.2f}</td>
                 {_render_change_cell(card['change'], card['change_percent'])}
@@ -467,31 +448,27 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
     pending/errored ticker stands in for any row not yet fetched or
     whose fetch failed, without affecting the other rows.
 
-    Within each group, the top ~1/4 of tickers (see
-    `_top_discount_symbols`) by `pct_off_high` (furthest below their own
-    52-week high) get a faint green row highlight -- ranked per group,
-    not across the whole page, since a "biggest discount" comparison
-    across unrelated asset classes (bonds vs. individual stocks, say)
-    wouldn't mean much.
+    The Ticker and % Off High headers carry `class="sortable"` plus a
+    `data-sort-key` the page's own client-side script (see
+    render_ticker_dashboard_page) uses to reorder a table's rows in
+    place on click -- sorting is purely a DOM reshuffle of the rows
+    already rendered here, not a server round trip, and each table
+    sorts independently of the others.
     """
     sections = []
     for group_name, cards in grouped_cards.items():
-        highlighted_symbols = _top_discount_symbols(cards)
-        row_html = "".join(
-            _render_ticker_row(card, highlighted=card["symbol"] in highlighted_symbols)
-            for card in cards
-        )
+        row_html = "".join(_render_ticker_row(card) for card in cards)
         sections.append(f"""
         <div class="category-block">
           <p class="category-label">{escape(_group_header(group_name))}</p>
           <table class="indicator-table ticker-table">
             <thead>
               <tr>
-                <th>Ticker</th>
+                <th class="sortable" data-sort-key="symbol">Ticker</th>
                 <th class="num">Price</th>
                 <th class="num">Change</th>
                 <th>52-Week Range</th>
-                <th class="num">% Off High</th>
+                <th class="num sortable" data-sort-key="pctOffHigh">% Off High</th>
                 <th class="num">Market Cap</th>
                 <th class="num">P/E</th>
                 <th class="num">20d MA</th>
@@ -590,6 +567,33 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
 
     var tickerGroups = document.getElementById('ticker-groups');
     tickerGroups.addEventListener('click', function(e) {{
+      var th = e.target.closest('th[data-sort-key]');
+      if (th) {{
+        var table = th.closest('table');
+        var newDir = th.classList.contains('sort-asc') ? 'desc' : 'asc';
+        table.querySelectorAll('th[data-sort-key]').forEach(function(other) {{
+          other.classList.remove('sort-asc', 'sort-desc');
+        }});
+        th.classList.add('sort-' + newDir);
+        var mult = newDir === 'asc' ? 1 : -1;
+        var key = th.dataset.sortKey;
+        var tbody = table.querySelector('tbody');
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+        rows.sort(function(a, b) {{
+          if (key === 'symbol') {{
+            return mult * a.dataset.symbol.localeCompare(b.dataset.symbol);
+          }}
+          var av = a.dataset.pctOffHigh === '' ? null : parseFloat(a.dataset.pctOffHigh);
+          var bv = b.dataset.pctOffHigh === '' ? null : parseFloat(b.dataset.pctOffHigh);
+          if (av === null && bv === null) return 0;
+          if (av === null) return 1;
+          if (bv === null) return -1;
+          return mult * (av - bv);
+        }});
+        rows.forEach(function(r) {{ tbody.appendChild(r); }});
+        return;
+      }}
+
       var btn = e.target.closest('.remove-ticker');
       if (!btn) return;
       var group = btn.dataset.group, symbol = btn.dataset.symbol;
