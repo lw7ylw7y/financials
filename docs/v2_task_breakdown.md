@@ -197,7 +197,7 @@ Dependency-driven:
 
 | Task | Estimate | Status |
 |---|---|---|
-| H.1 Add `gunicorn` to `requirements.txt`; confirm it can import `app.py` given the project's `sys.path.insert` convention (add a thin entry-point shim if not) | 1h | not started |
+| H.1 Add `gunicorn` to `requirements.txt`; confirm it can import `app.py` given the project's `sys.path.insert` convention (add a thin entry-point shim if not) | 1h | done — no shim needed, `gunicorn --chdir src/web app:app` (Section 11.5) |
 | H.2 `app.py` — Basic Auth `before_request` hook gated on `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` being set | 1h | done |
 | H.3 `src/web/kv_store.py` — Upstash REST wrapper (`get_json`/`set_json`) | 1h | not started |
 | H.4 `ticker_dashboard.py` — branch config/cache load+save through `kv_store.py` when `UPSTASH_REDIS_REST_URL` is set, else local files (unchanged path) | 2h | not started |
