@@ -245,10 +245,11 @@ graph TD
 
 Nothing about the existing route logic changes — `app.py`, `live_pull.py`, and `ticker_dashboard.py`'s business logic are the same whether run locally or hosted. Only two things are added in front of/underneath them: an auth gate, and a storage backend swap for the two ticker-related JSON blobs that have no other durable home.
 
-### 11.2 Auth gate
-- `app.py` gains a `before_request` hook comparing the request's `Authorization: Basic` header against `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` env vars — hand-rolled, no new dependency, matching this project's minimal-dependency convention
-- If neither env var is set (the local-dev default), the hook is a no-op — local behavior is unchanged
-- If set, every route (including `/api/check*`) requires valid credentials; a missing/incorrect header returns 401 with a `WWW-Authenticate` challenge so the browser prompts for credentials natively
+### 11.2 Auth gate — implemented
+- `app.py`'s `_require_auth` `before_request` hook compares the request's `Authorization: Basic` header against `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` env vars, via `secrets.compare_digest` — hand-rolled, no new dependency, matching this project's minimal-dependency convention
+- If either env var is unset (the local-dev default), the hook is a no-op — local behavior is unchanged. (Read literally, the story's AC only calls out "neither set"; treating "only one set" the same way — auth off — was a deliberate choice to avoid an accidental lockout from a typo'd env var name.)
+- If both are set, every route (including `/api/check*`) requires valid credentials; a missing/incorrect header returns 401 with a `WWW-Authenticate` challenge so the browser prompts for credentials natively
+- Covered by `tests/test_app.py`; verified locally including under gunicorn (Section 11.5)
 
 ### 11.3 `kv_store.py` — Upstash Redis wrapper
 - Thin wrapper using `requests` against Upstash's REST API (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, bearer-token auth) — no Redis client library needed, matching `finnhub_client.py`/`yahoo_client.py`'s plain-`requests` convention
@@ -268,4 +269,5 @@ Nothing about the existing route logic changes — `app.py`, `live_pull.py`, and
 ### 11.6 Open Questions / Risks
 - Cold starts (seconds to under a minute) after idle spin-down — accepted tradeoff for free hosting
 - Upstash's free-tier request quota (10K commands/day) should comfortably cover one user's occasional page loads, but worth confirming once real usage is observed
-- gunicorn + this project's `sys.path.insert` import convention hasn't been verified together yet — flagged as the first thing to confirm once deployment is attempted
+- ~~gunicorn + this project's `sys.path.insert` import convention hasn't been verified together yet~~ — confirmed locally (Section 11.5), no shim needed
+- HTTP Basic Auth (Section 11.2) is implemented and locally verified, but not yet exercised over real HTTPS on Render — confirm once H.6 is attempted, since Basic Auth's security depends entirely on TLS actually terminating in front of it
