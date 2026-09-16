@@ -161,7 +161,11 @@ news.
   per ticker (concurrently, `ThreadPoolExecutor`), computes moving
   averages and percent-off-high, and persists a snapshot cache
   (`data/tickers.json`) so `/tickers` renders instantly and refreshes
-  live in the background.
+  live in the background. The watchlist and both caches read/write
+  through `src/web/kv_store.py` (Upstash Redis) instead of local files
+  when `UPSTASH_REDIS_REST_URL` is set — for a hosted deployment, whose
+  local disk doesn't survive a restart; unset (local dev's default)
+  behaves exactly as before.
 - `src/web/app.py` — the Flask app: `GET /` and `GET /tickers` render
   instantly from stored data; `GET /api/check` and
   `GET /api/check-tickers` are what each page's inline `<script>` calls

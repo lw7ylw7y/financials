@@ -96,6 +96,7 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - Cycle-change / "market top" composite indicator (combining macro + sector signals) to support rare sell decisions
 - **Ticker Email Alerts** — email delivery, mirroring current Fidelity behavior, via a background job that checks prices independent of whether the dashboard is open; trigger conditions: price crosses a set threshold, price crosses the 20-day or 200-day moving average, price moves a set % above 52-week low or below 52-week high
 - **Discount-Buy Thresholds** — alert when a ticker is a configurable % off its 52-week high, with a global default and per-ticker override; reuses the Ticker Email Alerts pipeline above
+- **React frontend** for the Ticker Dashboard (possibly the Indicator Digest Page too) — replace the current plain-string HTML rendering (`page_template.py`) with a proper componentized frontend, so each section (a ticker group, market news, etc.) is its own component that can update independently, instead of the current design where `/api/check-tickers` returns one HTML blob and the page's script replaces `#ticker-groups` wholesale. Would also be the natural foundation for progressive/group-by-group loading (see Section 8's note on the 36-ticker gunicorn-timeout fix) without needing bespoke per-group routes bolted onto the string-templating approach in the meantime
 
 ## 6. Data Sources
 | Need | Source | Notes |
@@ -134,6 +135,8 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - Free-tier data APIs (v2 ticker dashboard) carry rate limits and/or ~20 min delay; acceptable given usage pattern, flagged as a future constraint if needs change
 - Gmail requires generating an "app password" (not your regular password) to send via SMTP from a script
 - Commit-based storage means each workflow run needs write access to push back to the repo
+- **Confirmed on the first hosted deploy:** `/api/check-tickers` fetches all 36 tickers (across every group) in one request before returning anything; on Render's free tier this occasionally exceeded gunicorn's default 30s worker timeout, killing the request with a 500. Fixed by raising the timeout (`--timeout 120` on the start command, `docs/v2_technical_design.md` Section 11.5) rather than restructuring the request — deliberately left as one big request for now (see the React-frontend backlog item above for the eventual sectioned/progressive alternative)
+- A local shell-sourced `.env` value containing a shell-special character (e.g. `|`) silently truncates at that character when `source .env` is used — a real local footgun independent of hosting; quote such values (`KEY='value'`) in `.env`
 
 ## 9. Explicitly Out of Scope (for now)
 - Trading execution (this is a monitoring/alerting tool, not a brokerage integration)

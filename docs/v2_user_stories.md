@@ -129,11 +129,11 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 **As** the investor, **I want** my watchlist edits and cached prices to survive a restart of the hosted app, **so that** the in-app ticker editor and the instant-load caches keep working the same way they do when run locally.
 
 **Acceptance Criteria**
-- [ ] When a Redis connection is configured (hosted deployment), `config/tickers.json`'s content, `data/tickers.json`'s cache, and `data/market_news.json`'s cache are all read from and written to Redis instead of local files
-- [ ] When no Redis connection is configured (local development), behavior is unchanged — the same local JSON files are used as today
-- [ ] On first read with nothing yet in Redis, the ticker config is seeded from the repo's committed `config/tickers.json`, so a fresh deploy starts with the existing watchlist rather than an empty one
-- [ ] Adding or removing a ticker through the in-app editor on the hosted deployment persists in Redis and survives a container restart
-- [ ] A Redis outage degrades gracefully: the ticker/news caches fall back to their existing "no cache yet" pending/error states rather than crashing the page; a failed ticker-config load fails loudly with a clear error rather than silently rendering an empty watchlist
+- [x] When a Redis connection is configured (hosted deployment), `config/tickers.json`'s content, `data/tickers.json`'s cache, and `data/market_news.json`'s cache are all read from and written to Redis instead of local files
+- [x] When no Redis connection is configured (local development), behavior is unchanged — the same local JSON files are used as today (verified: the full pre-existing test suite passes unmodified with no Redis env vars set)
+- [x] On first read with nothing yet in Redis, the ticker config is seeded from the repo's committed `config/tickers.json`, so a fresh deploy starts with the existing watchlist rather than an empty one
+- [ ] Adding or removing a ticker through the in-app editor on the hosted deployment persists in Redis and survives a container restart (code path implemented and unit-tested; not yet verified against a live Render+Upstash deployment — see `docs/v2_technical_design.md` Section 11.3's wire-format caveat)
+- [x] A Redis outage degrades gracefully: the ticker/news caches fall back to their existing "no cache yet" pending/error states rather than crashing the page; a failed ticker-config load fails loudly with a clear error rather than silently rendering an empty watchlist
 
 ---
 

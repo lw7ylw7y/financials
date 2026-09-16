@@ -4,6 +4,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 for _p in (
@@ -12,8 +13,11 @@ for _p in (
 ):
     sys.path.insert(0, _p)
 
+from kv_store import KvStoreError
 from ticker_dashboard import (
     CONFIG_PATH,
+    MARKET_NEWS_PATH,
+    TICKER_DATA_PATH,
     TickerConfigError,
     add_ticker_to_group,
     build_ticker_cards,
@@ -705,6 +709,146 @@ class TestRemoveTickerFromGroup(unittest.TestCase):
             groups = load_ticker_config(path)
             self.assertIn("stocks", groups)
             self.assertEqual(groups["stocks"], [])
+
+
+class TestRedisBackedTickerConfig(unittest.TestCase):
+    """Story 9: config/tickers.json's content is Redis-backed when
+    `kv_store.is_configured()` -- mocked here since these are unit
+    tests, not a live Upstash instance. `is_configured`/`get_json`/
+    `set_json` are patched on `ticker_dashboard` itself (not `kv_store`)
+    because `ticker_dashboard.py` imports those names directly via
+    `from kv_store import ...`, so patching the origin module wouldn't
+    affect the already-bound names in ticker_dashboard's namespace."""
+
+    def test_seeds_from_local_file_when_redis_has_nothing_yet(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SPY", "IVW"]})
+            with (
+                mock.patch("ticker_dashboard.is_configured", return_value=True),
+                mock.patch("ticker_dashboard.get_json", return_value=None) as get_mock,
+                mock.patch("ticker_dashboard.set_json") as set_mock,
+            ):
+                groups = load_ticker_config(path)
+
+            self.assertEqual(groups, {"stocks": ["SPY", "IVW"]})
+            get_mock.assert_called_once_with("ticker_config")
+            set_mock.assert_called_once_with("ticker_config", {"groups": {"stocks": ["SPY", "IVW"]}})
+
+    def test_reads_from_redis_when_present_never_touches_local_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = write_config(tmp_dir, {"stocks": ["SHOULD-NOT-BE-USED"]})
+            redis_raw = {"groups": {"bonds": ["VGIT"]}}
+            with (
+                mock.patch("ticker_dashboard.is_configured", return_value=True),
+                mock.patch("ticker_dashboard.get_json", return_value=redis_raw),
+                mock.patch("ticker_dashboard.set_json") as set_mock,
+            ):
+                groups = load_ticker_config(path)
+
+            self.assertEqual(groups, {"bonds": ["VGIT"]})
+            set_mock.assert_not_called()
+
+    def test_config_load_failure_propagates_rather_than_degrading(self):
+        """Story 9's AC: a broken config load should fail loudly, not
+        silently render an empty watchlist."""
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.get_json", side_effect=KvStoreError("redis down")),
+        ):
+            with self.assertRaises(KvStoreError):
+                load_ticker_config(CONFIG_PATH)
+
+    def test_add_ticker_routes_through_redis(self):
+        redis_raw = {"groups": {"stocks": ["SPY"]}}
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.get_json", return_value=redis_raw),
+            mock.patch("ticker_dashboard.set_json") as set_mock,
+        ):
+            add_ticker_to_group("IVW", "stocks", CONFIG_PATH)
+
+        set_mock.assert_called_once_with("ticker_config", {"groups": {"stocks": ["SPY", "IVW"]}})
+
+    def test_remove_ticker_routes_through_redis(self):
+        redis_raw = {"groups": {"stocks": ["SPY", "IVW"]}}
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.get_json", return_value=redis_raw),
+            mock.patch("ticker_dashboard.set_json") as set_mock,
+        ):
+            remove_ticker_from_group("IVW", "stocks", CONFIG_PATH)
+
+        set_mock.assert_called_once_with("ticker_config", {"groups": {"stocks": ["SPY"]}})
+
+
+class TestRedisBackedTickerCache(unittest.TestCase):
+    def test_load_reads_from_redis(self):
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.get_json", return_value={"SPY": {"price": 1.0}}),
+        ):
+            self.assertEqual(load_ticker_state(TICKER_DATA_PATH), {"SPY": {"price": 1.0}})
+
+    def test_load_degrades_to_empty_dict_on_redis_outage(self):
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.get_json", side_effect=KvStoreError("redis down")),
+        ):
+            self.assertEqual(load_ticker_state(TICKER_DATA_PATH), {})
+
+    def test_save_writes_to_redis_not_the_local_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "tickers.json")
+            with (
+                mock.patch("ticker_dashboard.is_configured", return_value=True),
+                mock.patch("ticker_dashboard.set_json") as set_mock,
+            ):
+                save_ticker_state({"SPY": {"price": 1.0}}, path)
+
+            set_mock.assert_called_once_with("ticker_cache", {"SPY": {"price": 1.0}})
+            self.assertFalse(os.path.exists(path))
+
+    def test_save_outage_is_swallowed_not_raised(self):
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.set_json", side_effect=KvStoreError("redis down")),
+        ):
+            save_ticker_state({"SPY": {"price": 1.0}}, TICKER_DATA_PATH)
+
+
+class TestRedisBackedMarketNewsCache(unittest.TestCase):
+    def test_load_reads_from_redis(self):
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.get_json", return_value={"headlines": []}),
+        ):
+            self.assertEqual(load_market_news_state(MARKET_NEWS_PATH), {"headlines": []})
+
+    def test_load_degrades_to_none_on_redis_outage(self):
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.get_json", side_effect=KvStoreError("redis down")),
+        ):
+            self.assertIsNone(load_market_news_state(MARKET_NEWS_PATH))
+
+    def test_save_writes_to_redis_not_the_local_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "market_news.json")
+            with (
+                mock.patch("ticker_dashboard.is_configured", return_value=True),
+                mock.patch("ticker_dashboard.set_json") as set_mock,
+            ):
+                save_market_news_state({"headlines": []}, path)
+
+            set_mock.assert_called_once_with("market_news_cache", {"headlines": []})
+            self.assertFalse(os.path.exists(path))
+
+    def test_save_outage_is_swallowed_not_raised(self):
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.set_json", side_effect=KvStoreError("redis down")),
+        ):
+            save_market_news_state({"headlines": []}, MARKET_NEWS_PATH)
 
 
 if __name__ == "__main__":

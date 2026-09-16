@@ -58,6 +58,7 @@ source .env && set +a`) before running anything that needs them.
 | `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | sending the digest email |
 | `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range/market-cap/P-E fetch and the market-news feed — without it, the background check's live fetch fails for every ticker and for market news, each falling back to its own cached data (`data/tickers.json`/`data/market_news.json`) where a cache exists, or an error/unavailable state where none does; Story 2's config loading needs no API key |
 | `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` | HTTP Basic Auth in front of every `src/web/app.py` route (Story 8) — set on a hosted deployment; both unset (the local-dev default) leaves auth off entirely, unchanged from before Story 8 |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Redis-backed persistence for `config/tickers.json`/`data/tickers.json`/`data/market_news.json` on a hosted deployment (Story 9) — `UPSTASH_REDIS_REST_URL` unset (the local-dev default) leaves every one of those on the local JSON files, unchanged from before Story 9 |
 
 ## Architecture
 
@@ -116,7 +117,11 @@ src/
             its docstring, Finnhub's free tier blocks `/stock/candle`
             outright), yahoo_client.py (daily closes
             from Yahoo's public chart endpoint, no API key — the only
-            source for moving averages; raises YahooApiError per-call)
+            source for moving averages; raises YahooApiError per-call),
+            kv_store.py (Upstash Redis REST wrapper -- get_json/set_json,
+            raises KvStoreError per-call; is_configured() is the switch
+            ticker_dashboard.py's config/cache load+save functions check
+            to route through this instead of a local file — Story 9)
   main.py       v1 entrypoint: run_ingestion + update_release_calendar +
                 run_post_release — what the scheduled workflow calls
   backfill.py   one-time manual seed of sparse history
@@ -324,10 +329,50 @@ callables for this.
   intentional interpretation of "if set" in Story 8's AC for the
   partially-configured case (only one of the two set), to avoid an
   accidental lockout from a typo'd env var name. Covered by
-  `tests/test_app.py`. The rest of Story 8 (actually hosting the app
-  publicly over HTTPS — task H.6, Render setup) is still open; the
-  Redis-backed persistence work needed for a stateless host (Story 9) is
-  also still open.
+  `tests/test_app.py`. Deployed and confirmed live on Render: the
+  password prompt appears over HTTPS before any content renders.
+- Redis-backed persistence (Story 9, `docs/v2_technical_design.md`
+  Section 11.3/11.4): `kv_store.py` wraps Upstash's REST API;
+  `ticker_dashboard.py`'s `_load_raw_config`/`_save_raw_config` (the
+  watchlist), `load_ticker_state`/`save_ticker_state` (the ticker
+  cache), and `load_market_news_state`/`save_market_news_state` (the
+  news cache) each check `kv_store.is_configured()` and route through
+  it instead of the local file when true — `app.py`'s routes call these
+  with default args and don't know or care which backend is active. A
+  cache failure degrades to the same empty/pending state a missing
+  local file would; a config-load failure propagates (fails loudly,
+  per Story 9's AC). On first Redis-backed read with no `ticker_config`
+  key yet, seeds from the repo's committed `config/tickers.json`.
+  Covered by `tests/test_kv_store.py` and the `TestRedisBacked*` classes
+  in `tests/test_ticker_dashboard.py`; the full pre-existing suite
+  passes unmodified with no Redis env vars set (the regression case).
+  **Not yet verified against a real Upstash instance** — the wire
+  format (`GET {url}/get/{key}`, `POST {url}/set/{key}` with the raw
+  JSON body) was implemented from Upstash's documented pattern, no
+  account was available to smoke-test it live. `UPSTASH_REDIS_REST_URL`/
+  `TOKEN` also aren't in Render's env vars yet (added after the first
+  deploy) — the in-app ticker editor and both caches are still on
+  Render's ephemeral local disk until that's done.
+- `/api/check-tickers`'s gunicorn-timeout fix (confirmed on the first
+  live Render deploy, `docs/v2_technical_design.md` Section 11.5):
+  fetching all 36 tickers in one request occasionally exceeded
+  gunicorn's default 30s sync-worker timeout, which kills the worker
+  mid-request (`SystemExit: 1` from `handle_abort`) rather than raising
+  a catchable exception — surfaces to the browser as a bare 500 with no
+  body. Fixed by adding `--timeout 120` to the start command, not by
+  restructuring the request. A real scaling limit remains underneath
+  that fix (one request growing with the watchlist size) — a React
+  frontend that sections the page so ticker groups can update
+  independently is backlogged for this
+  (`docs/investment_dashboard_requirements.md` Section 5), not
+  currently scheduled; the user explicitly chose to defer it rather
+  than build interim per-group routes on the current string-templating
+  approach.
+- A local `.env` value containing an unescaped shell-special character
+  (e.g. `|`) silently truncates at that character under `source .env`
+  — bash executes each line as a command, not a proper `.env` parser.
+  Quote such values (`KEY='value'`) to fix; confirmed this cost a
+  working `DASHBOARD_PASSWORD` locally until caught and fixed.
 - When behavior actually changes, keep these in sync (all checkbox/prose
   acceptance-criteria style, not auto-generated): `docs/investment_dashboard_requirements.md`,
   `docs/v2_user_stories.md`, `docs/v2_technical_design.md`,

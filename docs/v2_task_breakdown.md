@@ -199,22 +199,23 @@ Dependency-driven:
 |---|---|---|
 | H.1 Add `gunicorn` to `requirements.txt`; confirm it can import `app.py` given the project's `sys.path.insert` convention (add a thin entry-point shim if not) | 1h | done — no shim needed, `gunicorn --chdir src/web app:app` (Section 11.5) |
 | H.2 `app.py` — Basic Auth `before_request` hook gated on `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` being set | 1h | done |
-| H.3 `src/web/kv_store.py` — Upstash REST wrapper (`get_json`/`set_json`) | 1h | not started |
-| H.4 `ticker_dashboard.py` — branch config/cache load+save through `kv_store.py` when `UPSTASH_REDIS_REST_URL` is set, else local files (unchanged path) | 2h | not started |
-| H.5 Seed-on-first-read: Redis-backed `load_ticker_config()` initializes from the repo's `config/tickers.json` when the Redis key is empty | 1h | not started |
-| H.6 Render setup: create the web service, connect the GitHub repo, enable auto-deploy on push to `main`, set all required env vars | 0.5h | not started |
-| H.7 Tests (below) | 2h | partial — auth tests done (`tests/test_app.py`); kv_store/ticker_dashboard Redis tests pending Story 9 |
+| H.3 `src/web/kv_store.py` — Upstash REST wrapper (`get_json`/`set_json`) | 1h | done — wire format unverified against a real Upstash instance (Section 11.3's caveat) |
+| H.4 `ticker_dashboard.py` — branch config/cache load+save through `kv_store.py` when `UPSTASH_REDIS_REST_URL` is set, else local files (unchanged path) | 2h | done |
+| H.5 Seed-on-first-read: Redis-backed `load_ticker_config()` initializes from the repo's `config/tickers.json` when the Redis key is empty | 1h | done |
+| H.6 Render setup: create the web service, connect the GitHub repo, enable auto-deploy on push to `main`, set all required env vars | 0.5h | partial — service deployed, auth confirmed working over HTTPS; `UPSTASH_REDIS_REST_URL`/`TOKEN` not yet added (H.3-H.5 landed after this deploy) |
+| H.7 Tests (below) | 2h | done — `tests/test_app.py` (auth), `tests/test_kv_store.py`, `tests/test_ticker_dashboard.py`'s `TestRedisBacked*` classes |
 | **Subtotal** | **8.5h** | |
 
 **Tests**
 - Auth: a request with no/invalid credentials gets 401 when `DASHBOARD_USERNAME`/`PASSWORD` are set; unauthenticated access works when they're unset (local-dev default) — done, `tests/test_app.py`
-- `kv_store`: mocked Upstash REST responses → `get_json`/`set_json` round-trip correctly; a non-200 response is surfaced as an error, not silently swallowed
-- `ticker_dashboard`: with a mocked Redis backend configured, config load/save and cache read/write go through `kv_store` instead of the filesystem
-- `ticker_dashboard`: with no Redis env vars set, behavior is identical to the existing local-file tests (regression)
-- Seeding: first Redis read with an empty `ticker_config` key returns (and persists) the repo file's contents; a second read doesn't re-seed
-- A simulated Redis outage during a cache read/write degrades to the existing pending/error states rather than raising past the caller
+- `kv_store`: mocked Upstash REST responses → `get_json`/`set_json` round-trip correctly; a non-200 response is surfaced as an error, not silently swallowed — done, `tests/test_kv_store.py`
+- `ticker_dashboard`: with a mocked Redis backend configured, config load/save and cache read/write go through `kv_store` instead of the filesystem — done, `TestRedisBackedTickerConfig`/`TestRedisBackedTickerCache`/`TestRedisBackedMarketNewsCache`
+- `ticker_dashboard`: with no Redis env vars set, behavior is identical to the existing local-file tests (regression) — done, the full pre-existing suite (252 tests) passes unmodified
+- Seeding: first Redis read with an empty `ticker_config` key returns (and persists) the repo file's contents; a second read doesn't re-seed — done
+- A simulated Redis outage during a cache read/write degrades to the existing pending/error states rather than raising past the caller — done; a config-load outage propagates instead (also tested)
 
 ### Manual verification
-- [ ] Hosted `/` and `/tickers` both prompt for credentials before rendering anything; wrong credentials are rejected
-- [ ] An in-app ticker add/remove on the hosted deployment survives a manual restart of the Render service
+- [x] Hosted `/` and `/tickers` both prompt for credentials before rendering anything; wrong credentials are rejected
+- [ ] An in-app ticker add/remove on the hosted deployment survives a manual restart of the Render service (blocked on adding Upstash env vars to Render, H.6)
 - [ ] A push to `main` (e.g. a GitHub Actions ingestion commit) triggers an auto-redeploy and the hosted Indicator Digest Page reflects the new data
+- [x] `/api/check-tickers` completes without a 500 for the full 36-ticker watchlist (gunicorn `--timeout 120`, Section 11.5)

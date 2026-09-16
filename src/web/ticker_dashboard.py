@@ -49,6 +49,25 @@ renaming groups (that's still a hand-edit of the file). Both read-
 modify-write the raw file directly rather than going through
 `load_ticker_config`'s cleanup pass, so an edit never silently drops
 an unrelated malformed entry elsewhere in the file.
+
+Redis-backed storage (Story 9, added 2026-09-16, Section 11.3/11.4 of
+the tech design): Render's free tier has no persistent local disk, so
+without this, the ticker config and both caches reset to empty on
+every restart/redeploy/idle-spindown. `_load_raw_config`/
+`_save_raw_config` (the config) and `load_ticker_state`/
+`save_ticker_state`/`load_market_news_state`/`save_market_news_state`
+(the two caches) each check `kv_store.is_configured()` -- true only
+when `UPSTASH_REDIS_REST_URL` is set -- and route through `kv_store`
+instead of the local file when it is. Local development is unaffected:
+that env var is never set locally, so every one of these functions
+takes the exact same local-file path they always have. On first
+Redis-backed read with no `ticker_config` key yet, `_load_raw_config`
+seeds it from the repo's own bundled `config/tickers.json` once, so a
+fresh deploy starts with the existing watchlist rather than empty.
+Config failures propagate loudly (a broken watchlist load is worse
+than a broken page); a cache failure degrades to the same
+empty/pending state a missing local file would produce, never taking
+the page down.
 """
 
 import json
@@ -59,6 +78,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from finnhub_client import fetch_market_news, fetch_quote, fetch_stock_metrics
+from kv_store import KvStoreError, get_json, is_configured, set_json
 from yahoo_client import fetch_daily_closes
 
 CONFIG_PATH = os.path.join(
@@ -78,6 +98,10 @@ _SNAPSHOT_FIELDS = (
     "pct_off_high", "market_cap", "pe_ratio", "ma20", "ma50", "ma200",
 )
 
+_TICKER_CONFIG_KEY = "ticker_config"
+_TICKER_CACHE_KEY = "ticker_cache"
+_MARKET_NEWS_CACHE_KEY = "market_news_cache"
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,11 +116,10 @@ def load_ticker_config(path: str = CONFIG_PATH) -> dict[str, list[str]]:
     rather than raising, before it ever reaches the Finnhub client
     (Story 2's AC) -- well-formed symbols in the same group still load.
     """
-    with open(path) as f:
-        config = json.load(f)
+    raw = _load_raw_config(path)
 
     groups: dict[str, list[str]] = {}
-    for group_name, symbols in config.get("groups", {}).items():
+    for group_name, symbols in raw.get("groups", {}).items():
         valid_symbols = []
         for symbol in symbols:
             if _is_valid_ticker(symbol):
@@ -119,12 +142,31 @@ class TickerConfigError(Exception):
     user what's wrong, not silently dropping their edit."""
 
 
-def _load_raw_config(path: str) -> dict:
+def _load_raw_config(path: str = CONFIG_PATH) -> dict:
+    """The full config/tickers.json dict (not just `groups`), shared by
+    `load_ticker_config` and the in-app editor (Story 7). Redis-backed
+    when `kv_store.is_configured()` (Story 9): seeds Redis from the
+    repo's bundled `path` the first time there's no `ticker_config` key
+    yet, then never touches `path` again for that deployment. Any
+    Redis failure here propagates -- see the module docstring.
+    """
+    if is_configured():
+        raw = get_json(_TICKER_CONFIG_KEY)
+        if raw is None:
+            with open(path) as f:
+                raw = json.load(f)
+            set_json(_TICKER_CONFIG_KEY, raw)
+        return raw
+
     with open(path) as f:
         return json.load(f)
 
 
-def _save_raw_config(raw: dict, path: str) -> None:
+def _save_raw_config(raw: dict, path: str = CONFIG_PATH) -> None:
+    if is_configured():
+        set_json(_TICKER_CONFIG_KEY, raw)
+        return
+
     with open(path, "w") as f:
         json.dump(raw, f, indent=2)
         f.write("\n")
@@ -289,10 +331,21 @@ def build_ticker_cards(
 
 
 def load_ticker_state(path: str = TICKER_DATA_PATH) -> dict:
-    """The local snapshot cache: `{symbol: {price, week52_low,
-    week52_high, market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`.
-    `{}` if the file
-    doesn't exist yet (first run) or is corrupted."""
+    """The snapshot cache: `{symbol: {price, week52_low, week52_high,
+    market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`. `{}` if
+    there's nothing cached yet, the local file is corrupted, or (Redis-
+    backed, Story 9) Redis itself is unreachable -- this cache degrades
+    gracefully rather than failing loudly the way `_load_raw_config`
+    does, since losing it just means every row shows "Loading..."
+    again, not an empty watchlist.
+    """
+    if is_configured():
+        try:
+            return get_json(_TICKER_CACHE_KEY) or {}
+        except KvStoreError as e:
+            logger.error("ticker cache read failed, degrading to empty: %s", e)
+            return {}
+
     try:
         with open(path) as f:
             return json.load(f)
@@ -301,6 +354,13 @@ def load_ticker_state(path: str = TICKER_DATA_PATH) -> dict:
 
 
 def save_ticker_state(state: dict, path: str = TICKER_DATA_PATH) -> None:
+    if is_configured():
+        try:
+            set_json(_TICKER_CACHE_KEY, state)
+        except KvStoreError as e:
+            logger.error("ticker cache write failed: %s", e)
+        return
+
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(state, f, indent=2)
@@ -391,10 +451,19 @@ def check_for_ticker_updates(
 
 
 def load_market_news_state(path: str = MARKET_NEWS_PATH) -> dict | None:
-    """`{"headlines": [...], "fetched_at": ...}`, or `None` if the file
-    doesn't exist yet (first run) or is corrupted -- distinguished from
+    """`{"headlines": [...], "fetched_at": ...}`, or `None` if there's
+    nothing cached yet, the local file is corrupted, or (Redis-backed,
+    Story 9) Redis itself is unreachable -- `None` distinguished from
     `{}` deliberately, so callers can tell "never fetched" apart from
-    "fetched, turned out empty"."""
+    "fetched, turned out empty". Same graceful-degradation behavior as
+    `load_ticker_state`."""
+    if is_configured():
+        try:
+            return get_json(_MARKET_NEWS_CACHE_KEY)
+        except KvStoreError as e:
+            logger.error("market news cache read failed, degrading to no-cache-yet: %s", e)
+            return None
+
     try:
         with open(path) as f:
             return json.load(f)
@@ -403,6 +472,13 @@ def load_market_news_state(path: str = MARKET_NEWS_PATH) -> dict | None:
 
 
 def save_market_news_state(state: dict, path: str = MARKET_NEWS_PATH) -> None:
+    if is_configured():
+        try:
+            set_json(_MARKET_NEWS_CACHE_KEY, state)
+        except KvStoreError as e:
+            logger.error("market news cache write failed: %s", e)
+        return
+
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(state, f, indent=2)
