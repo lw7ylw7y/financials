@@ -161,6 +161,21 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] On first Redis-backed read with nothing yet in Redis, indicator state is seeded from the repo's committed `data/indicators.json`, so a fresh or cleared Redis key starts with the existing multi-month history rather than a single fresh reading per indicator — added after a real incident where this gap reset every indicator's sparkline to one point (see `docs/v2_task_breakdown.md`'s H.12 incident note)
 
 ---
+
+### Story 12 — Ticker Dashboard: Per-Group Live Checks
+**As** the investor, **I want** each ticker group (and market news) to refresh independently in the background, **so that** I'm not waiting on the entire ~36-ticker watchlist to finish before seeing anything update.
+
+**Why:** the original single `/api/check-tickers` request fetched and re-rendered the whole watchlist at once, occasionally taking 30+ seconds and needing gunicorn's `--timeout 120` on Render just to avoid a bare 500. A full React componentization was considered (Section 5's backlog item) and explicitly rejected in favor of this smaller, direct fix on the existing string-templating approach.
+
+**Acceptance Criteria**
+- [x] The ticker page's background script fires one live-check request per group (`/api/tickers/groups/<name>/check`) plus one for market news (`/api/market-news/check`), all concurrently, instead of one combined request
+- [x] Each group's table repaints as soon as its own request resolves, independent of every other group's — a group with fewer tickers finishes and repaints before a slower one does
+- [x] A failed per-group or market-news check falls back silently to that section's last cached/pending state, same as before, without affecting any other group
+- [x] The shared ticker snapshot cache (`data/tickers.json`, or Redis when hosted) is safe against concurrent per-group writes — one group's check can't silently overwrite another's freshly-fetched values when both finish close together
+- [x] Sorting, add-ticker, and remove-ticker behavior are unchanged from the single-request design
+- [x] `_require_auth` gates the new routes exactly as it does every other route
+
+---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)
 - [x] Neither page requires user authentication
 - [x] Both pages are usable on a desktop/web browser (no mobile app)

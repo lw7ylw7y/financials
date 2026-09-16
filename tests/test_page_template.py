@@ -16,8 +16,9 @@ for _p in (
 from page_template import (
     render_check_response,
     render_indicator_digest_page,
-    render_ticker_check_response,
+    render_market_news_check_response,
     render_ticker_dashboard_page,
+    render_ticker_group_check_response,
 )
 
 TABLE = {
@@ -462,8 +463,16 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn('id="ticker-groups"', html)
         self.assertIn('id="checking-indicator"', html)
         self.assertIn("Checking for updates", html)
-        self.assertIn("/api/check-tickers", html)
+        self.assertIn("/api/tickers/groups/", html)
         self.assertIn("hideCheckingIndicator", html)
+
+    def test_renders_data_group_attribute_on_each_block(self):
+        html = render_ticker_dashboard_page(
+            {"stocks": [make_card()], "bonds": [make_card(symbol="VGIT")]}, NO_NEWS
+        )
+
+        self.assertIn('data-group="stocks"', html)
+        self.assertIn('data-group="bonds"', html)
 
     def test_renders_market_news_headlines_above_ticker_groups(self):
         html = render_ticker_dashboard_page({"stocks": [make_card()]}, SAMPLE_NEWS)
@@ -497,28 +506,37 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
     def test_market_news_patched_by_script(self):
         html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
 
+        self.assertIn("/api/market-news/check", html)
         self.assertIn("data.news_html", html)
 
 
-class TestRenderTickerCheckResponse(unittest.TestCase):
-    def test_returns_groups_html_for_the_same_cards(self):
-        fragments = render_ticker_check_response({"stocks": [make_card()]}, NO_NEWS)
+class TestRenderTickerGroupCheckResponse(unittest.TestCase):
+    def test_returns_group_html_for_the_same_cards(self):
+        fragments = render_ticker_group_check_response("stocks", [make_card()])
 
-        self.assertIn("groups_html", fragments)
-        self.assertIn("SPY", fragments["groups_html"])
-        self.assertIn("452.31", fragments["groups_html"])
+        self.assertIn("group_html", fragments)
+        self.assertIn("SPY", fragments["group_html"])
+        self.assertIn("452.31", fragments["group_html"])
+        self.assertIn('data-group="stocks"', fragments["group_html"])
 
+    def test_does_not_include_other_groups_or_the_full_page_shell(self):
+        fragments = render_ticker_group_check_response("stocks", [make_card()])
+
+        self.assertNotIn("<!doctype html>", fragments["group_html"])
+        self.assertNotIn("<html", fragments["group_html"])
+        self.assertNotIn('id="ticker-groups"', fragments["group_html"])
+
+
+class TestRenderMarketNewsCheckResponse(unittest.TestCase):
     def test_returns_news_html(self):
-        fragments = render_ticker_check_response({"stocks": [make_card()]}, SAMPLE_NEWS)
+        fragments = render_market_news_check_response(SAMPLE_NEWS)
 
         self.assertIn("news_html", fragments)
         self.assertIn("Stocks rally on rate-cut hopes", fragments["news_html"])
 
     def test_does_not_include_the_full_page_shell(self):
-        fragments = render_ticker_check_response({"stocks": [make_card()]}, NO_NEWS)
+        fragments = render_market_news_check_response(NO_NEWS)
 
-        self.assertNotIn("<!doctype html>", fragments["groups_html"])
-        self.assertNotIn("<html", fragments["groups_html"])
         self.assertNotIn("<!doctype html>", fragments["news_html"])
 
 

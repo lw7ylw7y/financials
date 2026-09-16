@@ -230,6 +230,25 @@ Dependency-driven:
 - [x] `storage.load_state`/`save_state` round-trip correctly against the real Upstash instance (verified via a throwaway Redis key, same pattern used to verify `kv_store.py` for Story 9)
 - [x] `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` added as GitHub Actions repo secrets (H.10)
 - [x] Workflow triggered manually (`workflow_dispatch`) and completed without error against real Redis/FRED/Gmail — ingestion ran, release calendar refreshed, a digest email sent. Confirmed this no longer happens via a git push/auto-redeploy the way it used to (H.10 removed that step entirely); the hosted page just reads the same Redis state directly on its next visit
-- [x] `/api/check-tickers` completes without a 500 for the full 36-ticker watchlist (gunicorn `--timeout 120`, Section 11.5)
+- [x] The original combined `/api/check-tickers` completed without a 500 for the full 36-ticker watchlist (gunicorn `--timeout 120`, Section 11.5) — since superseded by Story 12's per-group split below
 
 **Incident (2026-09-16), same day as the H.10/H.12 work above:** Render had auto-deployed the Story 11 code before GitHub Actions' secrets were added, and Render's env vars already had `UPSTASH_REDIS_REST_URL`/`TOKEN` configured (left over from Story 9's ticker work) — so the *first* live visit to the hosted Indicator Digest Page found `indicator_state` completely empty in Redis and treated every indicator as brand new, persisting exactly one fresh FRED observation each. The months of accumulated history that used to live in the git-committed `data/indicators.json` was never carried over — sparklines dropped to a single point, and the AI response was also absent (its own live-check Gemini call apparently didn't land, separately from Gemini also hitting a genuine `503` high-demand period during the manual recovery below). Recovered by hand: re-ran `python3 src/backfill.py` (pulled up to 12 recent real observations per indicator straight from FRED, added 85 entries total) and manually called `refresh_ai_response_if_updated` against production state (needed 3 attempts before Gemini's `503`s cleared). H.12 above is the actual fix — seeding on first Redis read — so a fresh/cleared Redis key self-heals from the committed file going forward instead of needing this by hand again.
+
+---
+
+## Epic: Ticker Dashboard Performance
+
+### Story 12 — Per-Group Live Checks
+
+| Task | Status |
+|---|---|
+| 12.1 `app.py` — replace `GET /api/check-tickers` with `GET /api/tickers/groups/<name>/check` (looks up the group via `load_ticker_config()`, 404s on an unknown group) and `GET /api/market-news/check` | done |
+| 12.2 `page_template.py` — `_render_ticker_groups` tags each `.category-block` with `data-group="<name>"`; add `render_ticker_group_check_response`/`render_market_news_check_response`, remove the now-unused `render_ticker_check_response` | done |
+| 12.3 `page_template.py` — rewrite the ticker page's inline `<script>` to fire one fetch per `.category-block[data-group]` plus one for market news, all concurrently, each patching only its own section; `Promise.allSettled` across all of them clears the "Checking for updates" indicator | done |
+| 12.4 `ticker_dashboard.py` — wrap `check_for_ticker_updates`'s load-merge-save of the shared ticker cache in a process-local `_ticker_state_lock`, held only around the merge/save (not the network fetch), so concurrent per-group calls can't clobber each other's freshly-fetched values | done |
+| 12.5 `app.py` — `app.run(..., threaded=True)` for local dev, so the concurrency benefit is actually realized locally rather than queueing on Werkzeug's single-threaded default | done |
+
+**Tests**
+- `tests/test_page_template.py`: `data-group` attribute present on every group block; the script fetches per-group and market-news check routes (not the old combined one); `render_ticker_group_check_response`/`render_market_news_check_response` return the expected fragments and never the full page shell — done
+- `tests/test_app.py`: a known group's check route calls `check_for_ticker_updates` with only that group's symbols and returns its HTML fragment; an unknown group 404s without calling the fetch function; the market-news-check route returns its fragment; the new routes are gated by `_require_auth` like every other route — done
+- Manual: confirmed locally that all 5 configured groups (36 tickers total) complete concurrently in ~3s total (worst single group ~2.6s) versus the original single request's occasional 30+s; confirmed no data loss in `data/tickers.json` after a concurrent all-groups run (all 36 symbols present) — the lock fix verified against the actual race, not just in theory

@@ -370,8 +370,8 @@ def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
     /api/tickers/remove. Rendered as the row's own trailing cell rather
     than next to the ticker symbol, so it doesn't crowd the column
     readers scan first. Event-delegated in the page's own script
-    rather than bound per-button, since these rows get replaced
-    wholesale by the /api/check-tickers response."""
+    rather than bound per-button, since a row's whole group block gets
+    replaced wholesale whenever that group's own check response lands."""
     return (
         f'<button type="button" class="remove-ticker" data-group="{escape(group_name)}" '
         f'data-symbol="{escape(symbol)}" title="Remove {escape(symbol)} from {escape(group_name)}" '
@@ -439,24 +439,31 @@ def _render_add_ticker_form(group_name: str) -> str:
 
 def _render_ticker_groups(grouped_cards: dict) -> str:
     """The group tables only -- shared by the full-page initial render
-    and the /api/check-tickers fragment, both of which the page's
-    #ticker-groups div swaps in. Group headers are derived from the
-    config keys (see `_group_header`), never a fixed list, and a
-    pending/errored ticker stands in for any row not yet fetched or
-    whose fetch failed, without affecting the other rows.
+    and each group's own /api/tickers/groups/<name>/check fragment
+    (called with a single-entry `grouped_cards` dict, which this
+    function handles the same as the full one since it just loops).
+    Group headers are derived from the config keys (see
+    `_group_header`), never a fixed list, and a pending/errored ticker
+    stands in for any row not yet fetched or whose fetch failed,
+    without affecting the other rows.
+
+    Each `.category-block` carries `data-group="<name>"` so the page's
+    own script (see render_ticker_dashboard_page) can fetch and patch
+    one group's block independently of the others -- a group with
+    fewer tickers finishes and repaints before a slower one does,
+    rather than the whole page waiting on one combined request.
 
     The Ticker and % Off High headers carry `class="sortable"` plus a
-    `data-sort-key` the page's own client-side script (see
-    render_ticker_dashboard_page) uses to reorder a table's rows in
-    place on click -- sorting is purely a DOM reshuffle of the rows
-    already rendered here, not a server round trip, and each table
-    sorts independently of the others.
+    `data-sort-key` the page's own client-side script uses to reorder a
+    table's rows in place on click -- sorting is purely a DOM reshuffle
+    of the rows already rendered here, not a server round trip, and
+    each table sorts independently of the others.
     """
     sections = []
     for group_name, cards in grouped_cards.items():
         row_html = "".join(_render_ticker_row(card) for card in cards)
         sections.append(f"""
-        <div class="category-block">
+        <div class="category-block" data-group="{escape(group_name, quote=True)}">
           <p class="category-label">{escape(_group_header(group_name))}</p>
           <table class="indicator-table ticker-table">
             <thead>
@@ -523,10 +530,13 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
     as the Indicator Digest Page. A ticker with no cached snapshot yet
     renders as a "Loading..." placeholder row; market news with no
     cache yet renders its own "Loading..." placeholder. The page's own
-    script then calls /api/check-tickers in the background to fetch
-    both live and patch #ticker-groups/#market-news in place; a
-    "Checking for updates..." indicator is shown for the duration and
-    removed once it settles either way.
+    script then fetches each group's own
+    /api/tickers/groups/<name>/check plus /api/market-news/check
+    independently in the background -- a group with fewer tickers
+    finishes and repaints before a slower one does, rather than the
+    whole page waiting on one combined request the way it used to. A
+    "Checking for updates..." indicator is shown until every one of
+    those requests has settled, one way or another.
     """
     return f"""<!doctype html>
 <html lang="en">
@@ -555,11 +565,25 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
       var el = document.getElementById('checking-indicator');
       if (el) el.remove();
     }}
-    fetch('/api/check-tickers').then(function(r) {{ return r.json(); }}).then(function(data) {{
-      hideCheckingIndicator();
-      document.getElementById('ticker-groups').innerHTML = data.groups_html;
-      document.getElementById('market-news').innerHTML = data.news_html;
-    }}).catch(function() {{ hideCheckingIndicator(); /* stay on the stored snapshot already shown */ }});
+
+    var checks = [];
+    document.querySelectorAll('#ticker-groups .category-block[data-group]').forEach(function(block) {{
+      var group = block.dataset.group;
+      checks.push(
+        fetch('/api/tickers/groups/' + encodeURIComponent(group) + '/check')
+          .then(function(r) {{ return r.json(); }})
+          .then(function(data) {{
+            if (data.group_html) block.outerHTML = data.group_html.trim();
+          }})
+          .catch(function() {{ /* stay on the stored snapshot already shown */ }})
+      );
+    }});
+    checks.push(
+      fetch('/api/market-news/check').then(function(r) {{ return r.json(); }}).then(function(data) {{
+        document.getElementById('market-news').innerHTML = data.news_html;
+      }}).catch(function() {{ /* stay on the stored snapshot already shown */ }})
+    );
+    Promise.allSettled(checks).then(hideCheckingIndicator);
 
     var tickerGroups = document.getElementById('ticker-groups');
     tickerGroups.addEventListener('click', function(e) {{
@@ -634,16 +658,20 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
 </html>"""
 
 
-def render_ticker_check_response(grouped_cards: dict, market_news: dict) -> dict:
-    """HTML fragments for /api/check-tickers, called once
-    check_for_ticker_updates/check_for_market_news finish their live
-    pulls (both always re-fetch -- there's no "nothing changed" gate
-    for tickers or market news the way there is for the AI-backed
-    indicator digest)."""
-    return {
-        "groups_html": _render_ticker_groups(grouped_cards),
-        "news_html": _render_market_news(market_news),
-    }
+def render_ticker_group_check_response(group_name: str, cards: list[dict]) -> dict:
+    """HTML fragment for GET /api/tickers/groups/<group_name>/check,
+    called once that group's own check_for_ticker_updates call finishes
+    (it always re-fetches -- there's no "nothing changed" gate for
+    tickers the way there is for the AI-backed indicator digest). Only
+    this one group's block is returned, so the page's script can patch
+    it without touching any other group's table."""
+    return {"group_html": _render_ticker_groups({group_name: cards})}
+
+
+def render_market_news_check_response(market_news: dict) -> dict:
+    """HTML fragment for GET /api/market-news/check, independent of any
+    ticker group's own check."""
+    return {"news_html": _render_market_news(market_news)}
 
 
 def render_check_response(content: dict) -> dict:

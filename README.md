@@ -177,9 +177,13 @@ news.
   local disk doesn't survive a restart; unset (local dev's default)
   behaves exactly as before.
 - `src/web/app.py` — the Flask app: `GET /` and `GET /tickers` render
-  instantly from stored data; `GET /api/check` and
-  `GET /api/check-tickers` are what each page's inline `<script>` calls
-  in the background, returning HTML fragments as JSON. Bound explicitly
+  instantly from stored data; `GET /api/check` is what the Indicator
+  Digest Page's inline `<script>` calls in the background. The Ticker
+  Dashboard's script instead calls one `GET /api/tickers/groups/<name>/check`
+  per group plus `GET /api/market-news/check`, all concurrently, so a
+  smaller group repaints before a larger one finishes instead of the
+  whole page waiting on one combined request. Every one of these
+  returns an HTML fragment as JSON. Bound explicitly
   to `127.0.0.1` (never `0.0.0.0`) for local dev. Every route (including
   the `/api/*` ones) sits behind an HTTP Basic Auth gate when
   `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` are both set (for a hosted

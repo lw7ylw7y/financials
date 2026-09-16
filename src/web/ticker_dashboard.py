@@ -33,9 +33,8 @@ successfully fetched renders as a genuine error.
 `get_initial_market_news`/`check_for_market_news` are the same split
 applied to one more thing: a page-level feed of general market
 headlines, cached in `data/market_news.json` -- separate from the
-per-ticker cache since it's a single item, not one per symbol. Folded
-into the same `/api/check-tickers` background check as the ticker
-prices rather than given its own route.
+per-ticker cache since it's a single item, not one per symbol. Has its
+own route, checked independently of any ticker group's own check.
 
 `add_ticker_to_group`/`remove_ticker_from_group` let the /tickers page
 itself edit config/tickers.json -- adding or removing a ticker within
@@ -68,6 +67,7 @@ import json
 import logging
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -97,6 +97,16 @@ _TICKER_CACHE_KEY = "ticker_cache"
 _MARKET_NEWS_CACHE_KEY = "market_news_cache"
 
 logger = logging.getLogger(__name__)
+
+# Guards the load-merge-save of the shared ticker cache in
+# check_for_ticker_updates, which the page's script now calls once per
+# group concurrently -- see that function's docstring. Process-local
+# only: it doesn't protect against two separate gunicorn *worker
+# processes* racing (each has its own memory), but Render's current
+# start command runs a single worker, and this is still strictly safer
+# than the unguarded read-modify-write that existed before the
+# per-group split made the race actually likely to trigger.
+_ticker_state_lock = threading.Lock()
 
 
 def _is_valid_ticker(symbol) -> bool:
@@ -378,8 +388,8 @@ def get_initial_ticker_page_data(
     cache only, no network calls. A ticker with no cached snapshot yet
     (first-ever run, or just added to the config) renders as a pending
     placeholder rather than an error -- it hasn't failed, it just
-    hasn't been fetched yet; the page's own script then calls
-    `/api/check-tickers` to fetch for real.
+    hasn't been fetched yet; the page's own script then calls each
+    group's own /api/tickers/groups/<name>/check to fetch for real.
     """
     config = config if config is not None else load_ticker_config()
     stored = load_ticker_state(state_path)
@@ -414,30 +424,44 @@ def check_for_ticker_updates(
     (same call as the Indicator Digest Page's dropped Live/Saved
     badge). Only a ticker with no stored snapshot *and* a failed live
     fetch renders as a genuine error.
+
+    The page's background script calls this once per group
+    concurrently (see app.py's /api/tickers/groups/<name>/check), so
+    the load-merge-save of the *shared* `state_path` cache is wrapped
+    in `_ticker_state_lock` -- without it, two groups' calls finishing
+    close together could each load the cache before the other's save,
+    and the second save would silently wipe out the first group's
+    freshly-fetched values. The lock is only held around that
+    load/merge/save, never around `build_ticker_cards`'s network
+    fetch, so concurrent groups still fetch fully in parallel; only the
+    brief in-memory merge and the final write are serialized.
     """
     now = now or datetime.now(timezone.utc)
     config = config if config is not None else load_ticker_config()
-    stored = load_ticker_state(state_path)
 
     live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn, fetch_closes_fn)
 
-    grouped_cards = {}
-    for group_name, cards in live_cards.items():
-        resolved = []
-        for card in cards:
-            if card["error"] is None:
-                stored[card["symbol"]] = {
-                    **{field: card[field] for field in _SNAPSHOT_FIELDS},
-                    "fetched_at": now.isoformat(),
-                }
-                resolved.append(card)
-            elif card["symbol"] in stored:
-                resolved.append(_card_from_snapshot(card["symbol"], group_name, stored[card["symbol"]]))
-            else:
-                resolved.append(card)
-        grouped_cards[group_name] = resolved
+    with _ticker_state_lock:
+        stored = load_ticker_state(state_path)
 
-    save_ticker_state(stored, state_path)
+        grouped_cards = {}
+        for group_name, cards in live_cards.items():
+            resolved = []
+            for card in cards:
+                if card["error"] is None:
+                    stored[card["symbol"]] = {
+                        **{field: card[field] for field in _SNAPSHOT_FIELDS},
+                        "fetched_at": now.isoformat(),
+                    }
+                    resolved.append(card)
+                elif card["symbol"] in stored:
+                    resolved.append(_card_from_snapshot(card["symbol"], group_name, stored[card["symbol"]]))
+                else:
+                    resolved.append(card)
+            grouped_cards[group_name] = resolved
+
+        save_ticker_state(stored, state_path)
+
     return grouped_cards
 
 
@@ -492,11 +516,11 @@ def get_initial_market_news(path: str = MARKET_NEWS_PATH) -> dict:
 def check_for_market_news(
     fetch_news_fn=fetch_market_news, path: str = MARKET_NEWS_PATH, now: datetime | None = None
 ) -> dict:
-    """The real live pull for the market-news section, called alongside
-    `check_for_ticker_updates` by the page's background script -- folded
-    into the same `/api/check-tickers` round trip rather than given its
-    own route/cache lifecycle, since there's no evidence that news needs
-    to refresh on a different cadence than prices.
+    """The real live pull for the market-news section, called by its own
+    route (/api/market-news/check) independently of any ticker group's
+    own check, since there's no evidence that news needs to refresh on
+    a different cadence than prices -- it's just not worth coupling
+    them together.
 
     On failure, falls back to the last cached headlines if any exist --
     same silent-stale-fallback behavior as `check_for_ticker_updates`.

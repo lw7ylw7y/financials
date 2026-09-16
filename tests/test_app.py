@@ -79,6 +79,66 @@ class TestDashboardAuth(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
 
+    def test_ticker_group_check_route_requires_auth_too(self):
+        with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "alice", "DASHBOARD_PASSWORD": "secret"}):
+            response = self.client.get("/api/tickers/groups/stocks/check")
+
+        self.assertEqual(response.status_code, 401)
+
+
+class TestApiCheckTickerGroup(unittest.TestCase):
+    """The ticker page's background check hits one route per group
+    instead of one combined /api/check-tickers, so a group with fewer
+    tickers repaints before a slower one finishes."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.env_patcher = mock.patch.dict(os.environ, NO_AUTH_ENV)
+        self.env_patcher.start()
+        self.addCleanup(self.env_patcher.stop)
+
+    def test_known_group_returns_only_that_groups_html(self):
+        with (
+            mock.patch("app.load_ticker_config", return_value={"stocks": ["SPY"], "bonds": ["VGIT"]}),
+            mock.patch("app.check_for_ticker_updates") as mock_check,
+        ):
+            pending_fields = ("price", "change", "change_percent", "week52_low", "week52_high",
+                              "pct_off_high", "market_cap", "pe_ratio", "ma20", "ma50", "ma200")
+            pending_card = {field: None for field in pending_fields}
+            pending_card.update(symbol="SPY", group="stocks", pending=True, error=None)
+            mock_check.return_value = {"stocks": [pending_card]}
+            response = self.client.get("/api/tickers/groups/stocks/check")
+
+        mock_check.assert_called_once_with(config={"stocks": ["SPY"]})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("SPY", response.get_json()["group_html"])
+
+    def test_unknown_group_returns_404_without_fetching(self):
+        with (
+            mock.patch("app.load_ticker_config", return_value={"stocks": ["SPY"]}),
+            mock.patch("app.check_for_ticker_updates") as mock_check,
+        ):
+            response = self.client.get("/api/tickers/groups/nonexistent/check")
+
+        mock_check.assert_not_called()
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("error", response.get_json())
+
+
+class TestApiCheckMarketNews(unittest.TestCase):
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.env_patcher = mock.patch.dict(os.environ, NO_AUTH_ENV)
+        self.env_patcher.start()
+        self.addCleanup(self.env_patcher.stop)
+
+    def test_returns_news_html(self):
+        with mock.patch("app.check_for_market_news", return_value={"headlines": [], "pending": False}):
+            response = self.client.get("/api/market-news/check")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("news_html", response.get_json())
+
 
 if __name__ == "__main__":
     unittest.main()

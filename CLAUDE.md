@@ -93,9 +93,9 @@ src/
             embedded via Content-ID; the web page instead renders sparklines
             as plain inline SVG, since browsers don't have that limitation)
   web/      app.py (Flask routes: GET "/", GET "/tickers", GET "/api/check",
-            GET "/api/check-tickers", POST "/api/tickers/add", POST
-            "/api/tickers/remove"; _require_auth() before_request hook
-            gates every route behind HTTP Basic Auth when
+            GET "/api/tickers/groups/<name>/check", GET "/api/market-news/check",
+            POST "/api/tickers/add", POST "/api/tickers/remove";
+            _require_auth() before_request hook gates every route behind HTTP Basic Auth when
             DASHBOARD_USERNAME/PASSWORD are both set, no-op otherwise
             — Story 8), live_pull.py (stored-only render +
             gated background live-check for the Indicator Digest Page),
@@ -117,6 +117,14 @@ src/
             splits, backed by load_ticker_state()/save_ticker_state()
             (data/tickers.json) and load_market_news_state()/
             save_market_news_state() (data/market_news.json);
+            check_for_ticker_updates() takes an optional `config` subset
+            (defaults to every group) so app.py can call it once per
+            group concurrently rather than fetching the whole watchlist
+            in one request — its load-merge-save of the shared
+            data/tickers.json cache is wrapped in `_ticker_state_lock`
+            (held only around that merge/save, not the network fetch)
+            so concurrent per-group calls can't clobber each other's
+            freshly-fetched values;
             add_ticker_to_group()/remove_ticker_from_group()
             read-modify-write config/tickers.json for the in-app
             editor, tickers only — not group create/rename/remove),
@@ -189,11 +197,15 @@ src/
    "nothing changed" gate, since there's no expensive AI call to
    protect here). A ticker whose live fetch fails resolves to its last
    cached snapshot silently if one exists, or that ticker's error state
-   if not; every success is persisted back to `data/tickers.json`. The
-   page's own inline `<script>` calls `/api/check-tickers` right after
-   load and replaces `#ticker-groups` unconditionally (there's no
-   `data_updated` gate to check, since the ticker check is never a
-   no-op).
+   if not; every success is persisted back to `data/tickers.json`. Unlike
+   the indicator path's single combined `/api/check`, the ticker page's
+   own inline `<script>` fires one `/api/tickers/groups/<name>/check`
+   per group plus one `/api/market-news/check`, all concurrently, each
+   patching only its own `.category-block`/`#market-news` in place as
+   it resolves — a group with fewer tickers repaints before a slower
+   one finishes, instead of the whole page waiting on one combined
+   request (which had occasionally needed gunicorn's `--timeout 120`
+   to avoid a bare 500 on the full ~36-ticker watchlist).
 
 ### Storage model
 Three separate JSON blobs — not a database, and not the same file. Local dev keeps all three as plain files under `data/`; a hosted deployment (`UPSTASH_REDIS_REST_URL` set) moves all three to Redis instead (Story 9 for the two ticker-related ones, Story 11 for indicators) — see `web/kv_store.py`.
@@ -215,14 +227,14 @@ Three separate JSON blobs — not a database, and not the same file. Local dev k
   snapshot per ticker: `{symbol: {price, change, change_percent, week52_low,
   week52_high, pct_off_high, ma20, ma50, ma200, fetched_at}}`. Never committed
   and never scheduled — it's written only when you run the Flask app locally
-  and `/api/check-tickers` fires, purely so the *next* local page load has
-  something better than a blank "Loading…" row to show instantly. Losing it
-  is harmless (everything just shows as pending again until the next live
-  fetch).
+  and one of the `/api/tickers/groups/<name>/check` requests fires, purely
+  so the *next* local page load has something better than a blank "Loading…"
+  row to show instantly. Losing it is harmless (everything just shows as
+  pending again until the next live fetch).
 - **`data/market_news.json`** (gitignored) — same idea as `data/tickers.json`,
   one cached snapshot for the whole market-news feed instead of one per
   ticker: `{"headlines": [...], "fetched_at": ...}`. Also written by
-  `/api/check-tickers`, also harmless to lose.
+  `/api/market-news/check`, also harmless to lose.
 
 ### Testing conventions
 There are no package `__init__.py` files — every module (in `src/` and in
@@ -293,16 +305,36 @@ work now rather than as a change-log entry.
   dropped) was removed rather than left as dead code.
 - `/tickers` renders instantly from the `data/tickers.json` snapshot cache (a
   ticker with no cached snapshot renders "Loading…"), then the page's script
-  calls `/api/check-tickers` in the background (mirrors `/api/check`'s
-  pattern, including the `#checking-indicator` markup/CSS). A live-fetch
+  fires one `/api/tickers/groups/<name>/check` per group plus one
+  `/api/market-news/check`, all concurrently, in the background (each
+  patches only its own `.category-block`/`#market-news`, mirroring
+  `/api/check`'s `#checking-indicator` markup/CSS for the page-level
+  "Checking for updates..." indicator, which now clears once every one of
+  those requests has settled via `Promise.allSettled`). A live-fetch
   failure falls back silently to the last cached snapshot unless there's
   none to fall back to. Unlike the indicator pipeline's background check,
   this one has no "skip if nothing changed" gate — every check re-fetches
   every ticker live, since there's no expensive AI call to protect.
-  Deliberately not built: per-ticker progressive/streaming updates (each row
-  resolving independently) — the bulk-fetch-plus-cache design plus
-  concurrent fetching (below) already deliver most of the same UX gain for
-  far less complexity.
+  **Per-group split (2026-09-16):** originally one combined
+  `/api/check-tickers` request fetched and re-rendered the entire ~36-ticker
+  watchlist at once, occasionally taking 30+ seconds and needing gunicorn's
+  `--timeout 120` to avoid a bare 500 on Render. Splitting into one request
+  per group (`check_for_ticker_updates(config={group: symbols})`, already
+  merge-safe against the shared cache) lets a smaller group repaint well
+  before a larger one finishes, instead of an all-or-nothing wait. Because
+  every group's check now genuinely runs concurrently (`app.py`'s
+  `app.run(..., threaded=True)` locally, gunicorn's normal request handling
+  when hosted), `check_for_ticker_updates`'s load-merge-save of the shared
+  `data/tickers.json`/Redis cache is wrapped in
+  `ticker_dashboard._ticker_state_lock` (held only around that in-memory
+  merge and the final write, never around the network fetch) so two
+  groups finishing close together can't silently overwrite each other's
+  freshly-fetched values — a real race that concurrent per-group requests
+  made far more likely to actually trigger than it was with a single
+  combined request. Full per-ticker progressive/streaming updates (each row
+  resolving independently) remain deliberately not built — per-group
+  granularity plus concurrent fetching within a group already deliver most
+  of the same UX gain for far less complexity.
 - `ticker_dashboard.build_ticker_cards()` fetches every ticker concurrently
   via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since
   maxing out Finnhub's free-tier rate limit risks trading slow-but-successful
@@ -324,9 +356,9 @@ work now rather than as a change-log entry.
   tables — a page-level feed, not one per row. Market news has its own
   gitignored cache, `data/market_news.json`, and its own
   `get_initial_market_news()`/`check_for_market_news()` pair mirroring the
-  ticker-card split at whole-section granularity, riding along in the same
-  `/api/check-tickers` round trip rather than a new route (its JSON response
-  carries a `news_html` field).
+  ticker-card split at whole-section granularity, with its own
+  `/api/market-news/check` route (JSON response carries a `news_html`
+  field) fetched independently of any ticker group's own check.
 - Each group's table can be sorted by clicking the Ticker or % Off High
   header (ascending, then descending on a second click) — pure client-side
   DOM reordering (`render_ticker_dashboard_page`'s inline `<script>`, event-
@@ -334,9 +366,11 @@ work now rather than as a change-log entry.
   attributes `_render_ticker_row` puts on each `<tr>` and `data-sort-key` on
   the two `<th>`s. Pending/errored rows (empty `data-pct-off-high`) always
   sort last regardless of direction. Sorting is per table/group and resets
-  on the next `/api/check-tickers` refresh, since that swaps `#ticker-groups`
-  wholesale. The earlier top-discount row highlight (Story 3) was removed
-  in favor of this — don't re-add it without the user explicitly asking.
+  when that group's own `/api/tickers/groups/<name>/check` refresh lands,
+  since that swaps just that group's `.category-block` wholesale — other
+  groups' sort state is untouched. The earlier top-discount row highlight
+  (Story 3) was removed in favor of this — don't re-add it without the
+  user explicitly asking.
 - Market Cap and trailing P/E: `finnhub_client.fetch_stock_metrics()` (the
   successor to the old `fetch_52_week_range()` — same `/stock/metric` call,
   now also pulling `marketCapitalization` and `peTTM` with fallback through
@@ -363,8 +397,8 @@ work now rather than as a change-log entry.
   the DOM immediately on confirm, no page reload on success — a failure
   re-inserts the row at its original position and alerts. Replaced the
   original reload-on-success design, which made removing one ticker pay
-  the cost of `/api/check-tickers`'s full all-tickers live refresh just
-  to reflect one row disappearing. **Add still reloads the page** on
+  the cost of a full watchlist live refresh just to reflect one row
+  disappearing. **Add still reloads the page** on
   success — not worth the complexity of constructing a client-side
   pending-row fragment for a much less frequent action; revisit if it
   starts feeling as slow as remove did.
@@ -428,15 +462,20 @@ work now rather than as a change-log entry.
   gunicorn's default 30s sync-worker timeout, which kills the worker
   mid-request (`SystemExit: 1` from `handle_abort`) rather than raising
   a catchable exception — surfaces to the browser as a bare 500 with no
-  body. Fixed by adding `--timeout 120` to the start command, not by
-  restructuring the request. A real scaling limit remains underneath
-  that fix (one request growing with the watchlist size) — a React
-  frontend that sections the page so ticker groups can update
-  independently is backlogged for this
-  (`docs/investment_dashboard_requirements.md` Section 5), not
-  currently scheduled; the user explicitly chose to defer it rather
-  than build interim per-group routes on the current string-templating
-  approach.
+  body. Originally fixed by adding `--timeout 120` to the start command
+  rather than restructuring the request, with a real scaling limit
+  left underneath (one request growing with the watchlist size) — a
+  full React frontend remained backlogged for this
+  (`docs/investment_dashboard_requirements.md` Section 5) as a bigger,
+  not-currently-scheduled rewrite. **Superseded (2026-09-16):** the
+  interim the backlog note anticipated ("without needing bespoke
+  per-group routes... in the meantime") was built instead of deferred
+  further — `/api/check-tickers` was replaced by one
+  `/api/tickers/groups/<name>/check` route per group plus
+  `/api/market-news/check`, on the existing string-templating
+  approach, with no new frontend framework. This resolves the actual
+  timeout problem directly; the React port stays backlogged for if a
+  fuller componentized frontend is ever wanted for its own sake.
 - A local `.env` value containing an unescaped shell-special character
   (e.g. `|`) silently truncates at that character under `source .env`
   — bash executes each line as a command, not a proper `.env` parser.

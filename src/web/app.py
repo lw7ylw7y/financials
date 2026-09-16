@@ -1,7 +1,11 @@
 """Local Flask app for the v2 web dashboard: the Indicator Digest Page
 ("/") and the Ticker Dashboard ("/tickers", plus its inline watchlist
-editor, "/api/tickers/add" and "/api/tickers/remove"). Bound to
-loopback only (127.0.0.1), never 0.0.0.0, so it is unreachable from
+editor, "/api/tickers/add" and "/api/tickers/remove"). The ticker
+page's background live check hits one route per group
+("/api/tickers/groups/<name>/check") plus one for market news
+("/api/market-news/check") rather than a single combined route, so a
+group with fewer tickers repaints before a slower one finishes. Bound
+to loopback only (127.0.0.1), never 0.0.0.0, so it is unreachable from
 anything but the machine it's running on, per the local-only hosting
 decision in Section 4.1 of investment_dashboard_requirements.md.
 
@@ -28,8 +32,9 @@ from live_pull import check_for_updates, get_initial_page_data
 from page_template import (
     render_check_response,
     render_indicator_digest_page,
-    render_ticker_check_response,
+    render_market_news_check_response,
     render_ticker_dashboard_page,
+    render_ticker_group_check_response,
 )
 from ticker_dashboard import (
     TickerConfigError,
@@ -38,6 +43,7 @@ from ticker_dashboard import (
     check_for_ticker_updates,
     get_initial_market_news,
     get_initial_ticker_page_data,
+    load_ticker_config,
     remove_ticker_from_group,
 )
 
@@ -96,15 +102,26 @@ def api_check():
     return jsonify({"data_updated": True, **fragments})
 
 
-@app.route("/api/check-tickers")
-def api_check_tickers():
-    """Called by the ticker page's own background script after the
-    fast initial render. See ticker_dashboard.check_for_ticker_updates
-    and check_for_market_news -- the market-news feed rides along in
-    the same round trip rather than getting its own route."""
-    grouped_cards = check_for_ticker_updates()
+@app.route("/api/tickers/groups/<group_name>/check")
+def api_check_ticker_group(group_name):
+    """Called independently by each group's own block in the ticker
+    page's background script, one small live fetch per group instead
+    of one big one for the whole watchlist -- so a group with fewer
+    tickers finishes and repaints before a slower one does. See
+    ticker_dashboard.check_for_ticker_updates."""
+    config = load_ticker_config()
+    if group_name not in config:
+        return jsonify({"error": f"unknown group: {group_name!r}"}), 404
+    grouped_cards = check_for_ticker_updates(config={group_name: config[group_name]})
+    return jsonify(render_ticker_group_check_response(group_name, grouped_cards[group_name]))
+
+
+@app.route("/api/market-news/check")
+def api_check_market_news():
+    """Called independently of any ticker group's own check -- see
+    api_check_ticker_group."""
     market_news = check_for_market_news()
-    return jsonify(render_ticker_check_response(grouped_cards, market_news))
+    return jsonify(render_market_news_check_response(market_news))
 
 
 @app.route("/api/tickers/add", methods=["POST"])
@@ -135,4 +152,8 @@ def api_remove_ticker():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    # threaded=True so the ticker page's concurrent per-group check
+    # requests actually run concurrently in local dev too, instead of
+    # queueing on Werkzeug's single-threaded default -- matching how
+    # gunicorn already serves concurrent requests on a hosted deploy.
+    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
