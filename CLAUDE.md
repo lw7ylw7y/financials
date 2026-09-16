@@ -322,9 +322,9 @@ work now rather than as a change-log entry.
   per group (`check_for_ticker_updates(config={group: symbols})`, already
   merge-safe against the shared cache) lets a smaller group repaint well
   before a larger one finishes, instead of an all-or-nothing wait. Because
-  every group's check now genuinely runs concurrently (`app.py`'s
-  `app.run(..., threaded=True)` locally, gunicorn's normal request handling
-  when hosted), `check_for_ticker_updates`'s load-merge-save of the shared
+  every group's check now genuinely runs concurrently in local dev
+  (`app.py`'s `app.run(..., threaded=True)`),
+  `check_for_ticker_updates`'s load-merge-save of the shared
   `data/tickers.json`/Redis cache is wrapped in
   `ticker_dashboard._ticker_state_lock` (held only around that in-memory
   merge and the final write, never around the network fetch) so two
@@ -335,6 +335,20 @@ work now rather than as a change-log entry.
   resolving independently) remain deliberately not built — per-group
   granularity plus concurrent fetching within a group already deliver most
   of the same UX gain for far less complexity.
+  **Render gap, found live:** the split alone doesn't help on Render —
+  gunicorn's start command has no `--workers`/`--threads` flag, so it
+  defaults to one sync worker handling exactly one request at a time.
+  The 6 concurrent per-page-load requests (5 groups + market news) just
+  queue there, so the slowest one still waits behind every request ahead
+  of it (~35s observed, versus each group's own fetch taking a few
+  seconds in isolation). Fix: add `--worker-class gthread --threads 8` to
+  Render's start command — threads, not `--workers N`, since
+  `_ticker_state_lock` is a plain `threading.Lock` that only protects
+  within one process; separate worker processes wouldn't share it and
+  would reopen the exact race the lock exists to close. This is a
+  Render-dashboard-only change (same as `--timeout 120`), not committed
+  to any file — pending as of this writing, see
+  `docs/v2_technical_design.md` Section 11.5/11.8.
 - `ticker_dashboard.build_ticker_cards()` fetches every ticker concurrently
   via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since
   maxing out Finnhub's free-tier rate limit risks trading slow-but-successful
