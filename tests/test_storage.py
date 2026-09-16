@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -193,14 +194,47 @@ class TestRedisBackedState(unittest.TestCase):
         self.assertEqual(result, stored)
         get.assert_called_once_with("indicator_state")
 
-    def test_load_returns_empty_indicators_when_redis_key_absent(self):
+    def test_load_seeds_from_local_file_when_redis_key_absent(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "indicators.json")
+            seed_state = {"indicators": {"cpi": {"history": [{"date": "2026-08-01", "value": 314.5}]}}}
+            with open(path, "w") as f:
+                json.dump(seed_state, f)
+
+            with (
+                mock.patch("storage.is_configured", return_value=True),
+                mock.patch("storage.get_json", return_value=None) as get,
+                mock.patch("storage.set_json") as set_mock,
+            ):
+                result = load_state(path)
+
+            self.assertEqual(result, seed_state)
+            get.assert_called_once_with("indicator_state")
+            set_mock.assert_called_once_with("indicator_state", seed_state)
+
+    def test_load_seeds_empty_indicators_when_redis_absent_and_no_local_file_either(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "does-not-exist.json")
+            with (
+                mock.patch("storage.is_configured", return_value=True),
+                mock.patch("storage.get_json", return_value=None),
+                mock.patch("storage.set_json") as set_mock,
+            ):
+                result = load_state(path)
+
+            self.assertEqual(result, {"indicators": {}})
+            set_mock.assert_called_once_with("indicator_state", {"indicators": {}})
+
+    def test_load_does_not_reseed_once_redis_already_has_state(self):
+        stored = {"indicators": {"cpi": {"history": []}}}
         with (
             mock.patch("storage.is_configured", return_value=True),
-            mock.patch("storage.get_json", return_value=None),
+            mock.patch("storage.get_json", return_value=stored),
+            mock.patch("storage.set_json") as set_mock,
         ):
-            result = load_state()
+            load_state()
 
-        self.assertEqual(result, {"indicators": {}})
+        set_mock.assert_not_called()
 
     def test_load_failure_propagates_rather_than_degrading(self):
         """Unlike the ticker/news caches, indicator state is core data,

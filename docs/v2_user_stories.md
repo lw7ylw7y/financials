@@ -158,6 +158,7 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] The AI response is regenerated every ingestion cycle that finds at least one genuinely new indicator value — no longer gated on whether the weekly digest email is also about to send
 - [x] The weekly digest email's send decision is based on a content fingerprint (has the digest's actual conclusion changed since the last email) plus the existing minimum-interval floor, rather than a raw "changed since last email" timestamp scan — so a week passing with no real change doesn't trigger a repeat email
 - [x] A hosted visitor's live background check (`/api/check`) writes to the same Redis-backed state the scheduled Action uses, so its result is no longer discarded on the next container restart
+- [x] On first Redis-backed read with nothing yet in Redis, indicator state is seeded from the repo's committed `data/indicators.json`, so a fresh or cleared Redis key starts with the existing multi-month history rather than a single fresh reading per indicator — added after a real incident where this gap reset every indicator's sparkline to one point (see `docs/v2_task_breakdown.md`'s H.12 incident note)
 
 ---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)

@@ -30,6 +30,17 @@ A Redis failure here is *not* caught -- unlike the ticker/news caches,
 which degrade gracefully to an empty/pending state, indicator state is
 core data, not a mere cache; a broken load should fail loudly rather
 than silently act as if there were no indicators at all.
+
+On first Redis-backed read with nothing stored yet, `load_state` seeds
+from the local `data/indicators.json` file (the repo's committed
+history) before returning it, mirroring `ticker_dashboard.py`'s
+`_load_raw_config` seeding for the ticker watchlist -- without this, a
+fresh Redis key (a brand-new Upstash database, or one that's been
+cleared) would silently start every indicator's history over from
+whatever FRED returns on the very next fetch, discarding months of
+accumulated readings. Confirmed this gap the hard way: Render picked up
+Redis-backed storage before this seeding existed, found an empty key,
+and quietly reduced every indicator to a single-point history.
 """
 
 import calendar
@@ -54,8 +65,15 @@ _INDICATOR_STATE_KEY = "indicator_state"
 def load_state(path: str = DATA_PATH) -> dict:
     if is_configured():
         state = get_json(_INDICATOR_STATE_KEY)
-        return state if state is not None else {"indicators": {}}
+        if state is None:
+            state = _read_local_file(path)
+            set_json(_INDICATOR_STATE_KEY, state)
+        return state
 
+    return _read_local_file(path)
+
+
+def _read_local_file(path: str) -> dict:
     try:
         with open(path) as f:
             return json.load(f)

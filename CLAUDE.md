@@ -455,13 +455,29 @@ structurally cannot call Gemini, only `send_fn`.
   cycle. `indicator-check.yml` no longer commits/pushes
   `data/indicators.json` (that step and the `contents: write`
   permission it needed are both gone) — it passes
-  `UPSTASH_REDIS_REST_URL`/`TOKEN` (new GitHub Actions secrets,
-  separate from Render's env vars — **still need to be added**, per
-  `docs/v2_task_breakdown.md`'s H.10) to `python3 src/main.py`
-  instead, which writes straight to Redis. Verified against the real
-  Upstash instance via a throwaway key (same approach used to verify
-  `kv_store.py` for Story 9); the full pre-existing test suite passes
-  unmodified with no Redis env vars set (the regression case).
+  `UPSTASH_REDIS_REST_URL`/`TOKEN` (GitHub Actions secrets, separate
+  from Render's env vars, added and confirmed working) to
+  `python3 src/main.py` instead, which writes straight to Redis.
+  Verified against the real Upstash instance via a throwaway key (same
+  approach used to verify `kv_store.py` for Story 9), and confirmed
+  fully live: a manually-triggered `workflow_dispatch` run completed
+  against real Redis/FRED/Gmail and sent a real digest email. The full
+  pre-existing test suite passes unmodified with no Redis env vars set
+  (the regression case).
+  **Real incident, fixed same day:** the first version shipped with no
+  seeding step for indicator state (unlike the ticker config's
+  `_load_raw_config`) — Render already had the Upstash env vars
+  configured (from Story 9) by the time this code deployed, so the
+  first live visit found `indicator_state` empty and reset every
+  indicator to a single fresh FRED reading, discarding months of
+  history; sparklines went flat and the AI response went missing.
+  Recovered by hand (`python3 src/backfill.py` to repopulate history,
+  a manual `refresh_ai_response_if_updated` call once a concurrent
+  Gemini `503` outage cleared), then actually fixed: `load_state()` now
+  seeds from the local `data/indicators.json` file the first time the
+  Redis key is empty, exactly mirroring the ticker config's pattern —
+  see `docs/v2_technical_design.md` Section 11.7's incident note and
+  `tests/test_storage.py`'s seeding tests.
 - When behavior actually changes, keep these in sync (all checkbox/prose
   acceptance-criteria style, not auto-generated): `docs/investment_dashboard_requirements.md`,
   `docs/v2_user_stories.md`, `docs/v2_technical_design.md`,
