@@ -358,25 +358,29 @@ work now rather than as a change-log entry.
   deliberately not built — per-group granularity plus concurrent fetching
   within a group already deliver most of the same UX gain for far less
   complexity.
-  **Render concurrency gap, found live:** the split alone doesn't help on
-  Render — gunicorn's start command has no `--workers`/`--threads` flag,
-  so it defaults to one sync worker handling exactly one request at a
-  time. The 6 concurrent per-page-load requests (5 groups + market news)
-  just queue there, so the slowest one still waits behind every request
-  ahead of it (~35s observed, versus each group's own fetch taking a few
-  seconds in isolation). Fix: add `--worker-class gthread --threads 8` to
-  Render's start command. Threads specifically (not `--workers N`
-  separate processes) because `ticker_dashboard._fetch_concurrency_limit`
-  — the semaphore capping how many Finnhub/Yahoo fetches run at once
-  *globally*, restoring the rate-limit protection `build_ticker_cards`'s
-  own per-call `max_workers` used to provide before concurrent per-group
-  calls could each spin up their own pool — is a plain `threading.Semaphore`,
-  process-local; separate worker processes wouldn't share it, and the
-  global fetch-concurrency cap it exists to enforce would silently widen
-  back out to (worker count × max_workers). This is a
-  Render-dashboard-only change (same as `--timeout 120`), not committed
-  to any file — pending as of this writing, see
-  `docs/v2_technical_design.md` Section 11.5/11.8.
+  **Render concurrency gap, found live (2026-09-16), fixed:** the split
+  alone didn't help on Render — gunicorn's start command had no
+  `--workers`/`--threads` flag, so it defaulted to one sync worker handling
+  exactly one request at a time; the 6 concurrent per-page-load requests
+  (5 groups + market news) just queued there, so the slowest one still
+  waited behind every request ahead of it (~35s observed, versus each
+  group's own fetch taking a few seconds in isolation). Fixed by adding
+  `--worker-class gthread --threads 8` to Render's start command — threads
+  specifically, not `--workers N` separate processes, since
+  `ticker_dashboard._fetch_concurrency_limit` (below) is a process-local
+  semaphore that separate worker processes wouldn't share.
+  **Second regression, same day, also fixed:** once real per-group
+  concurrency actually started working, `_fetch_concurrency_limit`'s
+  initial value of `5` became the new bottleneck — all 36 tickers now
+  funneled through only 5 global slots, so every group uniformly took
+  35-40s (worse than before: previously at least the smaller groups
+  finished fast). Verified directly rather than re-guessing: 36 real
+  tickers (108 Finnhub/Yahoo calls) at `max_workers=20` against the live
+  APIs completed in ~2s with zero errors, proving the tight cap wasn't
+  protecting against anything real at the API level. Raised to `25`
+  (comfortably above the current watchlist's natural per-group-pool sum
+  of 21) — confirmed live: the same 5-group check dropped from 35-40s
+  back to ~1-4.5s per group.
 - `ticker_dashboard.build_ticker_cards()` fetches every ticker concurrently
   via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since
   maxing out Finnhub's free-tier rate limit risks trading slow-but-successful

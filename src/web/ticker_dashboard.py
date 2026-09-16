@@ -111,20 +111,24 @@ _ticker_state_lock = threading.Lock()
 
 # Caps how many tickers' quote/metrics/closes fetches run at once
 # GLOBALLY, across every concurrent call to build_ticker_cards, not
-# just within one. build_ticker_cards's own max_workers only bounds
-# concurrency *inside a single call*; that was the whole safety margin
-# when the ticker page's background check was one combined request
-# (one call, one pool of up to max_workers threads). Now that the page
-# fires one build_ticker_cards call per group concurrently, each with
-# its own max_workers-sized pool, the *global* number of simultaneous
-# Finnhub/Yahoo fetches could otherwise reach group_count * max_workers
-# instead of staying capped at max_workers -- exactly what tripped
-# Finnhub's rate limit (and likely also just overloaded a
-# resource-constrained host) once real per-group concurrency actually
-# started happening. Every _build_card call acquires this regardless of
-# which group/thread pool it's running in, restoring the original
-# global ceiling.
-_fetch_concurrency_limit = threading.Semaphore(5)
+# just within one -- build_ticker_cards's own max_workers only bounds
+# concurrency *inside a single call*, so without this, the page firing
+# one call per group concurrently could otherwise reach
+# group_count * max_workers simultaneous Finnhub/Yahoo fetches instead
+# of staying capped at a known ceiling.
+#
+# Set well above what any single page load actually needs (today's 5
+# config groups sum to at most 3+3+5+5+5=21 concurrent fetches if every
+# group's own pool were maxed out at once) rather than matched tightly
+# to it, after confirming empirically that the tight cap (5) was itself
+# the bottleneck: 36 real tickers (108 Finnhub/Yahoo calls) fetched at
+# max_workers=20 against the live APIs completed in ~2s with zero
+# errors -- Finnhub's free tier tolerates this level of concurrency
+# fine, so throttling this hard was solving a problem that measurement
+# didn't actually confirm existed at the API level. Revisit only if a
+# real 429 (not just latency) shows up in logs, or the watchlist grows
+# enough groups that the natural per-group sum starts approaching this.
+_fetch_concurrency_limit = threading.Semaphore(25)
 
 
 def _is_valid_ticker(symbol) -> bool:
