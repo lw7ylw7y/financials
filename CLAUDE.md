@@ -444,14 +444,38 @@ work now rather than as a change-log entry.
   re-inserts the row at its original position and alerts. Replaced the
   original reload-on-success design, which made removing one ticker pay
   the cost of a full watchlist live refresh just to reflect one row
-  disappearing. **Add still reloads the page** on
-  success — not worth the complexity of constructing a client-side
-  pending-row fragment for a much less frequent action; revisit if it
-  starts feeling as slow as remove did.
+  disappearing.
+  **Add no longer reloads the page either (2026-09-16):** on success, the
+  page inserts a pending row for the new symbol directly into its
+  group's table, resets the form, then calls the same `checkGroup()`
+  helper the background check uses (`page_template.py`'s inline
+  `<script>`) to re-check just that one group and get real data for it
+  — no full page reload. Replaced the earlier `window.location.reload()`
+  design.
   **Caution:** reassigning `ticker_dashboard.CONFIG_PATH` after import does
   *not* redirect a call using the default arg (Python binds defaults at
   def-time) — always pass `path=`/`state_path=` explicitly when testing
   against a throwaway file, as the test suite already does.
+  **`ticker_config` is also a Redis hash now (2026-09-16), like `ticker_cache`:**
+  one field per *group* (not per ticker), each
+  `{"symbols": [...], "order": i}` — `add_ticker_to_group`/
+  `remove_ticker_from_group` read and write only their own group's field
+  (`hget_json`/`hset_json`), so two edits to different groups (or the
+  same group from two tabs) can't clobber each other's data, mirroring
+  the ticker-cache fix above. This one needed an extra piece the cache
+  didn't: Redis hash fields don't preserve insertion order on read
+  (confirmed live — `HGETALL` came back alphabetized, not in file
+  order), which would otherwise break "groups render in file order," so
+  each field carries an explicit `order` index that `load_ticker_config`
+  sorts by on read rather than trusting the hash's own field order.
+  Lower-priority than the cache fix — config edits are a deliberate,
+  infrequent user action, not something that happens automatically and
+  concurrently on every page load — but applied for consistency once
+  the order-preservation approach was confirmed to work live.
+  `market_news_cache` was deliberately **not** changed the same way: it's
+  always replaced wholesale (`{"headlines": [...], "fetched_at": ...}`),
+  never read-modify-written, so there's no per-item structure to shard
+  by and a plain string blob is already the right tool for it.
 - Auth gate (Story 8, app-code half only — see `docs/v2_technical_design.md`
   Section 11.2): `app.py`'s `_require_auth` `before_request` hook requires
   HTTP Basic Auth matching `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` on

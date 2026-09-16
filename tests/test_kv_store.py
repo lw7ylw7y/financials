@@ -9,7 +9,7 @@ for _p in (_SRC, os.path.join(_SRC, "web")):
     sys.path.insert(0, _p)
 
 import kv_store
-from kv_store import KvStoreError, get_json, hgetall_json, hset_json, is_configured, set_json
+from kv_store import KvStoreError, get_json, hget_json, hgetall_json, hset_json, is_configured, set_json
 
 ENV = {
     "UPSTASH_REDIS_REST_URL": "https://example-db.upstash.io",
@@ -167,6 +167,48 @@ class TestHsetJson(unittest.TestCase):
             ):
                 with self.assertRaises(KvStoreError):
                     hset_json("ticker_cache", "SPY", {"price": 452.31})
+
+
+class TestHgetJson(unittest.TestCase):
+    """hget_json reads one hash field without fetching every other
+    field the way hgetall_json does -- used to check a group exists
+    and read its current value before mutating just that one field
+    (see ticker_dashboard.add_ticker_to_group). Wire format confirmed
+    live: `GET {url}/hget/{key}/{field}` returning `{"result": null}`
+    for a missing field, `{"result": "<json>"}` for an existing one.
+    """
+
+    def test_decodes_an_existing_field(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch(
+                "kv_store._session.get",
+                return_value=mock_response(json_body={"result": json.dumps({"symbols": ["SPY"], "order": 0})}),
+            ) as get:
+                result = hget_json("ticker_config", "stocks")
+
+            self.assertEqual(result, {"symbols": ["SPY"], "order": 0})
+            called_url = get.call_args[0][0]
+            self.assertIn("/hget/ticker_config/stocks", called_url)
+
+    def test_returns_none_for_missing_field(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch("kv_store._session.get", return_value=mock_response(json_body={"result": None})):
+                self.assertIsNone(hget_json("ticker_config", "nonexistent"))
+
+    def test_raises_on_non_200(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch("kv_store._session.get", return_value=mock_response(status_code=500)):
+                with self.assertRaises(KvStoreError):
+                    hget_json("ticker_config", "stocks")
+
+    def test_raises_on_corrupt_value(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch(
+                "kv_store._session.get",
+                return_value=mock_response(json_body={"result": "{not valid json"}),
+            ):
+                with self.assertRaises(KvStoreError):
+                    hget_json("ticker_config", "stocks")
 
 
 class TestHgetallJson(unittest.TestCase):

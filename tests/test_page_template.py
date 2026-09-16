@@ -443,6 +443,12 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn("remove-ticker", html)
         self.assertIn("add-ticker-form", html)
 
+    def test_add_ticker_does_not_reload_the_page(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
+
+        self.assertNotIn("location.reload", html)
+        self.assertIn("checkGroup", html)
+
     def test_pending_row_shows_loading_placeholder(self):
         html = render_ticker_dashboard_page({"stocks": [make_pending_card()]}, NO_NEWS)
 

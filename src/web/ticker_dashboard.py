@@ -72,7 +72,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from finnhub_client import fetch_market_news, fetch_quote, fetch_stock_metrics
-from kv_store import KvStoreError, get_json, hgetall_json, hset_json, is_configured, set_json
+from kv_store import KvStoreError, get_json, hget_json, hgetall_json, hset_json, is_configured, set_json
 from yahoo_client import fetch_daily_closes
 
 CONFIG_PATH = os.path.join(
@@ -175,22 +175,45 @@ def _load_raw_config(path: str = CONFIG_PATH) -> dict:
     `path` the first time there's no `ticker_config` key yet, then
     never touches `path` again for that deployment. Any Redis failure
     here propagates -- see the module docstring.
+
+    Redis-backed, `ticker_config` is a *hash* -- one field per group,
+    each `{"symbols": [...], "order": i}` -- not a single JSON-blob
+    string, so `add_ticker_to_group`/`remove_ticker_from_group` can
+    mutate one group's field atomically without reading or rewriting
+    any other group's. Redis hash fields don't preserve insertion
+    order on read (confirmed live: HGETALL came back alphabetized, not
+    in the order fields were written), which would otherwise break
+    "groups render in file order" -- the embedded `order` index is
+    what actually restores it here, by explicit sort rather than
+    relying on Redis's own field ordering.
     """
     if is_configured():
-        raw = get_json(_TICKER_CONFIG_KEY)
-        if raw is None:
+        hash_value = hgetall_json(_TICKER_CONFIG_KEY)
+        if not hash_value:
             with open(path) as f:
                 raw = json.load(f)
-            set_json(_TICKER_CONFIG_KEY, raw)
-        return raw
+            _save_raw_config(raw, path)
+            return raw
+
+        ordered = sorted(hash_value.items(), key=lambda item: item[1]["order"])
+        return {"groups": {group_name: value["symbols"] for group_name, value in ordered}}
 
     with open(path) as f:
         return json.load(f)
 
 
 def _save_raw_config(raw: dict, path: str = CONFIG_PATH) -> None:
+    """Bulk-write the *entire* config at once -- used only for local
+    seeding (the first-ever Redis read in `_load_raw_config`, or a
+    local-file write) rather than the normal per-group edit path.
+    Prefer mutating one group's own field directly (as
+    `add_ticker_to_group`/`remove_ticker_from_group` do) for anything
+    else: unlike this function, that never has to touch every other
+    group's data just to change one.
+    """
     if is_configured():
-        set_json(_TICKER_CONFIG_KEY, raw)
+        for i, (group_name, symbols) in enumerate(raw.get("groups", {}).items()):
+            hset_json(_TICKER_CONFIG_KEY, group_name, {"symbols": symbols, "order": i})
         return
 
     with open(path, "w") as f:
@@ -205,10 +228,25 @@ def add_ticker_to_group(symbol: str, group_name: str, path: str = CONFIG_PATH) -
     valid way to make the same edit. No-op if `symbol` is already in
     that group. Only adds to an existing group -- creating a new group
     is still a hand-edit of the file, out of scope for this editor.
+
+    Redis-backed, this reads and writes only `group_name`'s own hash
+    field (`hget_json`/`hset_json`) -- never every other group's data,
+    so two edits to different groups (or the same group, from two
+    tabs) can't clobber each other's unrelated fields the way loading
+    the whole config, mutating it, and saving it all back would.
     """
     symbol = symbol.strip().upper()
     if not _is_valid_ticker(symbol):
         raise TickerConfigError(f"{symbol!r} isn't a valid ticker symbol")
+
+    if is_configured():
+        group = hget_json(_TICKER_CONFIG_KEY, group_name)
+        if group is None:
+            raise TickerConfigError(f"unknown group: {group_name!r}")
+        if symbol not in group["symbols"]:
+            group["symbols"].append(symbol)
+            hset_json(_TICKER_CONFIG_KEY, group_name, group)
+        return
 
     raw = _load_raw_config(path)
     groups = raw.setdefault("groups", {})
@@ -222,7 +260,18 @@ def add_ticker_to_group(symbol: str, group_name: str, path: str = CONFIG_PATH) -
 
 def remove_ticker_from_group(symbol: str, group_name: str, path: str = CONFIG_PATH) -> None:
     """Remove `symbol` from `group_name`'s ticker list and write the
-    file back. No-op if `symbol` isn't in that group."""
+    file back. No-op if `symbol` isn't in that group. Redis-backed,
+    scoped to `group_name`'s own hash field only -- see
+    `add_ticker_to_group`."""
+    if is_configured():
+        group = hget_json(_TICKER_CONFIG_KEY, group_name)
+        if group is None:
+            raise TickerConfigError(f"unknown group: {group_name!r}")
+        if symbol in group["symbols"]:
+            group["symbols"] = [s for s in group["symbols"] if s != symbol]
+            hset_json(_TICKER_CONFIG_KEY, group_name, group)
+        return
+
     raw = _load_raw_config(path)
     groups = raw.setdefault("groups", {})
     if group_name not in groups:

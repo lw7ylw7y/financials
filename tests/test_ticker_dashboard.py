@@ -713,73 +713,138 @@ class TestRemoveTickerFromGroup(unittest.TestCase):
 
 
 class TestRedisBackedTickerConfig(unittest.TestCase):
-    """Story 9: config/tickers.json's content is Redis-backed when
-    `kv_store.is_configured()` -- mocked here since these are unit
-    tests, not a live Upstash instance. `is_configured`/`get_json`/
-    `set_json` are patched on `ticker_dashboard` itself (not `kv_store`)
-    because `ticker_dashboard.py` imports those names directly via
-    `from kv_store import ...`, so patching the origin module wouldn't
-    affect the already-bound names in ticker_dashboard's namespace."""
+    """Story 9 (storage backend), Story 12 (hash shape): config/tickers.json's
+    content is Redis-backed when `kv_store.is_configured()`, as a
+    *hash* -- one field per group, each `{"symbols": [...], "order": i}`
+    -- not a single JSON-blob string, so an add/remove only ever reads
+    and writes its own group's field. The embedded `order` index
+    restores "groups render in file order" on read, since Redis hash
+    fields don't preserve insertion order (confirmed live: HGETALL
+    came back alphabetized). Mocked here since these are unit tests,
+    not a live Upstash instance. Patched on `ticker_dashboard` itself
+    (not `kv_store`) because `ticker_dashboard.py` imports those names
+    directly via `from kv_store import ...`, so patching the origin
+    module wouldn't affect the already-bound names in
+    ticker_dashboard's namespace."""
 
     def test_seeds_from_local_file_when_redis_has_nothing_yet(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = write_config(tmp_dir, {"stocks": ["SPY", "IVW"]})
             with (
                 mock.patch("ticker_dashboard.is_configured", return_value=True),
-                mock.patch("ticker_dashboard.get_json", return_value=None) as get_mock,
-                mock.patch("ticker_dashboard.set_json") as set_mock,
+                mock.patch("ticker_dashboard.hgetall_json", return_value={}) as hgetall_mock,
+                mock.patch("ticker_dashboard.hset_json") as hset_mock,
             ):
                 groups = load_ticker_config(path)
 
             self.assertEqual(groups, {"stocks": ["SPY", "IVW"]})
-            get_mock.assert_called_once_with("ticker_config")
-            set_mock.assert_called_once_with("ticker_config", {"groups": {"stocks": ["SPY", "IVW"]}})
+            hgetall_mock.assert_called_once_with("ticker_config")
+            hset_mock.assert_called_once_with("ticker_config", "stocks", {"symbols": ["SPY", "IVW"], "order": 0})
 
     def test_reads_from_redis_when_present_never_touches_local_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = write_config(tmp_dir, {"stocks": ["SHOULD-NOT-BE-USED"]})
-            redis_raw = {"groups": {"bonds": ["VGIT"]}}
+            redis_hash = {"bonds": {"symbols": ["VGIT"], "order": 0}}
             with (
                 mock.patch("ticker_dashboard.is_configured", return_value=True),
-                mock.patch("ticker_dashboard.get_json", return_value=redis_raw),
-                mock.patch("ticker_dashboard.set_json") as set_mock,
+                mock.patch("ticker_dashboard.hgetall_json", return_value=redis_hash),
+                mock.patch("ticker_dashboard.hset_json") as hset_mock,
             ):
                 groups = load_ticker_config(path)
 
             self.assertEqual(groups, {"bonds": ["VGIT"]})
-            set_mock.assert_not_called()
+            hset_mock.assert_not_called()
+
+    def test_reads_restore_file_order_despite_unordered_hash_fields(self):
+        """The whole point of the embedded `order` index: Redis doesn't
+        guarantee HGETALL returns fields in insertion order (confirmed
+        live), so the fields here are deliberately handed back already
+        out of order to prove the sort-by-`order` step is what fixes
+        display order, not incidental dict luck."""
+        redis_hash = {
+            "sector": {"symbols": ["FTEC"], "order": 3},
+            "bonds": {"symbols": ["VGIT"], "order": 1},
+            "stocks": {"symbols": ["SPY"], "order": 0},
+        }
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.hgetall_json", return_value=redis_hash),
+        ):
+            groups = load_ticker_config(CONFIG_PATH)
+
+        self.assertEqual(list(groups.keys()), ["stocks", "bonds", "sector"])
 
     def test_config_load_failure_propagates_rather_than_degrading(self):
         """Story 9's AC: a broken config load should fail loudly, not
         silently render an empty watchlist."""
         with (
             mock.patch("ticker_dashboard.is_configured", return_value=True),
-            mock.patch("ticker_dashboard.get_json", side_effect=KvStoreError("redis down")),
+            mock.patch("ticker_dashboard.hgetall_json", side_effect=KvStoreError("redis down")),
         ):
             with self.assertRaises(KvStoreError):
                 load_ticker_config(CONFIG_PATH)
 
-    def test_add_ticker_routes_through_redis(self):
-        redis_raw = {"groups": {"stocks": ["SPY"]}}
+    def test_add_ticker_reads_and_writes_only_its_own_group_field(self):
         with (
             mock.patch("ticker_dashboard.is_configured", return_value=True),
-            mock.patch("ticker_dashboard.get_json", return_value=redis_raw),
-            mock.patch("ticker_dashboard.set_json") as set_mock,
+            mock.patch("ticker_dashboard.hget_json", return_value={"symbols": ["SPY"], "order": 2}) as hget_mock,
+            mock.patch("ticker_dashboard.hset_json") as hset_mock,
         ):
             add_ticker_to_group("IVW", "stocks", CONFIG_PATH)
 
-        set_mock.assert_called_once_with("ticker_config", {"groups": {"stocks": ["SPY", "IVW"]}})
+        hget_mock.assert_called_once_with("ticker_config", "stocks")
+        hset_mock.assert_called_once_with("ticker_config", "stocks", {"symbols": ["SPY", "IVW"], "order": 2})
 
-    def test_remove_ticker_routes_through_redis(self):
-        redis_raw = {"groups": {"stocks": ["SPY", "IVW"]}}
+    def test_add_ticker_to_unknown_group_raises_without_writing(self):
         with (
             mock.patch("ticker_dashboard.is_configured", return_value=True),
-            mock.patch("ticker_dashboard.get_json", return_value=redis_raw),
-            mock.patch("ticker_dashboard.set_json") as set_mock,
+            mock.patch("ticker_dashboard.hget_json", return_value=None),
+            mock.patch("ticker_dashboard.hset_json") as hset_mock,
+        ):
+            with self.assertRaises(TickerConfigError):
+                add_ticker_to_group("IVW", "nonexistent", CONFIG_PATH)
+
+        hset_mock.assert_not_called()
+
+    def test_remove_ticker_reads_and_writes_only_its_own_group_field(self):
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch(
+                "ticker_dashboard.hget_json", return_value={"symbols": ["SPY", "IVW"], "order": 2}
+            ) as hget_mock,
+            mock.patch("ticker_dashboard.hset_json") as hset_mock,
         ):
             remove_ticker_from_group("IVW", "stocks", CONFIG_PATH)
 
-        set_mock.assert_called_once_with("ticker_config", {"groups": {"stocks": ["SPY"]}})
+        hget_mock.assert_called_once_with("ticker_config", "stocks")
+        hset_mock.assert_called_once_with("ticker_config", "stocks", {"symbols": ["SPY"], "order": 2})
+
+    def test_concurrent_edits_to_different_groups_dont_clobber_each_other(self):
+        """The whole point of the per-field design: adding to one
+        group and removing from another (standing in for two
+        different tabs' concurrent edits) only ever touch their own
+        hash field, never each other's."""
+        redis_hash = {
+            "stocks": {"symbols": ["SPY"], "order": 0},
+            "bonds": {"symbols": ["VGIT", "VGLT"], "order": 1},
+        }
+
+        def fake_hget(key, field):
+            return redis_hash[field]
+
+        def fake_hset(key, field, value):
+            redis_hash[field] = value
+
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.hget_json", side_effect=fake_hget),
+            mock.patch("ticker_dashboard.hset_json", side_effect=fake_hset),
+        ):
+            add_ticker_to_group("IVW", "stocks", CONFIG_PATH)
+            remove_ticker_from_group("VGLT", "bonds", CONFIG_PATH)
+
+        self.assertEqual(redis_hash["stocks"], {"symbols": ["SPY", "IVW"], "order": 0})
+        self.assertEqual(redis_hash["bonds"], {"symbols": ["VGIT"], "order": 1})
 
 
 class TestRedisBackedTickerCache(unittest.TestCase):

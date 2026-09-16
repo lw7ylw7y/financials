@@ -566,17 +566,22 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
       if (el) el.remove();
     }}
 
+    // Fetches one group's own live data and swaps its whole block in
+    // place -- shared by the initial background check and by the
+    // add-ticker handler below, which re-fires this on just the
+    // affected group instead of reloading the page.
+    function checkGroup(block) {{
+      var group = block.dataset.group;
+      return fetch('/api/tickers/groups/' + encodeURIComponent(group) + '/check')
+        .then(function(r) {{ return r.json(); }})
+        .then(function(data) {{
+          if (data.group_html) block.outerHTML = data.group_html.trim();
+        }});
+    }}
+
     var checks = [];
     document.querySelectorAll('#ticker-groups .category-block[data-group]').forEach(function(block) {{
-      var group = block.dataset.group;
-      checks.push(
-        fetch('/api/tickers/groups/' + encodeURIComponent(group) + '/check')
-          .then(function(r) {{ return r.json(); }})
-          .then(function(data) {{
-            if (data.group_html) block.outerHTML = data.group_html.trim();
-          }})
-          .catch(function() {{ /* stay on the stored snapshot already shown */ }})
-      );
+      checks.push(checkGroup(block).catch(function() {{ /* stay on the stored snapshot already shown */ }}));
     }});
     checks.push(
       fetch('/api/market-news/check').then(function(r) {{ return r.json(); }}).then(function(data) {{
@@ -642,7 +647,7 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
       var form = e.target.closest('.add-ticker-form');
       if (!form) return;
       e.preventDefault();
-      var group = form.dataset.group, symbol = form.symbol.value.trim();
+      var group = form.dataset.group, symbol = form.symbol.value.trim().toUpperCase();
       if (!symbol) return;
       fetch('/api/tickers/add', {{
         method: 'POST',
@@ -650,7 +655,43 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
         body: JSON.stringify({{group: group, symbol: symbol}})
       }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
         if (data.error) {{ alert(data.error); return; }}
-        window.location.reload();
+        form.reset();
+
+        var block = document.querySelector('#ticker-groups .category-block[data-group="' + group + '"]');
+        if (!block) return;
+        var tbody = block.querySelector('tbody');
+        var alreadyShown = tbody.querySelector('tr[data-symbol="' + symbol + '"]');
+        if (!alreadyShown) {{
+          var row = document.createElement('tr');
+          row.dataset.symbol = symbol;
+          row.dataset.pctOffHigh = '';
+
+          var symbolCell = document.createElement('td');
+          symbolCell.textContent = symbol;
+          var loadingCell = document.createElement('td');
+          loadingCell.colSpan = {_TICKER_DATA_COLUMN_COUNT};
+          loadingCell.className = 'muted';
+          loadingCell.textContent = 'Loading…';
+          var removeCell = document.createElement('td');
+          var removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'remove-ticker';
+          removeBtn.dataset.group = group;
+          removeBtn.dataset.symbol = symbol;
+          removeBtn.title = 'Remove ' + symbol + ' from ' + group;
+          removeBtn.setAttribute('aria-label', 'Remove ' + symbol);
+          removeBtn.textContent = '×';
+          removeCell.appendChild(removeBtn);
+
+          row.appendChild(symbolCell);
+          row.appendChild(loadingCell);
+          row.appendChild(removeCell);
+          tbody.appendChild(row);
+        }}
+
+        // Re-check just this group so the new ticker (and everything
+        // else in it) gets real data -- no full page reload needed.
+        checkGroup(block).catch(function() {{ /* leave the pending row as-is */ }});
       }}).catch(function() {{ alert('Failed to add ' + symbol + '.'); }});
     }});
   </script>

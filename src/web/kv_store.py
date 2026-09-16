@@ -7,16 +7,17 @@ restarts, since Render's free tier has no persistent local disk.
 
 Two pairs of operations: `get_json`/`set_json` store/return a whole
 JSON-serializable value under a plain string key; `hset_json`/
-`hgetall_json` do the same per-field within a Redis hash, for data
-(like the ticker cache) that needs many independent, concurrently-
-writable slots under one logical key rather than one big blob that a
-writer has to read, modify, and write back as a whole -- see
-ticker_dashboard.py's `save_ticker_snapshot`. `is_configured()` is the
-single switch callers check to decide whether to use Redis at all
-(per `UPSTASH_REDIS_REST_URL` being set) -- unset is local development's
-default, where this module is never called.
+`hget_json`/`hgetall_json` do the same per-field within a Redis hash,
+for data (like the ticker cache and the ticker config's per-group
+entries) that needs many independent, concurrently-writable slots
+under one logical key rather than one big blob that a writer has to
+read, modify, and write back as a whole -- see ticker_dashboard.py's
+`save_ticker_snapshot` and `add_ticker_to_group`/`remove_ticker_from_group`.
+`is_configured()` is the single switch callers check to decide whether
+to use Redis at all (per `UPSTASH_REDIS_REST_URL` being set) -- unset
+is local development's default, where this module is never called.
 
-All four raise `KvStoreError` on any request failure or malformed
+All five raise `KvStoreError` on any request failure or malformed
 response; callers decide what that should mean for their own data. (In
 ticker_dashboard.py: a failed ticker_config load/save propagates -- a
 broken config load should fail loudly rather than silently render an
@@ -130,6 +131,32 @@ def hset_json(key: str, field: str, value: dict) -> None:
         response.raise_for_status()
     except requests.RequestException as e:
         raise KvStoreError(f"hset failed for key={key} field={field}: {e}") from e
+
+
+def hget_json(key: str, field: str) -> dict | None:
+    """One field of the hash at `key`, JSON-decoded. `None` if the
+    field (or the hash itself) doesn't exist -- lets a caller read
+    (and later write back) just one field without ever fetching every
+    other field the way `hgetall_json` does, e.g. checking one group
+    exists before mutating just its own ticker list.
+    """
+    try:
+        response = _session.get(f"{_rest_url()}/hget/{key}/{field}", headers=_headers(), timeout=_TIMEOUT)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        raise KvStoreError(f"hget failed for key={key} field={field}: {e}") from e
+
+    try:
+        result = response.json()["result"]
+    except (ValueError, KeyError) as e:
+        raise KvStoreError(f"unexpected response for key={key} field={field}: {e}") from e
+    if result is None:
+        return None
+
+    try:
+        return json.loads(result)
+    except json.JSONDecodeError as e:
+        raise KvStoreError(f"corrupt hash field value for key={key} field={field}: {e}") from e
 
 
 def hgetall_json(key: str) -> dict:

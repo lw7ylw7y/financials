@@ -171,9 +171,12 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] The ticker page's background script fires one live-check request per group (`/api/tickers/groups/<name>/check`) plus one for market news (`/api/market-news/check`), all concurrently, instead of one combined request
 - [x] Each group's table repaints as soon as its own request resolves, independent of every other group's — a group with fewer tickers finishes and repaints before a slower one does
 - [x] A failed per-group or market-news check falls back silently to that section's last cached/pending state, same as before, without affecting any other group
-- [x] The shared ticker snapshot cache (`data/tickers.json`, or Redis when hosted) is safe against concurrent per-group writes — one group's check can't silently overwrite another's freshly-fetched values when both finish close together
-- [x] Sorting, add-ticker, and remove-ticker behavior are unchanged from the single-request design
+- [x] The shared ticker snapshot cache (`data/tickers.json`, or Redis when hosted) is safe against concurrent per-group writes — one group's check can't silently overwrite another's freshly-fetched values when both finish close together, at any concurrency level (no lock needed on the Redis path — see below)
+- [x] Sorting and remove-ticker behavior are unchanged from the single-request design
+- [x] Adding a ticker shows it immediately as a new pending row in its group and re-checks just that group for real data, without reloading the whole page (superseding the original design's `window.location.reload()`)
 - [x] `_require_auth` gates the new routes exactly as it does every other route
+- [x] The ticker cache is genuinely safe under real concurrent multi-user/multi-process access, not just within one process — Redis-backed, it's a hash (one field per symbol) with atomic per-field writes, not a lock around a whole-cache read-modify-write
+- [x] The ticker config (`config/tickers.json`'s content) gets the same treatment for consistency — Redis-backed, a hash with one field per group, each carrying an explicit order index so group display order survives Redis not preserving hash field insertion order
 
 ---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)

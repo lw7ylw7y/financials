@@ -127,10 +127,10 @@ def api_check_market_news():
 @app.route("/api/tickers/add", methods=["POST"])
 def api_add_ticker():
     """Called by the /tickers page's inline "add a ticker" form. Writes
-    straight to config/tickers.json; the browser reloads the page on
-    success so the new (pending) ticker and everything else stay in
-    sync through the same stored-render + background-check path as any
-    other page load -- no separate client-side patching for this."""
+    straight to config/tickers.json; on success the page inserts a
+    pending row for the new ticker and re-checks just that one group
+    (see render_ticker_dashboard_page's script) rather than reloading
+    the whole page."""
     body = request.get_json(silent=True) or {}
     try:
         add_ticker_to_group(body.get("symbol", ""), body.get("group", ""))
