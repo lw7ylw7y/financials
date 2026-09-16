@@ -5,9 +5,6 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch: {}
 
-permissions:
-  contents: write
-
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -30,12 +27,6 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
         run: python3 src/main.py
-
-      - name: Commit and push updated indicator data
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/indicators.json
-          git diff --staged --quiet || git commit -m "Update indicator data [skip ci]"
-          git push

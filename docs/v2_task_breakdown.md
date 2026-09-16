@@ -199,12 +199,16 @@ Dependency-driven:
 |---|---|---|
 | H.1 Add `gunicorn` to `requirements.txt`; confirm it can import `app.py` given the project's `sys.path.insert` convention (add a thin entry-point shim if not) | 1h | done — no shim needed, `gunicorn --chdir src/web app:app` (Section 11.5) |
 | H.2 `app.py` — Basic Auth `before_request` hook gated on `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` being set | 1h | done |
-| H.3 `src/web/kv_store.py` — Upstash REST wrapper (`get_json`/`set_json`) | 1h | done — wire format unverified against a real Upstash instance (Section 11.3's caveat) |
+| H.3 `src/web/kv_store.py` — Upstash REST wrapper (`get_json`/`set_json`) | 1h | done — wire format confirmed live against a real Upstash instance |
 | H.4 `ticker_dashboard.py` — branch config/cache load+save through `kv_store.py` when `UPSTASH_REDIS_REST_URL` is set, else local files (unchanged path) | 2h | done |
 | H.5 Seed-on-first-read: Redis-backed `load_ticker_config()` initializes from the repo's `config/tickers.json` when the Redis key is empty | 1h | done |
 | H.6 Render setup: create the web service, connect the GitHub repo, enable auto-deploy on push to `main`, set all required env vars | 0.5h | done — service deployed, auth confirmed over HTTPS, `UPSTASH_REDIS_REST_URL`/`TOKEN` added and confirmed live (see the gotcha note in Section 11.5: adding env vars in Render's UI doesn't take effect until you explicitly hit "Save and Redeploy" — the service silently kept running on its old environment otherwise) |
 | H.7 Tests (below) | 2h | done — `tests/test_app.py` (auth), `tests/test_kv_store.py`, `tests/test_ticker_dashboard.py`'s `TestRedisBacked*` classes |
-| **Subtotal** | **8.5h** | |
+| H.8 `storage.py` — Redis branch for `load_state`/`save_state` (Story 11), mirroring H.4's pattern | 1h | done |
+| H.9 `post_release.py`/`main.py` — split `refresh_ai_response_if_updated` (every cycle with new data) from `maybe_send_digest_email` (content-fingerprint + interval gate), remove the old `run_post_release` (Story 11) | 2h | done |
+| H.10 `.github/workflows/indicator-check.yml` — drop the git commit/push step and the `contents: write` permission, pass `UPSTASH_REDIS_REST_URL`/`TOKEN` to the ingestion step (Story 11); add those as new GitHub Actions repo secrets | 0.5h | partial — workflow file done; adding the two secrets to the GitHub repo is a manual step still needed |
+| H.11 Tests for H.8/H.9 (below) | 1.5h | done |
+| **Subtotal** | **17h** | |
 
 **Tests**
 - Auth: a request with no/invalid credentials gets 401 when `DASHBOARD_USERNAME`/`PASSWORD` are set; unauthenticated access works when they're unset (local-dev default) — done, `tests/test_app.py`
@@ -213,9 +217,15 @@ Dependency-driven:
 - `ticker_dashboard`: with no Redis env vars set, behavior is identical to the existing local-file tests (regression) — done, the full pre-existing suite (252 tests) passes unmodified
 - Seeding: first Redis read with an empty `ticker_config` key returns (and persists) the repo file's contents; a second read doesn't re-seed — done
 - A simulated Redis outage during a cache read/write degrades to the existing pending/error states rather than raising past the caller — done; a config-load outage propagates instead (also tested)
+- `storage`: with a mocked Redis backend configured, `load_state`/`save_state` go through `kv_store`; a simulated outage propagates (not caught) on both load and save — done, `tests/test_storage.py::TestRedisBackedState`
+- `storage`: with no Redis env vars set, behavior is identical to the existing local-file tests (regression) — done
+- `post_release.refresh_ai_response_if_updated`: persists a fresh AI response whenever `updated_keys` is non-empty, regardless of the email throttle state; returns `None` and leaves state untouched when nothing updated; an AI failure still returns content (with `ai_result=None`) without touching `last_ai_response` — done, `TestRefreshAiResponseIfUpdated`
+- `post_release.maybe_send_digest_email`: sends only when the content fingerprint differs from the last-emailed one AND the interval has elapsed; unchanged content skips even once the interval has passed; changed content within the interval is held back; reuses whatever's currently in `state["last_ai_response"]` rather than calling Gemini itself (no `interpret_fn` param exists on this function); a send failure doesn't update `last_digest_sent_at`/fingerprint — done, `TestMaybeSendDigestEmail`
 
 ### Manual verification
 - [x] Hosted `/` and `/tickers` both prompt for credentials before rendering anything; wrong credentials are rejected
 - [x] An in-app ticker add/remove on the hosted deployment persists to Redis (confirmed: a hosted remove now correctly updates `ticker_config` in Upstash, once Render was properly redeployed with the Upstash env vars live — see the Save-and-Redeploy gotcha in Section 11.5). Since the write lands in external Redis rather than the container's own disk, it durably survives a restart by construction; an explicit restart-and-recheck hasn't been separately performed but isn't expected to reveal anything new
-- [ ] A push to `main` (e.g. a GitHub Actions ingestion commit) triggers an auto-redeploy and the hosted Indicator Digest Page reflects the new data
+- [x] `storage.load_state`/`save_state` round-trip correctly against the real Upstash instance (verified via a throwaway Redis key, same pattern used to verify `kv_store.py` for Story 9)
+- [ ] Add `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` as GitHub Actions repo secrets (H.10) — until this is done, the scheduled workflow will fail at the `python3 src/main.py` step, since `storage.py` now requires Redis to be configured for the workflow to have anywhere durable to write
+- [ ] After adding those secrets, trigger the workflow manually (`workflow_dispatch`) once and confirm it completes without error, and that the Indicator Digest Page (hosted) reflects the run's data — note this no longer happens via a git push/auto-redeploy the way it used to (H.10 removed that step entirely); the hosted page just reads the same Redis state directly on its next visit
 - [x] `/api/check-tickers` completes without a 500 for the full 36-ticker watchlist (gunicorn `--timeout 120`, Section 11.5)

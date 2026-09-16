@@ -21,7 +21,8 @@ from post_release import (
     build_sparkline_images,
     build_table,
     indicators_updated_since,
-    run_post_release,
+    maybe_send_digest_email,
+    refresh_ai_response_if_updated,
 )
 from send_email import EmailSendError
 
@@ -253,45 +254,109 @@ class TestIndicatorsUpdatedSince(unittest.TestCase):
         self.assertNotIn("building_permits", updated)
 
 
-class TestRunPostRelease(unittest.TestCase):
-    def test_first_ever_digest_sends_immediately_with_no_prior_last_sent(self):
+class TestRefreshAiResponseIfUpdated(unittest.TestCase):
+    """Story 11: the AI response refreshes every run that found new
+    data, independent of the email's own weekly throttle."""
+
+    def test_returns_none_and_leaves_state_untouched_when_nothing_updated(self):
         state = make_state()
+
+        content = refresh_ai_response_if_updated(state, [], interpret_fn=fake_interpret_factory())
+
+        self.assertIsNone(content)
+        self.assertNotIn("last_ai_response", state)
+
+    def test_persists_ai_response_when_something_updated(self):
+        state = make_state()
+
+        content = refresh_ai_response_if_updated(
+            state, ["cpi"], interpret_fn=fake_interpret_factory()
+        )
+
+        self.assertIsNotNone(content)
+        self.assertEqual(state["last_ai_response"]["directional_read"], "neutral")
+
+    def test_ai_failure_degrades_but_still_returns_content(self):
+        state = make_state()
+
+        content = refresh_ai_response_if_updated(
+            state, ["cpi"], interpret_fn=fake_interpret_factory(succeed=False)
+        )
+
+        self.assertIsNotNone(content)
+        self.assertIsNone(content["ai_result"])
+        self.assertNotIn("last_ai_response", state)
+
+    def test_refreshes_regardless_of_the_email_throttle_state(self):
+        # No 7-day gate on this part -- that's the whole point of Story
+        # 11 decoupling it from the email.
+        state = make_state()
+        state["last_digest_sent_at"] = T1  # "recently" sent
+
+        content = refresh_ai_response_if_updated(
+            state, ["cpi"], interpret_fn=fake_interpret_factory()
+        )
+
+        self.assertIsNotNone(content)
+        self.assertIn("last_ai_response", state)
+
+
+STALE_FINGERPRINT = "stale-fingerprint-from-a-previous-run"
+
+
+class TestMaybeSendDigestEmail(unittest.TestCase):
+    """Story 11: the email send-gate is a content fingerprint of the
+    *current* persisted state plus the minimum interval -- no longer
+    coupled to whether the AI response was just refreshed this cycle."""
+
+    def test_first_ever_digest_sends_immediately_with_no_prior_state(self):
+        state = make_state()
+        refresh_ai_response_if_updated(
+            state,
+            ["nonfarm_payrolls", "cpi", "yield_curve_spread"],
+            interpret_fn=fake_interpret_factory(),
+        )
         calls = []
 
-        outcome = run_post_release(
-            state, send_fn=fake_send_factory(calls), interpret_fn=fake_interpret_factory()
-        )
+        outcome = maybe_send_digest_email(state, send_fn=fake_send_factory(calls))
 
         self.assertEqual(outcome["status"], "sent")
         self.assertEqual(len(calls), 1)
         self.assertIn("last_digest_sent_at", state)
+        self.assertIn("last_digest_content_fingerprint", state)
         self.assertEqual(
             set(calls[0]["images"].keys()),
             {"spark-nonfarm_payrolls", "spark-cpi", "spark-yield_curve_spread"},
         )
 
-    def test_nothing_updated_since_last_digest_sends_no_email(self):
+    def test_unchanged_content_sends_no_email_even_once_the_interval_has_passed(self):
         state = make_state()
-        state["last_digest_sent_at"] = T1  # after every entry's fetched_at
-        calls = []
+        refresh_ai_response_if_updated(state, ["cpi"], interpret_fn=fake_interpret_factory())
+        now = datetime.fromisoformat(T0) + timedelta(days=7)
+        first_calls = []
+        maybe_send_digest_email(state, send_fn=fake_send_factory(first_calls), now=now)
+        self.assertEqual(len(first_calls), 1)  # sanity: the first send actually happened
 
-        outcome = run_post_release(
-            state, send_fn=fake_send_factory(calls), interpret_fn=fake_interpret_factory()
+        # Nothing about state changes between cycles; another 7 days pass.
+        second_calls = []
+        outcome = maybe_send_digest_email(
+            state, send_fn=fake_send_factory(second_calls), now=now + timedelta(days=7)
         )
 
         self.assertEqual(outcome["status"], "skipped")
-        self.assertEqual(calls, [])
+        self.assertEqual(outcome["reason"], "content unchanged since last digest")
+        self.assertEqual(second_calls, [])
 
-    def test_update_within_a_week_of_last_digest_is_held_back(self):
+    def test_changed_content_within_a_week_of_last_digest_is_held_back(self):
         state = make_state()
         state["last_digest_sent_at"] = T0
+        state["last_digest_content_fingerprint"] = STALE_FINGERPRINT
         state["indicators"]["cpi"]["history"][-1]["fetched_at"] = T1
         calls = []
 
-        outcome = run_post_release(
+        outcome = maybe_send_digest_email(
             state,
             send_fn=fake_send_factory(calls),
-            interpret_fn=fake_interpret_factory(),
             now=datetime.fromisoformat(T0) + timedelta(days=3),
         )
 
@@ -299,64 +364,72 @@ class TestRunPostRelease(unittest.TestCase):
         self.assertEqual(outcome["reason"], "last digest sent too recently")
         self.assertEqual(calls, [])
 
-    def test_update_at_or_after_a_week_since_last_digest_sends(self):
+    def test_changed_content_at_or_after_a_week_since_last_digest_sends(self):
         state = make_state()
         state["last_digest_sent_at"] = T0
+        state["last_digest_content_fingerprint"] = STALE_FINGERPRINT
         state["indicators"]["cpi"]["history"][-1]["fetched_at"] = T1
+        refresh_ai_response_if_updated(state, ["cpi"], interpret_fn=fake_interpret_factory())
         calls = []
 
-        outcome = run_post_release(
+        outcome = maybe_send_digest_email(
             state,
             send_fn=fake_send_factory(calls),
-            interpret_fn=fake_interpret_factory(),
             now=datetime.fromisoformat(T0) + timedelta(days=7),
         )
 
         self.assertEqual(outcome["status"], "sent")
         self.assertEqual(len(calls), 1)
 
-    def test_update_that_happened_several_ticks_ago_is_still_reported_once_gate_opens(self):
+    def test_update_that_happened_several_ticks_ago_is_still_named_in_the_subject(self):
         # cpi updated right after the last digest (T0), long before the
-        # 7-day gate opens - it must still show up in the eventual digest,
-        # not be silently dropped for not having updated "this run".
+        # 7-day gate opens - it must still show up in the eventual digest's
+        # subject, not be silently dropped for not having "just" updated.
         state = make_state()
         state["last_digest_sent_at"] = T0
+        state["last_digest_content_fingerprint"] = STALE_FINGERPRINT
         state["indicators"]["cpi"]["history"][-1]["fetched_at"] = (
             datetime.fromisoformat(T0) + timedelta(hours=6)
         ).isoformat()
         calls = []
 
-        run_post_release(
+        maybe_send_digest_email(
             state,
             send_fn=fake_send_factory(calls),
-            interpret_fn=fake_interpret_factory(),
             now=datetime.fromisoformat(T0) + timedelta(days=7),
         )
 
         self.assertIn("CPI", calls[0]["subject"])
 
-    def test_sending_updates_last_digest_sent_at(self):
+    def test_sending_updates_last_digest_sent_at_and_fingerprint(self):
         state = make_state()
         now = datetime.fromisoformat(T0) + timedelta(days=7)
 
-        run_post_release(
-            state,
-            send_fn=fake_send_factory([]),
-            interpret_fn=fake_interpret_factory(),
-            now=now,
-        )
+        maybe_send_digest_email(state, send_fn=fake_send_factory([]), now=now)
 
         self.assertEqual(state["last_digest_sent_at"], now.isoformat())
+        self.assertIn("last_digest_content_fingerprint", state)
 
-    def test_ai_failure_degrades_to_table_and_countdown_only(self):
+    def test_uses_whatever_ai_response_is_currently_persisted_not_a_fresh_call(self):
+        # maybe_send_digest_email has no interpret_fn parameter at all --
+        # it can't call Gemini even if it wanted to, only reuse whatever
+        # refresh_ai_response_if_updated already persisted this or a
+        # prior cycle.
         state = make_state()
+        refresh_ai_response_if_updated(state, ["cpi"], interpret_fn=fake_interpret_factory())
         calls = []
 
-        outcome = run_post_release(
-            state,
-            send_fn=fake_send_factory(calls),
-            interpret_fn=fake_interpret_factory(succeed=False),
-        )
+        maybe_send_digest_email(state, send_fn=fake_send_factory(calls))
+
+        self.assertIn("Modest changes across the board.", calls[0]["body"])
+
+    def test_no_ai_response_persisted_sends_without_ai(self):
+        state = make_state()
+        # refresh_ai_response_if_updated never ran this history -- no
+        # last_ai_response to fall back on.
+        calls = []
+
+        outcome = maybe_send_digest_email(state, send_fn=fake_send_factory(calls))
 
         self.assertEqual(outcome["status"], "sent_without_ai")
         self.assertEqual(len(calls), 1)
@@ -364,17 +437,15 @@ class TestRunPostRelease(unittest.TestCase):
         self.assertIn("CPI", body)
         self.assertNotIn("Overall directional read", body)
 
-    def test_send_failure_is_reported_as_error(self):
+    def test_send_failure_is_reported_as_error_and_does_not_update_state(self):
         state = make_state()
+        refresh_ai_response_if_updated(state, ["cpi"], interpret_fn=fake_interpret_factory())
         calls = []
 
-        outcome = run_post_release(
-            state,
-            send_fn=fake_send_factory(calls, fail=True),
-            interpret_fn=fake_interpret_factory(succeed=True),
-        )
+        outcome = maybe_send_digest_email(state, send_fn=fake_send_factory(calls, fail=True))
 
         self.assertEqual(outcome["status"], "error")
+        self.assertNotIn("last_digest_sent_at", state)
 
 
 if __name__ == "__main__":

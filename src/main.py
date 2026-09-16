@@ -1,5 +1,6 @@
-"""Story 1/3/4/5/6 orchestrator — ingest FRED data, refresh the release
-calendar, and send the one digest email.
+"""Story 1/3/4/5/6/11 orchestrator — ingest FRED data, refresh the
+release calendar, keep the AI response fresh, and send the one digest
+email.
 
 Fetches the latest value for each configured indicator, tags it with its
 category, skips values already seen (no duplicate processing), and never
@@ -7,12 +8,16 @@ lets one indicator's failure stop the others. Also refreshes each
 indicator's next scheduled release date (Story 3) — before building the
 digest, so its countdown (Story 6) reflects the latest calendar data.
 Ingestion and the calendar refresh run every scheduled check (every 6
-hours); the digest email itself is throttled separately by
-post_release.run_post_release to a weekly rollup (sent only when
-something's changed since the last digest AND at least a week has
-passed), since several indicators update daily and would otherwise
-trigger near-constant emails. Persistence and querying live in
-storage.py (Story 2).
+hours); as of Story 11, the AI response is refreshed on that same
+cadence too, whenever this run found new data
+(`post_release.refresh_ai_response_if_updated`) — decoupled from the
+digest email, which stays throttled separately
+(`post_release.maybe_send_digest_email`) to a weekly rollup (sent only
+when the digest's actual content has meaningfully changed since the
+last send AND at least a week has passed), since several indicators
+update daily and would otherwise trigger near-constant emails.
+Persistence and querying live in storage.py (Story 2), Redis-backed on
+a hosted deployment (Story 11).
 """
 
 import logging
@@ -27,7 +32,7 @@ for _subdir in ("fred", "storage", "digest", "mailer"):
 
 from fetch_fred import FredApiError, fetch_latest_observation, fetch_next_release_date
 from indicators_config import INDICATORS
-from post_release import run_post_release
+from post_release import maybe_send_digest_email, refresh_ai_response_if_updated
 from storage import load_state, save_state, trim_history
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -193,7 +198,11 @@ def main() -> dict:
     state = load_state()
     results = run_ingestion(state)
     calendar_results = update_release_calendar(state)
-    digest_result = run_post_release(state)
+
+    updated_keys = [key for key, r in results.items() if r["status"] == "updated"]
+    refresh_ai_response_if_updated(state, updated_keys)
+    digest_result = maybe_send_digest_email(state)
+
     save_state(state)
 
     updated = sum(1 for r in results.values() if r["status"] == "updated")

@@ -1,12 +1,28 @@
-"""Story 4/5/6 orchestrator — the one digest email.
+"""Story 4/5/6/11 orchestrator — the weekly digest email, and (Story 11)
+decoupling how often the AI response is refreshed from how often it's
+actually emailed.
 
-Ingestion (main.run_ingestion) runs every scheduled check (every 6 hours)
-regardless, keeping data fresh. The digest email is throttled separately:
-sent only when at least one indicator has a genuinely new value *since
-the last digest*, AND at least MIN_DIGEST_INTERVAL has passed since the
-last digest was sent — a weekly rollup, not an alert on every 6-hour
-check. Several tracked indicators (e.g. the yield curve spread) update
-daily and would otherwise trigger near-constant emails.
+Ingestion (main.run_ingestion) runs every scheduled check (every 6
+hours) regardless, keeping data fresh. As of Story 11, the AI response
+(`state["last_ai_response"]`) is refreshed on that same cadence —
+`refresh_ai_response_if_updated` regenerates it whenever *this run*
+found at least one genuinely new indicator value, independent of the
+email. Previously the AI call only ever happened when an email was
+also about to send, so the stored AI take (and anything reading it
+live, like the web page) could lag up to a week behind the data.
+
+The email itself stays a weekly rollup, but the send-gate
+(`maybe_send_digest_email`) is now a content fingerprint instead of a
+raw "changed since last email" timestamp scan: it hashes the *current*
+persisted state (every indicator's latest value/date, plus the AI's
+directional_read — deliberately excluding the free-text summary, since
+Gemini can reword an unchanged situation differently between calls) and
+sends only if that fingerprint differs from what was last emailed AND
+at least MIN_DIGEST_INTERVAL has passed since the last send. This runs
+every cycle regardless of whether `refresh_ai_response_if_updated` also
+ran this same cycle — it never calls Gemini itself, just reads what's
+already in `state`, so there's no duplicate AI call and no coupling
+between "is the AI response fresh" and "should we email."
 
 The email contains: a holistic AI-generated summary reasoning across all
 8 indicators (Story 4), a table of every indicator's latest/prior value
@@ -16,6 +32,8 @@ gracefully to a table-and-countdown-only email rather than blocking the
 send.
 """
 
+import hashlib
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -90,35 +108,93 @@ def indicators_updated_since(state: dict, since: str | None) -> list[str]:
     return updated
 
 
-def run_post_release(
+def refresh_ai_response_if_updated(
     state: dict,
-    send_fn=send_email,
+    updated_keys: list[str],
     interpret_fn=interpret,
     now: datetime | None = None,
+) -> dict | None:
+    """Regenerate and persist a fresh AI take whenever `updated_keys`
+    (this run's genuinely-new indicators, from `main.run_ingestion`'s
+    own result — *not* "since the last email") is non-empty.
+
+    Decoupled from the email's weekly throttle (Story 11): the stored
+    AI response stays as fresh as the data itself, every ingestion
+    cycle, rather than only refreshing when an email also happens to
+    be due. Returns the built content dict (see
+    `build_digest_content`), or `None` if there was nothing new this
+    run — the caller passes that content straight to whatever else
+    needs it this cycle (e.g. the web page's live-check response)
+    without a second Gemini call.
+    """
+    if not updated_keys:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return build_digest_content(state, updated_keys, interpret_fn=interpret_fn, now=now)
+
+
+def _digest_fingerprint(state: dict) -> str:
+    """A stable hash of the *current* persisted state's bottom line —
+    each indicator's `(key, latest value, latest date)` plus the AI's
+    `directional_read` — used to decide whether the weekly email's
+    content has meaningfully changed since the last send (Story 11).
+
+    Deliberately excludes the AI summary's free text: Gemini can
+    reword an unchanged situation differently between calls, and that
+    alone shouldn't be enough to trigger a resend. Reads only what's
+    already in `state` — no Gemini call, safe to compute every cycle
+    regardless of whether `refresh_ai_response_if_updated` also ran.
+    """
+    facts = sorted(
+        (key, indicator["history"][-1]["value"], indicator["history"][-1]["date"])
+        for key, indicator in state.get("indicators", {}).items()
+        if indicator.get("history")
+    )
+    last_ai = state.get("last_ai_response")
+    directional_read = last_ai["directional_read"] if last_ai else None
+    payload = json.dumps({"facts": facts, "directional_read": directional_read}, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def maybe_send_digest_email(
+    state: dict,
+    send_fn=send_email,
+    now: datetime | None = None,
 ) -> dict:
-    """Build and send the digest email, gated on updates-since-last-digest
-    and the minimum weekly interval.
+    """Decide whether to send the weekly digest email — purely a
+    function of the *current* persisted state (Story 11): sends only
+    if the content fingerprint (`_digest_fingerprint`) differs from
+    what was last emailed AND at least `MIN_DIGEST_INTERVAL` has passed
+    since the last send. Runs every cycle independent of whether
+    `refresh_ai_response_if_updated` also ran this same cycle — never
+    calls Gemini itself, just reads what's already in `state`, so
+    there's no duplicate AI call and no coupling between AI freshness
+    and email cadence.
+
+    `indicators_updated_since` is still used here, but only to name
+    what's new in the email's subject/content when a send does happen
+    — it's no longer the gate deciding *whether* to send.
 
     Returns {"status": "skipped"|"sent"|"sent_without_ai"|"error", ...}.
-    On send, records `state["last_digest_sent_at"]` so future calls know
-    what's new and whether the interval has elapsed.
+    On send, records both `state["last_digest_sent_at"]` and
+    `state["last_digest_content_fingerprint"]`.
     """
     now = now or datetime.now(timezone.utc)
     last_sent_at = state.get("last_digest_sent_at")
 
-    updated_keys = indicators_updated_since(state, last_sent_at)
-    if not updated_keys:
-        return {"status": "skipped", "reason": "no updates since last digest"}
+    fingerprint = _digest_fingerprint(state)
+    if fingerprint == state.get("last_digest_content_fingerprint"):
+        return {"status": "skipped", "reason": "content unchanged since last digest"}
 
     if last_sent_at is not None:
         elapsed = now - datetime.fromisoformat(last_sent_at)
         if elapsed < MIN_DIGEST_INTERVAL:
             return {"status": "skipped", "reason": "last digest sent too recently"}
 
-    content = build_digest_content(state, updated_keys, interpret_fn=interpret_fn, now=now)
-    email = build_digest_email(
-        state, content["indicators_context"], updated_keys, content["ai_result"]
-    )
+    updated_keys = indicators_updated_since(state, last_sent_at)
+    indicators_context = build_indicators_context(state)
+    ai_result = state.get("last_ai_response")
+    email = build_digest_email(state, indicators_context, updated_keys, ai_result)
 
     try:
         send_fn(
@@ -132,4 +208,5 @@ def run_post_release(
         return {"status": "error", "error": str(e)}
 
     state["last_digest_sent_at"] = now.isoformat()
-    return {"status": "sent" if content["ai_result"] else "sent_without_ai", **email}
+    state["last_digest_content_fingerprint"] = fingerprint
+    return {"status": "sent" if ai_result else "sent_without_ai", **email}

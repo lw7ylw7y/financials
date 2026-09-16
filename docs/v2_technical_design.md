@@ -240,14 +240,12 @@ graph TD
         REQ[Any request] --> AUTH{HTTP Basic Auth<br/>DASHBOARD_USERNAME/PASSWORD}
         AUTH -->|fail| R401[401 Unauthorized]
         AUTH -->|pass| ROUTES[Existing routes: / /tickers<br/>/api/check /api/check-tickers ...]
-        ROUTES --> IND[data/indicators.json<br/>read from git checkout,<br/>refreshed by Actions + auto-redeploy]
-        ROUTES --> KV[kv_store.py -> Upstash Redis REST API<br/>ticker config + ticker cache + news cache]
+        ROUTES --> KV[kv_store.py -> Upstash Redis REST API<br/>indicator state + ticker config + ticker cache + news cache]
     end
-    GH[GitHub Actions<br/>indicator-check.yml] -->|commits + pushes indicators.json| REPO[main branch]
-    REPO -->|auto-deploy webhook| RENDER[Render redeploy]
+    GH[GitHub Actions<br/>indicator-check.yml] -->|reads/writes indicator state directly| KV
 ```
 
-Nothing about the existing route logic changes — `app.py`, `live_pull.py`, and `ticker_dashboard.py`'s business logic are the same whether run locally or hosted. Only two things are added in front of/underneath them: an auth gate, and a storage backend swap for the two ticker-related JSON blobs that have no other durable home.
+Nothing about the existing route logic changes — `app.py`, `live_pull.py`, `main.py`, and `ticker_dashboard.py`'s business logic are the same whether run locally or hosted. Only two things are added in front of/underneath them: an auth gate, and a storage backend swap for every JSON blob that has no other durable home — as of Story 11 (Section 11.7), that now includes indicator state alongside the two ticker-related blobs.
 
 ### 11.2 Auth gate — implemented
 - `app.py`'s `_require_auth` `before_request` hook compares the request's `Authorization: Basic` header against `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` env vars, via `secrets.compare_digest` — hand-rolled, no new dependency, matching this project's minimal-dependency convention
@@ -277,8 +275,26 @@ Nothing about the existing route logic changes — `app.py`, `live_pull.py`, and
 
 ### 11.6 Open Questions / Risks
 - Cold starts (seconds to under a minute) after idle spin-down — accepted tradeoff for free hosting
-- Upstash's free-tier request quota (10K commands/day) should comfortably cover one user's occasional page loads, but worth confirming once real usage is observed
+- Upstash's free-tier request quota (10K commands/day) should comfortably cover one user's occasional page loads, but worth confirming once real usage is observed — Story 11 adds indicator state as a third consumer of the same quota, on top of ticker config/caches
 - ~~gunicorn + this project's `sys.path.insert` import convention hasn't been verified together yet~~ — confirmed locally (Section 11.5), no shim needed
 - ~~HTTP Basic Auth ... not yet exercised over real HTTPS on Render~~ — confirmed on the live Render deploy: the password prompt appears over HTTPS before any content renders, correct credentials get through, wrong ones don't
-- `kv_store.py`'s Upstash wire format (Section 11.3) is implemented but not yet smoke-tested against a real Upstash database — do that before trusting it in production
+- ~~`kv_store.py`'s Upstash wire format ... not yet smoke-tested against a real Upstash database~~ — confirmed live twice now: once for ticker data (Story 9), again for indicator state (Story 11, Section 11.7)
 - `/api/check-tickers` fetching all 36 tickers in one request is a real scaling limit (Section 11.5's gunicorn-timeout fix papers over it, doesn't remove it) — a React frontend that sections the page so groups can update independently is the backlogged fix (`docs/investment_dashboard_requirements.md` Section 5), not currently scheduled
+- Story 11 (Section 11.7) means GitHub Actions and any hosted Render instance now both read-modify-write the *same* Redis-backed indicator state, with no locking — a race between an overlapping scheduled run and a live visitor's background check could lose one side's update. Accepted as low-severity and self-healing: ingestion is idempotent/dedup-by-date, so a lost update is simply rediscovered the next time either side successfully re-fetches that date from FRED. Same unguarded read-modify-write pattern Story 9 already accepted for the ticker config editor — not planning real transactional locking for a single-user tool
+- Indicator history no longer has a git-diffable audit trail now that it lives in Redis instead of a committed file (Story 11) — a deliberate tradeoff, the same one Story 9 already made for ticker data
+
+### 11.7 Indicator state moves to Redis too (Story 11) — implemented
+
+**Why:** the original design (Story 10, "stays git-sourced") kept `data/indicators.json` committed by the scheduled GitHub Action and read from Render's own git checkout, specifically to avoid a second data store. Live usage surfaced a real gap: the AI response (`state["last_ai_response"]`) was only ever regenerated when an email also happened to be due (throttled to a weekly rollup), so a hosted visitor's own background check (`/api/check`) could compute a *fresher* AI take than what GitHub Actions had last committed — but that fresher result only ever landed on Render's own ephemeral disk, discarded on the next restart, while the git-committed (and therefore durable) AI response stayed stale until GitHub's own weekly-throttled cycle caught up. Moving indicator state to Redis, mirroring Story 9's ticker persistence, gives both the scheduled Action and any hosted visitor the same shared, durable state — there's no more "whoever ran most recently has the freshest copy, and it might not stick."
+
+**`storage.py`:** `load_state`/`save_state` branch on `kv_store.is_configured()` exactly like `ticker_dashboard.py`'s functions do — Redis-backed (key `indicator_state`) when `UPSTASH_REDIS_REST_URL` is set, the unchanged local `data/indicators.json` file otherwise. `kv_store.py` stays in `src/web/`; `storage.py` adds `web/` to its own `sys.path` rather than moving the file, to avoid touching Story 9's already-working ticker code. Unlike the ticker/news caches (which degrade to an empty/pending state on a Redis failure), a `KvStoreError` here is **not caught** — indicator state is core data, not a cache, so a broken load fails loudly rather than silently acting as if there were no indicators at all.
+
+**GitHub Actions (`indicator-check.yml`):** the "Commit and push updated indicator data" step is gone entirely — the workflow now passes `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` (new repo secrets, separate from Render's env vars) to `python3 src/main.py`, which writes straight to Redis via the same `storage.py` used everywhere else. The `permissions: contents: write` grant that authorized the old commit step is removed too, since nothing in the workflow touches git anymore.
+
+**Decoupling AI refresh from the email throttle (`post_release.py`, `main.py`):** previously, the only place `build_digest_content()` (and therefore the Gemini call) ran was inside the email send-decision, gated on the same weekly throttle as the send itself. That's now split into two independent functions `main()` calls every cycle:
+- `refresh_ai_response_if_updated(state, updated_keys)` — regenerates and persists `state["last_ai_response"]` whenever *this run's* `run_ingestion` found at least one genuinely new value. No throttle at all; every 6h cycle with new data gets a fresh AI take.
+- `maybe_send_digest_email(state)` — decides whether to email, based purely on the *currently persisted* state: a content fingerprint (`_digest_fingerprint`, below) differing from what was last emailed, AND at least `MIN_DIGEST_INTERVAL` (7 days) having passed. Has no `interpret_fn` parameter at all — it structurally cannot call Gemini itself, only reuse whatever `refresh_ai_response_if_updated` most recently persisted (this cycle or several cycles ago). This is what prevents a duplicate AI call every time both functions happen to run in the same cycle.
+
+**Content fingerprint (`_digest_fingerprint`):** a SHA-256 hash of each indicator's `(key, latest value, latest date)` plus the AI's `directional_read` — deliberately **excluding** the free-text AI summary, since Gemini can reword an unchanged situation differently between calls and that alone shouldn't trigger a resend. Replaces the old design's `indicators_updated_since(state, last_sent_at)` timestamp scan as the *gate*; that function still exists and is still used, but now only to name what's new in the email's subject line once a send is already decided.
+
+**Net effect:** a hosted visitor's `/api/check` background check now writes to the exact same Redis-backed state the scheduled Action reads and writes — its result is no longer thrown away on the next container restart, closing the original gap. Verified locally against the real Upstash instance (round-tripping `storage.load_state`/`save_state` through a throwaway key, same pattern used to verify `kv_store.py` for Story 9).

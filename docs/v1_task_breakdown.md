@@ -104,15 +104,15 @@ digest AND at least a week has passed since then.
 
 | Task | Status |
 |---|---|
-| Workflow YAML (`.github/workflows/indicator-check.yml`) — schedule trigger (every 6h), `workflow_dispatch`, checkout, run, commit-back | done |
-| Secrets set on the repo (`gh secret set --env-file`, from local `.env`) — `FRED_API_KEY`, `GEMINI_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | done |
-| Git commit-and-push step from within the workflow, with explicit `permissions: contents: write` so it doesn't depend on the repo's default token permission setting | done |
+| Workflow YAML (`.github/workflows/indicator-check.yml`) — schedule trigger (every 6h), `workflow_dispatch`, checkout, run, commit-back | done, commit-back later removed (see note below) |
+| Secrets set on the repo (`gh secret set --env-file`, from local `.env`) — `FRED_API_KEY`, `GEMINI_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | done — `UPSTASH_REDIS_REST_URL`/`TOKEN` added later, v2.1/Story 11 |
+| ~~Git commit-and-push step from within the workflow, with explicit `permissions: contents: write` so it doesn't depend on the repo's default token permission setting~~ | done at the time; **removed in v2.1 (Story 11)** — `data/indicators.json` moved to Redis (`docs/v2_technical_design.md` Section 11.7), so the workflow no longer touches git or needs `contents: write` at all |
 
 End-to-end dry run against real FRED + Gemini + Gmail (not mocks) is done.
 
 **Tests**
 - [x] Full workflow run on a manual trigger (`workflow_dispatch`) completes without error against live APIs — secrets correctly masked, a real Gemini `503` was retried and succeeded, digest email sent
-- [x] Workflow correctly commits and pushes updated `indicators.json`
+- [x] ~~Workflow correctly commits and pushes updated `indicators.json`~~ — true at the time; no longer applicable post-Story 11
 - [ ] Scheduled trigger fires at the expected cron time — not yet verified; needs ≥24h of real elapsed time to observe in Actions run history
 
 ---

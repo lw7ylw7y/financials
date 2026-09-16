@@ -137,13 +137,27 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 
 ---
 
-### Story 10 — Indicator Data Stays Git-Sourced When Hosted
+### Story 10 — Indicator Data Stays Git-Sourced When Hosted (superseded by Story 11)
 **As** the investor, **I want** the hosted Indicator Digest Page to keep reading from the same committed history the email pipeline uses, **so that** I don't need a second data store just for indicators.
 
+**Superseded:** live usage surfaced a real gap this design didn't account for — see Story 11 below, which replaces it. `data/indicators.json` is no longer git-sourced on a hosted deployment; none of the ACs below were ever implemented before the design changed.
+
+- [ ] ~~The hosted deployment reads `data/indicators.json` from its own git checkout, same as local — no Redis involvement for indicator history or the AI response cache~~
+- [ ] ~~The host's auto-deploy-on-push means a GitHub Actions ingestion commit automatically refreshes the hosted page's stored data on its own schedule, with no manual redeploy step~~
+- [ ] ~~A live pull triggered by a page visit (`/api/check`) still fetches and displays fresh data for that visit even though the write to disk won't survive a restart; the next scheduled Actions commit is what makes it durable~~
+
+---
+
+### Story 11 — Durable, Consistent Indicator Data on a Host With No Persistent Disk
+**As** the investor, **I want** the hosted Indicator Digest Page and the scheduled email pipeline to share one always-current copy of indicator data and its AI take, **so that** I never see a stale AI response just because the emailed digest is throttled to a weekly cadence.
+
+**Why this replaced Story 10:** the AI response was only ever regenerated when an email also happened to be due (throttled to a weekly rollup), so a live visitor's background check could compute a *fresher* AI take than what GitHub Actions had last committed — but that fresher result only ever landed on Render's own ephemeral disk, discarded on the next restart, while the git-committed (and therefore durable) version stayed stale until GitHub's own weekly-throttled cycle caught up. Moving indicator state to Redis, mirroring Story 9's ticker persistence, gives both the scheduled Action and any hosted visitor the same shared, durable state.
+
 **Acceptance Criteria**
-- [ ] The hosted deployment reads `data/indicators.json` from its own git checkout, same as local — no Redis involvement for indicator history or the AI response cache
-- [ ] The host's auto-deploy-on-push means a GitHub Actions ingestion commit automatically refreshes the hosted page's stored data on its own schedule, with no manual redeploy step
-- [ ] A live pull triggered by a page visit (`/api/check`) still fetches and displays fresh data for that visit even though the write to disk won't survive a restart; the next scheduled Actions commit is what makes it durable
+- [x] `data/indicators.json`'s content is read from and written to Redis (via `kv_store.py`) instead of the local file, whenever `UPSTASH_REDIS_REST_URL` is set; unset (local dev's default) behaves exactly as before
+- [x] The AI response is regenerated every ingestion cycle that finds at least one genuinely new indicator value — no longer gated on whether the weekly digest email is also about to send
+- [x] The weekly digest email's send decision is based on a content fingerprint (has the digest's actual conclusion changed since the last email) plus the existing minimum-interval floor, rather than a raw "changed since last email" timestamp scan — so a week passing with no real change doesn't trigger a repeat email
+- [x] A hosted visitor's live background check (`/api/check`) writes to the same Redis-backed state the scheduled Action uses, so its result is no longer discarded on the next container restart
 
 ---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)

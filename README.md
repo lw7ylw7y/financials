@@ -17,8 +17,11 @@ to `data/indicators.json`.
 `src/storage/storage.py` persists ingestion results to `data/indicators.json` and
 provides:
 
-- `load_state()` / `save_state()` — read/write the JSON store, tolerating
-  a missing or corrupted file by starting from an empty state
+- `load_state()` / `save_state()` — read/write the store, tolerating a
+  missing or corrupted file by starting from an empty state. Redis-backed
+  (via `src/web/kv_store.py`) instead of the local file whenever
+  `UPSTASH_REDIS_REST_URL` is set — v2.1's hosted deployment, since a
+  free host's disk doesn't survive a restart; local dev is unaffected
 - `query_history(state, key, start_date=None, end_date=None)` — an
   indicator's history, optionally filtered to an inclusive date range
 - `trim_history(history)` — drops entries older than a rolling 12-month
@@ -43,16 +46,23 @@ appending — it's a single current value, not a history.
 
 v1's only product surface is one email — there is no webpage/dashboard.
 Ingestion (`run_ingestion`) runs on every scheduled check (every 6
-hours) regardless, keeping `data/indicators.json` fresh, but the digest
-email itself is throttled to a **weekly rollup**
-(`post_release.run_post_release`): sent only when at least one indicator
-has a new value *since the last digest* (tracked via
-`last_digest_sent_at`, persisted alongside `indicators` in
-`data/indicators.json`) **and** at least 7 days have passed since then.
-Several indicators (e.g. the yield curve spread) update daily and would
-otherwise trigger near-constant emails; an update that lands between
-digests is still included once the weekly gate opens, not dropped for
-having happened outside the specific run that crossed the interval. The
+hours) regardless, keeping `data/indicators.json` fresh. As of v2.1
+(Story 11), the AI response is refreshed on that same cadence too
+(`post_release.refresh_ai_response_if_updated`) — no throttle — while
+the digest email itself stays throttled to a **weekly rollup**
+(`post_release.maybe_send_digest_email`): sent only when the digest's
+actual content has meaningfully changed since the last send (a
+fingerprint of every indicator's latest value/date plus the AI's
+directional read, deliberately ignoring the free-text summary's
+wording) **and** at least 7 days have passed since then.
+`maybe_send_digest_email` never calls Gemini itself — it only reuses
+whatever the refresh step most recently persisted, so the two can't
+double-call it in the same cycle. Several indicators (e.g. the yield
+curve spread) update daily and would otherwise trigger near-constant
+emails; an update that lands between digests is still named in the
+email's subject once the weekly gate opens
+(`post_release.indicators_updated_since`), not dropped for having
+happened outside the specific run that crossed the interval. The
 digest contains:
 
 - **Story 4 — AI summary:** one holistic Gemini call (`interpret.py`,
@@ -187,7 +197,10 @@ Then open `http://127.0.0.1:5000/`. Both pages render immediately from
 stored data, then check for updates in the background.
 
 **Known trade-off:** a background check that finds new indicator data
-writes to the same `data/indicators.json` the GitHub Actions workflow
-commits, leaving the file modified in your working tree until you
-commit or discard it. Ingestion is idempotent (dedup by date), so this
-is a working-tree diff, not a data-integrity issue.
+writes to your local `data/indicators.json`, leaving the file modified
+in your working tree until you commit or discard it. Ingestion is
+idempotent (dedup by date), so this is a working-tree diff, not a
+data-integrity issue. (This is local-only: the scheduled GitHub
+Actions workflow no longer commits this file at all as of v2.1 — see
+Story 11, `docs/v2_technical_design.md` Section 11.7 — it writes to
+Redis directly on a hosted deployment instead.)

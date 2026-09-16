@@ -58,7 +58,7 @@ source .env && set +a`) before running anything that needs them.
 | `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | sending the digest email |
 | `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range/market-cap/P-E fetch and the market-news feed — without it, the background check's live fetch fails for every ticker and for market news, each falling back to its own cached data (`data/tickers.json`/`data/market_news.json`) where a cache exists, or an error/unavailable state where none does; Story 2's config loading needs no API key |
 | `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` | HTTP Basic Auth in front of every `src/web/app.py` route (Story 8) — set on a hosted deployment; both unset (the local-dev default) leaves auth off entirely, unchanged from before Story 8 |
-| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Redis-backed persistence for `config/tickers.json`/`data/tickers.json`/`data/market_news.json` on a hosted deployment (Story 9) — `UPSTASH_REDIS_REST_URL` unset (the local-dev default) leaves every one of those on the local JSON files, unchanged from before Story 9 |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Redis-backed persistence for `config/tickers.json`/`data/tickers.json`/`data/market_news.json` (Story 9) and `data/indicators.json` (Story 11) on a hosted deployment — `UPSTASH_REDIS_REST_URL` unset (the local-dev default) leaves every one of those on the local JSON files, unchanged from before either story. Needed in **two separate places**: Render's env vars (the web app) and GitHub Actions' repo secrets (the scheduled workflow, `python3 src/main.py`) — as of Story 11 the workflow has no local file to fall back to when hosted the way it briefly did, so missing secrets there fail the whole run, not just degrade a page |
 
 ## Architecture
 
@@ -71,12 +71,21 @@ src/
   fred/     fetch_fred.py (FRED API client), indicators_config.py (the 8 tracked
             indicators + their FRED series/release IDs — the source of truth for
             "what indicators exist")
-  storage/  storage.py — JSON-backed persistence (data/indicators.json):
-            load_state/save_state/query_history/trim_history
+  storage/  storage.py — persistence for data/indicators.json:
+            load_state/save_state/query_history/trim_history.
+            load_state/save_state are Redis-backed (via web/kv_store.py)
+            when UPSTASH_REDIS_REST_URL is set, else the local JSON file
+            — Story 11, same switch ticker_dashboard.py's storage
+            functions already use. A Redis failure here propagates
+            rather than degrading (indicator state is core data, not a
+            cache)
   digest/   build_digest_content.py — SHARED table/countdown/AI-assembly logic,
             called by both the email and the web page (single source of truth
             for "what does the digest contain")
-            post_release.py — email-specific: weekly-send throttle + send
+            post_release.py — refresh_ai_response_if_updated() (every
+            ingestion cycle with new data, no throttle — Story 11) and
+            maybe_send_digest_email() (the weekly-rollup send, gated on
+            a content fingerprint + interval, never calls Gemini itself)
             interpret.py — the Gemini call; heuristics.py — Sahm Rule / yield-curve
             inversion streak, fed into the AI prompt
   mailer/   email_template.py, send_email.py, sparkline.py (matplotlib PNG —
@@ -123,7 +132,10 @@ src/
             ticker_dashboard.py's config/cache load+save functions check
             to route through this instead of a local file — Story 9)
   main.py       v1 entrypoint: run_ingestion + update_release_calendar +
-                run_post_release — what the scheduled workflow calls
+                refresh_ai_response_if_updated + maybe_send_digest_email
+                — what the scheduled workflow calls (Story 11: the
+                first three of those run every cycle; only the digest
+                send is throttled)
   backfill.py   one-time manual seed of sparse history
 ```
 
@@ -145,8 +157,16 @@ src/
    directional read — persisting a successful result to
    `state["last_ai_response"]`, so the web page's initial render has
    something to show without making a live call.
-4. Email path: `post_release.run_post_release()` wraps step 3 with a weekly
-   send-throttle (`last_digest_sent_at`) and calls `send_email.send_email()`.
+4. Email path: `main.py` calls `post_release.refresh_ai_response_if_updated()`
+   every scheduled run that found new data — this is what actually calls
+   step 3 for the scheduled workflow, no throttle (Story 11). Separately,
+   `post_release.maybe_send_digest_email()` decides whether to send —
+   gated on a content fingerprint (every indicator's latest value/date +
+   the AI's `directional_read`, hashed) differing from what was last
+   emailed, AND `MIN_DIGEST_INTERVAL` (7 days) having elapsed. It never
+   calls Gemini itself (no `interpret_fn` param exists on it) — only
+   reuses whatever's currently in `state["last_ai_response"]`, however
+   recently that was refreshed — then calls `send_email.send_email()`.
 5. Web path: `web/live_pull.py` splits into `get_initial_page_data()`
    (stored-only, no network — instant render) and `check_for_updates()` (the
    real live pull via `main.run_ingestion`, gated: skips the calendar
@@ -155,6 +175,13 @@ src/
    but never a Gemini call). The page's own inline `<script>` calls
    `/api/check` right after load and patches `#table-section`/
    `#countdown-section`/`#ai-section` in place only if `data_updated` is true.
+   This path's own `interpret()` call is deliberately left as-is (Story 11)
+   even after step 4 above started refreshing the AI response independently
+   — a live visitor can still see a take fresher than the last scheduled
+   cycle. As of Story 11, its `save_state()` call lands in the same
+   Redis-backed state the scheduled workflow uses (when configured), so
+   that result is no longer thrown away on a hosted deployment's next
+   restart the way it used to be.
 6. Ticker path: `web/ticker_dashboard.py` splits the same way —
    `get_initial_ticker_page_data()` (stored-only, reads `data/tickers.json`)
    and `check_for_ticker_updates()` (the real live pull via
@@ -169,18 +196,21 @@ src/
    no-op).
 
 ### Storage model
-Three separate local JSON files under `data/` — not a database, and not the same file:
+Three separate JSON blobs — not a database, and not the same file. Local dev keeps all three as plain files under `data/`; a hosted deployment (`UPSTASH_REDIS_REST_URL` set) moves all three to Redis instead (Story 9 for the two ticker-related ones, Story 11 for indicators) — see `web/kv_store.py`.
 
-- **`data/indicators.json`** (committed) — the v1 historical record. Shape:
+- **`data/indicators.json`** (local file; Redis-backed on a hosted deployment, key `indicator_state`) — the v1 historical record, and (Story 11) the shared state both the scheduled GitHub Actions workflow and any hosted web app read/write directly, rather than two independent copies drifting apart. Shape:
   `{"indicators": {key: {name, category, fred_series_id, fred_release_id,
   history: [{date, value, fetched_at}], next_release_date}}, "last_digest_sent_at",
-  "last_ai_response": {summary, directional_read, generated_at}}`. The scheduled
-  GitHub Actions workflow (`.github/workflows/indicator-check.yml`) commits this
-  file back to the repo after each run. Running the web dashboard locally and
-  triggering a live update (via `/api/check` finding new data) writes to this
-  same file, leaving it dirty in your local working tree until committed or
-  discarded — expected and harmless, since ingestion is idempotent (dedup by
-  date never double-counts or corrupts history).
+  "last_digest_content_fingerprint", "last_ai_response": {summary, directional_read, generated_at}}`.
+  Locally, running the web dashboard and triggering a live update (via `/api/check`
+  finding new data) writes to the local file, leaving it dirty in your working tree
+  until committed or discarded — expected and harmless, since ingestion is idempotent
+  (dedup by date never double-counts or corrupts history). **No longer git-committed
+  by the scheduled workflow** (that step was removed in Story 11 along with the
+  `contents: write` permission it needed) — indicator history also no longer has a
+  git-diffable audit trail as a result, a deliberate tradeoff matching Story 9's for
+  ticker data. A Redis failure loading/saving this one propagates rather than
+  degrading, unlike the two caches below — it's core data, not a mere cache.
 - **`data/tickers.json`** (gitignored) — a pure local cache, one
   snapshot per ticker: `{symbol: {price, change, change_percent, week52_low,
   week52_high, pct_off_high, ma20, ma50, ma200, fetched_at}}`. Never committed
@@ -202,10 +232,12 @@ import build_table`), matching the pattern already at the top of each
 `src/**/*.py` file. Follow that same `sys.path.insert` pattern for any new
 module or test file rather than introducing relative/package imports. No
 network calls in tests — `fetch_fred.requests.get`, `finnhub_client.requests.get`,
-the Gemini client, and `smtplib.SMTP` are all mocked; `run_ingestion`,
-`run_post_release`, `ticker_dashboard.build_ticker_cards`, etc. all take
-injectable `fetch_fn`/`interpret_fn`/`send_fn`/`fetch_quote_fn`-style
-callables for this.
+`kv_store.requests.get`/`.post`, the Gemini client, and `smtplib.SMTP` are all
+mocked; `run_ingestion`, `refresh_ai_response_if_updated`,
+`ticker_dashboard.build_ticker_cards`, etc. all take injectable
+`fetch_fn`/`interpret_fn`/`send_fn`/`fetch_quote_fn`-style callables for this.
+`maybe_send_digest_email` is the one exception with no such callable — it
+structurally cannot call Gemini, only `send_fn`.
 
 ## Status / where things stand
 
@@ -399,6 +431,37 @@ callables for this.
   — bash executes each line as a command, not a proper `.env` parser.
   Quote such values (`KEY='value'`) to fix; confirmed this cost a
   working `DASHBOARD_PASSWORD` locally until caught and fixed.
+- Indicator state moves to Redis too (Story 11, `docs/v2_technical_design.md`
+  Section 11.7): `storage.py`'s `load_state`/`save_state` route through
+  `kv_store.py` when configured, mirroring `ticker_dashboard.py`'s
+  pattern exactly — `storage.py` adds `web/` to its own `sys.path`
+  rather than moving `kv_store.py`, to avoid touching Story 9's
+  already-working code. This replaced an earlier design (the original
+  Story 10, now superseded) where `data/indicators.json` stayed
+  git-committed by the scheduled workflow — that design had a real
+  gap: the AI response only ever refreshed when an email was also due
+  (weekly), so a live visitor's background check could compute a
+  fresher take that then got silently discarded on the next Render
+  restart. `post_release.py` also split in two:
+  `refresh_ai_response_if_updated` (every cycle with new data, no
+  throttle) and `maybe_send_digest_email` (the weekly send, gated on a
+  content fingerprint — a hash of every indicator's latest value/date
+  plus the AI's `directional_read`, deliberately excluding the
+  free-text summary since Gemini can reword an unchanged situation
+  differently between calls — plus the existing 7-day interval floor).
+  `maybe_send_digest_email` has no `interpret_fn` parameter at all; it
+  structurally cannot call Gemini, only reuse whatever's already
+  persisted, so the two functions can never double-call it in the same
+  cycle. `indicator-check.yml` no longer commits/pushes
+  `data/indicators.json` (that step and the `contents: write`
+  permission it needed are both gone) — it passes
+  `UPSTASH_REDIS_REST_URL`/`TOKEN` (new GitHub Actions secrets,
+  separate from Render's env vars — **still need to be added**, per
+  `docs/v2_task_breakdown.md`'s H.10) to `python3 src/main.py`
+  instead, which writes straight to Redis. Verified against the real
+  Upstash instance via a throwaway key (same approach used to verify
+  `kv_store.py` for Story 9); the full pre-existing test suite passes
+  unmodified with no Redis env vars set (the regression case).
 - When behavior actually changes, keep these in sync (all checkbox/prose
   acceptance-criteria style, not auto-generated): `docs/investment_dashboard_requirements.md`,
   `docs/v2_user_stories.md`, `docs/v2_technical_design.md`,

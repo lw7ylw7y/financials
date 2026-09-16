@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from datetime import date
+from unittest import mock
 
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 for _p in (
@@ -11,9 +12,11 @@ for _p in (
     os.path.join(_SRC, "storage"),
     os.path.join(_SRC, "digest"),
     os.path.join(_SRC, "mailer"),
+    os.path.join(_SRC, "web"),
 ):
     sys.path.insert(0, _p)
 
+from kv_store import KvStoreError
 from storage import load_state, query_history, save_state, trim_history
 
 
@@ -168,6 +171,68 @@ class TestTrimHistory(unittest.TestCase):
         trim_history(history, as_of=date(2026, 9, 9))
 
         self.assertEqual(len(history), 2)
+
+
+class TestRedisBackedState(unittest.TestCase):
+    """Story 11: indicator state is Redis-backed when
+    `kv_store.is_configured()` -- mocked here since these are unit
+    tests, not a live Upstash instance. `is_configured`/`get_json`/
+    `set_json` are patched on `storage` itself (not `kv_store`) because
+    `storage.py` imports those names directly via
+    `from kv_store import ...`, so patching the origin module wouldn't
+    affect the already-bound names in storage's namespace."""
+
+    def test_load_reads_from_redis(self):
+        stored = {"indicators": {"cpi": {"history": []}}}
+        with (
+            mock.patch("storage.is_configured", return_value=True),
+            mock.patch("storage.get_json", return_value=stored) as get,
+        ):
+            result = load_state()
+
+        self.assertEqual(result, stored)
+        get.assert_called_once_with("indicator_state")
+
+    def test_load_returns_empty_indicators_when_redis_key_absent(self):
+        with (
+            mock.patch("storage.is_configured", return_value=True),
+            mock.patch("storage.get_json", return_value=None),
+        ):
+            result = load_state()
+
+        self.assertEqual(result, {"indicators": {}})
+
+    def test_load_failure_propagates_rather_than_degrading(self):
+        """Unlike the ticker/news caches, indicator state is core data,
+        not a mere cache -- a broken load should fail loudly rather
+        than silently act as if there were no indicators at all."""
+        with (
+            mock.patch("storage.is_configured", return_value=True),
+            mock.patch("storage.get_json", side_effect=KvStoreError("redis down")),
+        ):
+            with self.assertRaises(KvStoreError):
+                load_state()
+
+    def test_save_writes_to_redis_not_the_local_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "indicators.json")
+            state = {"indicators": {"cpi": {"history": []}}}
+            with (
+                mock.patch("storage.is_configured", return_value=True),
+                mock.patch("storage.set_json") as set_mock,
+            ):
+                save_state(state, path)
+
+            set_mock.assert_called_once_with("indicator_state", state)
+            self.assertFalse(os.path.exists(path))
+
+    def test_save_failure_propagates_rather_than_degrading(self):
+        with (
+            mock.patch("storage.is_configured", return_value=True),
+            mock.patch("storage.set_json", side_effect=KvStoreError("redis down")),
+        ):
+            with self.assertRaises(KvStoreError):
+                save_state({"indicators": {}})
 
 
 if __name__ == "__main__":
