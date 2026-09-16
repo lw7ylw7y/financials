@@ -20,7 +20,7 @@ from finnhub_client import (
 
 
 class TestFetchQuote(unittest.TestCase):
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_parses_price_and_change(self, mock_get):
         mock_get.return_value = Mock(json=lambda: {"c": 452.31, "d": 3.81, "dp": 0.85})
 
@@ -28,7 +28,7 @@ class TestFetchQuote(unittest.TestCase):
 
         self.assertEqual(result, {"price": 452.31, "change": 3.81, "change_percent": 0.85})
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_missing_change_fields_degrade_to_none(self, mock_get):
         mock_get.return_value = Mock(json=lambda: {"c": 452.31})
 
@@ -36,14 +36,14 @@ class TestFetchQuote(unittest.TestCase):
 
         self.assertEqual(result, {"price": 452.31, "change": None, "change_percent": None})
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_raises_on_zero_price(self, mock_get):
         mock_get.return_value = Mock(json=lambda: {"c": 0})
 
         with self.assertRaises(FinnhubApiError):
             fetch_quote("BADSYM", api_key="test-key")
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_raises_on_request_exception(self, mock_get):
         mock_get.side_effect = requests.ConnectionError("boom")
 
@@ -57,7 +57,7 @@ class TestFetchQuote(unittest.TestCase):
 
 
 class TestFetchStockMetrics(unittest.TestCase):
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_parses_range_market_cap_and_pe(self, mock_get):
         mock_get.return_value = Mock(
             json=lambda: {
@@ -77,7 +77,7 @@ class TestFetchStockMetrics(unittest.TestCase):
             {"low": 629.28, "high": 779.37, "market_cap": 3500000.0, "pe_ratio": 34.2},
         )
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_missing_market_cap_and_pe_degrade_to_none(self, mock_get):
         mock_get.return_value = Mock(
             json=lambda: {"metric": {"52WeekLow": 629.28, "52WeekHigh": 779.37}}
@@ -88,7 +88,7 @@ class TestFetchStockMetrics(unittest.TestCase):
         self.assertIsNone(result["market_cap"])
         self.assertIsNone(result["pe_ratio"])
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_pe_falls_back_through_alternate_fields(self, mock_get):
         mock_get.return_value = Mock(
             json=lambda: {
@@ -104,14 +104,14 @@ class TestFetchStockMetrics(unittest.TestCase):
 
         self.assertEqual(result["pe_ratio"], 18.5)
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_raises_on_missing_metric(self, mock_get):
         mock_get.return_value = Mock(json=lambda: {"metric": {}})
 
         with self.assertRaises(FinnhubApiError):
             fetch_stock_metrics("BADSYM", api_key="test-key")
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_raises_on_request_exception(self, mock_get):
         mock_get.side_effect = requests.ConnectionError("boom")
 
@@ -120,7 +120,7 @@ class TestFetchStockMetrics(unittest.TestCase):
 
 
 class TestFetchMarketNews(unittest.TestCase):
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_filters_to_top_news_category(self, mock_get):
         mock_get.return_value = Mock(
             json=lambda: [
@@ -135,7 +135,7 @@ class TestFetchMarketNews(unittest.TestCase):
         self.assertEqual(result[0]["headline"], "Stocks rally")
         self.assertEqual(result[0]["source"], "CNBC")
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_respects_limit(self, mock_get):
         mock_get.return_value = Mock(
             json=lambda: [
@@ -148,7 +148,7 @@ class TestFetchMarketNews(unittest.TestCase):
 
         self.assertEqual(len(result), 5)
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_skips_articles_missing_headline_or_url(self, mock_get):
         mock_get.return_value = Mock(
             json=lambda: [
@@ -161,7 +161,7 @@ class TestFetchMarketNews(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_empty_response_returns_empty_list(self, mock_get):
         mock_get.return_value = Mock(json=lambda: [])
 
@@ -169,7 +169,7 @@ class TestFetchMarketNews(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    @patch("finnhub_client.requests.get")
+    @patch("finnhub_client._session.get")
     def test_raises_on_request_exception(self, mock_get):
         mock_get.side_effect = requests.ConnectionError("boom")
 

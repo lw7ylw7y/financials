@@ -31,6 +31,14 @@ import requests
 
 _TIMEOUT = 10
 
+# Shared across every call -- Story 12's per-symbol ticker-cache writes
+# mean up to one HSET per ticker per group-check request (e.g. 15 for
+# the largest config group), each otherwise paying a fresh DNS+TCP+TLS
+# handshake to the same Upstash host. See finnhub_client.py's identical
+# _session for the full reasoning; Session objects are documented
+# thread-safe for this kind of concurrent reuse.
+_session = requests.Session()
+
 
 class KvStoreError(Exception):
     """Raised for any Upstash REST request/response problem."""
@@ -72,7 +80,7 @@ def _headers() -> dict:
 def get_json(key: str) -> dict | None:
     """`None` if `key` doesn't exist yet in Redis."""
     try:
-        response = requests.get(f"{_rest_url()}/get/{key}", headers=_headers(), timeout=_TIMEOUT)
+        response = _session.get(f"{_rest_url()}/get/{key}", headers=_headers(), timeout=_TIMEOUT)
         response.raise_for_status()
     except requests.RequestException as e:
         raise KvStoreError(f"get failed for key={key}: {e}") from e
@@ -93,7 +101,7 @@ def get_json(key: str) -> dict | None:
 def set_json(key: str, value: dict) -> None:
     """Overwrites `key` with `value`, JSON-encoded."""
     try:
-        response = requests.post(
+        response = _session.post(
             f"{_rest_url()}/set/{key}",
             headers=_headers(),
             data=json.dumps(value),
@@ -113,7 +121,7 @@ def hset_json(key: str, field: str, value: dict) -> None:
     data the way a read-modify-write of a single JSON blob could.
     """
     try:
-        response = requests.post(
+        response = _session.post(
             f"{_rest_url()}/hset/{key}/{field}",
             headers=_headers(),
             data=json.dumps(value),
@@ -131,7 +139,7 @@ def hgetall_json(key: str) -> dict:
     don't need one either.
     """
     try:
-        response = requests.get(f"{_rest_url()}/hgetall/{key}", headers=_headers(), timeout=_TIMEOUT)
+        response = _session.get(f"{_rest_url()}/hgetall/{key}", headers=_headers(), timeout=_TIMEOUT)
         response.raise_for_status()
     except requests.RequestException as e:
         raise KvStoreError(f"hgetall failed for key={key}: {e}") from e

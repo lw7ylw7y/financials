@@ -19,6 +19,17 @@ import requests
 
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
+# Shared across every call (including concurrent ones from
+# ticker_dashboard.build_ticker_cards's thread pools) so repeated
+# requests to Finnhub reuse an already-open, already-TLS-negotiated
+# connection instead of paying a fresh DNS+TCP+TLS handshake every
+# single call -- a full page's background check makes up to 72 of
+# these (2 per ticker), and that per-call handshake cost is far more
+# noticeable on a CPU-constrained host than on a well-resourced one.
+# Session objects are documented thread-safe for exactly this kind of
+# concurrent reuse.
+_session = requests.Session()
+
 
 class FinnhubApiError(Exception):
     """Raised for any Finnhub request/response problem for a single symbol."""
@@ -44,7 +55,7 @@ def fetch_quote(symbol: str, api_key: str | None = None) -> dict:
     api_key = _require_api_key(api_key)
 
     try:
-        response = requests.get(
+        response = _session.get(
             f"{FINNHUB_BASE_URL}/quote",
             params={"symbol": symbol, "token": api_key},
             timeout=10,
@@ -88,7 +99,7 @@ def fetch_stock_metrics(symbol: str, api_key: str | None = None) -> dict:
     api_key = _require_api_key(api_key)
 
     try:
-        response = requests.get(
+        response = _session.get(
             f"{FINNHUB_BASE_URL}/stock/metric",
             params={"symbol": symbol, "metric": "all", "token": api_key},
             timeout=10,
@@ -132,7 +143,7 @@ def fetch_market_news(api_key: str | None = None, limit: int = 10) -> list[dict]
     api_key = _require_api_key(api_key)
 
     try:
-        response = requests.get(
+        response = _session.get(
             f"{FINNHUB_BASE_URL}/news",
             params={"category": "general", "token": api_key},
             timeout=10,

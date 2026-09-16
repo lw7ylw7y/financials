@@ -16,6 +16,13 @@ import requests
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 _USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
+# Shared across every call (including concurrent ones from
+# ticker_dashboard.build_ticker_cards's thread pools) so repeated
+# requests to Yahoo reuse an already-open connection instead of paying
+# a fresh DNS+TCP+TLS handshake every single call -- see
+# finnhub_client.py's identical _session for the full reasoning.
+_session = requests.Session()
+
 
 class YahooApiError(Exception):
     """Raised for any Yahoo chart-endpoint request/response problem for a single symbol."""
@@ -29,7 +36,7 @@ def fetch_daily_closes(symbol: str, range_: str = "1y") -> list[float]:
     skipped rather than raising.
     """
     try:
-        response = requests.get(
+        response = _session.get(
             YAHOO_CHART_URL.format(symbol=symbol),
             params={"range": range_, "interval": "1d"},
             headers={"User-Agent": _USER_AGENT},
