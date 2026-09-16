@@ -1,4 +1,4 @@
-"""Per-indicator trend sparklines for the digest email (Story 5 polish).
+"""Per-indicator trend sparklines for the digest email.
 
 Rendered as small PNG images rather than inline SVG — most email
 clients (Gmail included) strip <svg> from HTML email entirely, but a

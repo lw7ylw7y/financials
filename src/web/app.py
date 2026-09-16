@@ -1,16 +1,14 @@
 """Local Flask app for the v2 web dashboard: the Indicator Digest Page
-(Story 1/1a, "/") and the Ticker Dashboard (Story 2/3, "/tickers",
-plus its inline watchlist editor, Story 7, "/api/tickers/add" and
-"/api/tickers/remove"). Bound to loopback only (127.0.0.1), never
-0.0.0.0, so it is unreachable from anything but the machine it's
-running on, per the local-only hosting decision in Section 4.1 of
-investment_dashboard_requirements.md.
+("/") and the Ticker Dashboard ("/tickers", plus its inline watchlist
+editor, "/api/tickers/add" and "/api/tickers/remove"). Bound to
+loopback only (127.0.0.1), never 0.0.0.0, so it is unreachable from
+anything but the machine it's running on, per the local-only hosting
+decision in Section 4.1 of investment_dashboard_requirements.md.
 
-Auth (Story 8, Section 11.2 of the tech design): `_require_auth` gates
-every route behind HTTP Basic Auth when both `DASHBOARD_USERNAME` and
-`DASHBOARD_PASSWORD` are set (the hosted deployment) -- it's a no-op
-when either is unset, which is local development's default, so running
-this file locally with no env vars behaves exactly as it always has.
+`_require_auth` gates every route behind HTTP Basic Auth when both
+`DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` are set (the hosted
+deployment) -- it's a no-op when either is unset, which is local
+development's default.
 """
 
 import os
@@ -48,11 +46,11 @@ app = Flask(__name__)
 
 @app.before_request
 def _require_auth():
-    """HTTP Basic Auth in front of every route (Story 8). Both
-    `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` must be set to turn
-    this on -- e.g. the hosted deployment's env vars -- otherwise it's
-    a no-op, which is local development's default. `secrets.compare_digest`
-    avoids leaking credential length/prefix through timing.
+    """HTTP Basic Auth in front of every route. Both `DASHBOARD_USERNAME`
+    and `DASHBOARD_PASSWORD` must be set to turn this on -- e.g. the
+    hosted deployment's env vars -- otherwise it's a no-op, which is
+    local development's default. `secrets.compare_digest` avoids
+    leaking credential length/prefix through timing.
     """
     username = os.environ.get("DASHBOARD_USERNAME")
     password = os.environ.get("DASHBOARD_PASSWORD")
@@ -102,8 +100,8 @@ def api_check():
 def api_check_tickers():
     """Called by the ticker page's own background script after the
     fast initial render. See ticker_dashboard.check_for_ticker_updates
-    and check_for_market_news (Story 6's market-news feed rides along
-    in the same round trip rather than getting its own route)."""
+    and check_for_market_news -- the market-news feed rides along in
+    the same round trip rather than getting its own route."""
     grouped_cards = check_for_ticker_updates()
     market_news = check_for_market_news()
     return jsonify(render_ticker_check_response(grouped_cards, market_news))
@@ -111,11 +109,11 @@ def api_check_tickers():
 
 @app.route("/api/tickers/add", methods=["POST"])
 def api_add_ticker():
-    """Called by the /tickers page's inline "add a ticker" form (Story
-    7). Writes straight to config/tickers.json; the browser reloads the
-    page on success so the new (pending) ticker and everything else
-    stay in sync through the same stored-render + background-check path
-    as any other page load -- no separate client-side patching for this."""
+    """Called by the /tickers page's inline "add a ticker" form. Writes
+    straight to config/tickers.json; the browser reloads the page on
+    success so the new (pending) ticker and everything else stay in
+    sync through the same stored-render + background-check path as any
+    other page load -- no separate client-side patching for this."""
     body = request.get_json(silent=True) or {}
     try:
         add_ticker_to_group(body.get("symbol", ""), body.get("group", ""))
@@ -126,8 +124,8 @@ def api_add_ticker():
 
 @app.route("/api/tickers/remove", methods=["POST"])
 def api_remove_ticker():
-    """Called by the /tickers page's inline "remove" button on each row
-    (Story 7). See api_add_ticker."""
+    """Called by the /tickers page's inline "remove" button on each
+    row. See api_add_ticker."""
     body = request.get_json(silent=True) or {}
     try:
         remove_ticker_from_group(body.get("symbol", ""), body.get("group", ""))

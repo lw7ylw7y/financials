@@ -1,4 +1,4 @@
-"""Indicator Digest Page orchestration (Story 1/1a).
+"""Indicator Digest Page orchestration.
 
 Split into two paths so the page loads instantly and doesn't spend a
 Gemini call when nothing's actually new:

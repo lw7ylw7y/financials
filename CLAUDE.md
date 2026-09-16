@@ -239,6 +239,17 @@ mocked; `run_ingestion`, `refresh_ai_response_if_updated`,
 `maybe_send_digest_email` is the one exception with no such callable — it
 structurally cannot call Gemini, only `send_fn`.
 
+### Comment conventions
+Comments and docstrings describe the current state of the code, not its
+history. Don't reference story/task numbers, dates, "added on ...",
+"previously X, now Y", "replaces the earlier design", "confirmed live
+on ...", or otherwise narrate what changed and when — that belongs in
+commit messages and PR descriptions, not in the source, and it rots as
+the codebase moves on. Only write a comment when the WHY isn't obvious
+from the code itself (a hidden constraint, an external API's quirk, a
+non-obvious tradeoff), and state it as a plain fact about how things
+work now rather than as a change-log entry.
+
 ## Status / where things stand
 
 - The **Indicator Digest Page** (`src/web/`, `/`) is built: AI section, table

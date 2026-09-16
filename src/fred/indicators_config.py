@@ -1,10 +1,10 @@
-"""Static mapping of the 8 v1 indicators to their FRED series and category.
+"""Static mapping of the 8 tracked indicators to their FRED series and category.
 
-Per Section 4 of v1_technical_design.md. `fred_release_id` identifies the
-FRED *release* (e.g. "Employment Situation") each series is published
-under, used by Story 3 to fetch the next scheduled release date. Series
-that update continuously rather than on a discrete release schedule
-(the yield curve spread) have no release ID and are skipped by Story 3.
+`fred_release_id` identifies the FRED *release* (e.g. "Employment
+Situation") each series is published under, used to fetch the next
+scheduled release date. Series that update continuously rather than on
+a discrete release schedule (the yield curve spread) have no release ID
+and are skipped for that lookup.
 """
 
 INDICATORS = {

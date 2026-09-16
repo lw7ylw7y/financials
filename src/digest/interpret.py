@@ -1,16 +1,16 @@
-"""Gemini API call for the digest email's holistic AI interpretation (Story 4).
+"""Gemini API call for the digest's holistic AI interpretation.
 
 Uses gemini-3.8-flash, a free-tier model (per ai.google.dev/gemini-api/docs/pricing),
 since this is a short, well-specified commentary task with low request
 volume — well within the free tier's daily/per-minute limits.
 
-Per Section 6 of v1_technical_design.md: one call per digest email,
-reasoning across *all 8* indicators' 12-reading historical windows
-together (not one call per updated indicator) plus, where applicable,
-pre-computed named-heuristic values (heuristics.py), and returns a short
-plain-English summary plus one overall bullish/bearish/neutral
-directional read. Deliberately excludes the AI's own past
-interpretations from the input, to avoid anchoring on earlier reads.
+One call per digest, reasoning across *all 8* indicators' 12-reading
+historical windows together (not one call per updated indicator) plus,
+where applicable, pre-computed named-heuristic values (heuristics.py),
+and returns a short plain-English summary plus one overall
+bullish/bearish/neutral directional read. Deliberately excludes the
+AI's own past interpretations from the input, to avoid anchoring on
+earlier reads.
 """
 
 import logging

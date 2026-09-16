@@ -1,17 +1,14 @@
-"""Thin client for Yahoo Finance's public chart endpoint (Story 3).
+"""Thin client for Yahoo Finance's public chart endpoint.
 
-Finnhub's free tier no longer serves `/stock/candle` (historical daily
-closes) -- confirmed returning 403 "You don't have access to this
-resource." for every symbol/resolution/asset-class tried, a known
-free-tier restriction, not a request-shape problem. `/stock/metric`
-still gives Finnhub's own 52-week high/low for free, but nothing for
-moving averages, which need the daily close series itself. This
-endpoint is undocumented but public (no API key, no auth, no bot/JS
-challenge -- confirmed directly, unlike stooq.com which now gates every
-request behind a proof-of-work challenge), and is what libraries like
-yfinance call under the hood; used directly here via plain `requests`
-to avoid pulling in that library's much heavier dependency tree for
-one field.
+Finnhub's free tier blocks `/stock/candle` (historical daily closes)
+outright -- a known free-tier restriction, not a request-shape problem.
+`/stock/metric` still gives Finnhub's own 52-week high/low for free,
+but nothing for moving averages, which need the daily close series
+itself. This Yahoo endpoint is undocumented but public (no API key, no
+auth, no bot/JS challenge, unlike stooq.com which gates every request
+behind a proof-of-work challenge), and is what libraries like yfinance
+call under the hood; used directly here via plain `requests` to avoid
+pulling in that library's much heavier dependency tree for one field.
 """
 
 import requests

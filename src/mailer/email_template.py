@@ -1,4 +1,4 @@
-"""Digest email rendering — plain-text and HTML bodies (Stories 4/5/6).
+"""Digest email rendering — plain-text and HTML bodies.
 
 Kept separate from post_release.py's orchestration/throttling logic:
 this module only turns already-computed data (AI result, table,

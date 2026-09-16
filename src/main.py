@@ -1,23 +1,21 @@
-"""Story 1/3/4/5/6/11 orchestrator — ingest FRED data, refresh the
-release calendar, keep the AI response fresh, and send the one digest
-email.
+"""Orchestrator — ingest FRED data, refresh the release calendar, keep
+the AI response fresh, and send the one digest email.
 
 Fetches the latest value for each configured indicator, tags it with its
 category, skips values already seen (no duplicate processing), and never
 lets one indicator's failure stop the others. Also refreshes each
-indicator's next scheduled release date (Story 3) — before building the
-digest, so its countdown (Story 6) reflects the latest calendar data.
-Ingestion and the calendar refresh run every scheduled check (every 6
-hours); as of Story 11, the AI response is refreshed on that same
-cadence too, whenever this run found new data
-(`post_release.refresh_ai_response_if_updated`) — decoupled from the
-digest email, which stays throttled separately
+indicator's next scheduled release date, before building the digest, so
+its countdown reflects the latest calendar data. Ingestion and the
+calendar refresh run every scheduled check (every 6 hours); the AI
+response is refreshed on that same cadence, whenever this run found new
+data (`post_release.refresh_ai_response_if_updated`) — decoupled from
+the digest email, which stays throttled separately
 (`post_release.maybe_send_digest_email`) to a weekly rollup (sent only
 when the digest's actual content has meaningfully changed since the
 last send AND at least a week has passed), since several indicators
 update daily and would otherwise trigger near-constant emails.
-Persistence and querying live in storage.py (Story 2), Redis-backed on
-a hosted deployment (Story 11).
+Persistence and querying live in storage.py, Redis-backed on a hosted
+deployment.
 """
 
 import logging
@@ -83,7 +81,7 @@ def run_ingestion(state: dict, fetch_fn=fetch_latest_observation) -> dict:
         # "New" means a strictly newer date than what's already stored —
         # not just "different from the last entry". A same-or-older date
         # (a stale/cached response, or a same-date revision) must never
-        # be written: Story 2 requires history is never overwritten, and
+        # be written: history is append-only and never overwritten, and
         # an out-of-order append would corrupt the chronological record.
         is_new = last_entry is None or observation["date"] > last_entry["date"]
 
@@ -138,7 +136,7 @@ def update_release_calendar(state: dict, fetch_fn=fetch_next_release_date) -> di
     Indicators with no fred_release_id (e.g. the yield curve spread,
     which updates continuously, or Fed Funds Rate, whose mapped release
     bundles many series at a cadence unrelated to its own) have no
-    meaningful countdown — Story 6's countdown excludes them. Any stale
+    meaningful countdown and are excluded from it. Any stale
     next_release_date left over from a previous config is cleared here
     too, so removing an indicator's release_id actually takes effect
     rather than leaving old data behind. Overwrites next_release_date in
@@ -166,8 +164,8 @@ def update_release_calendar(state: dict, fetch_fn=fetch_next_release_date) -> di
             return key, release_id, None, e
 
     # Same reasoning as run_ingestion: only the fetches (independent
-    # I/O) run concurrently, one thread per indicator that has a
-    # release_id -- the state mutation below stays single-threaded.
+    # I/O) run concurrently, one thread per indicator with a
+    # release_id — the state mutation below stays single-threaded.
     with ThreadPoolExecutor(max_workers=max(len(to_fetch), 1)) as executor:
         fetched = list(executor.map(_fetch, to_fetch))
 

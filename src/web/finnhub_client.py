@@ -1,6 +1,6 @@
-"""Thin client for the Finnhub REST endpoints the Ticker Dashboard needs
-(Stories 3/6/8): quote, 52-week range + market cap + P/E, and general
-market news. Each endpoint is independently callable so one ticker's
+"""Thin client for the Finnhub REST endpoints the Ticker Dashboard
+needs: quote, 52-week range + market cap + P/E, and general market
+news. Each endpoint is independently callable so one ticker's
 failure (bad symbol, rate limit, request error) can't affect another's
 -- ticker_dashboard.py catches failures per-ticker, not here.
 
@@ -74,9 +74,8 @@ def fetch_stock_metrics(symbol: str, api_key: str | None = None) -> dict:
     field. Returns {"low": float, "high": float, "market_cap": float |
     None, "pe_ratio": float | None}.
 
-    52-week low/high are required -- a response missing either raises,
-    same as before this also covered market cap/P/E. `market_cap`
-    (Finnhub's `marketCapitalization`, in millions of USD) and
+    52-week low/high are required -- a response missing either raises.
+    `market_cap` (Finnhub's `marketCapitalization`, in millions of USD) and
     `pe_ratio` degrade to `None` (not a raised error) when absent --
     common for micro-caps, non-US-listed symbols, or a company with no
     trailing twelve months of earnings; the UI shows "n/a" rather than
@@ -124,12 +123,11 @@ def fetch_market_news(api_key: str | None = None, limit: int = 10) -> list[dict]
     dicts, newest first (Finnhub already returns them in that order).
 
     Finnhub's `/news?category=general` is a broad news wire, not
-    stock-market-specific -- confirmed live (2026-09-14) it's roughly
-    70% general business/world news (Yemen, Syria, ...) to 30% tagged
-    `"top news"`, and the latter is the closest thing to "market news"
-    Finnhub's own categorization offers on the free tier. Filtered to
-    `category == "top news"` here rather than attempting fragile
-    keyword matching on headlines.
+    stock-market-specific -- most of it is general business/world news,
+    with only a minority tagged `"top news"`, which is the closest
+    thing to "market news" Finnhub's own categorization offers on the
+    free tier. Filtered to `category == "top news"` here rather than
+    attempting fragile keyword matching on headlines.
     """
     api_key = _require_api_key(api_key)
 

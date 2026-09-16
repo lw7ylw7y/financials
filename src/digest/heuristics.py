@@ -1,7 +1,6 @@
-"""Named-heuristic calculations fed into Story 4's AI interpretation prompt.
+"""Named-heuristic calculations fed into the AI interpretation prompt.
 
-Computed here rather than left for the model to infer, per Section 6 of
-v1_technical_design.md.
+Computed here rather than left for the model to infer.
 """
 
 

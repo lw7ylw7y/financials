@@ -3,10 +3,9 @@ real observations.
 
 Not part of the regular scheduled run (main.py) — run manually
 (`python3 src/backfill.py`) when history is too sparse for good AI
-interpretation (Story 4 needs a real trend window, not 1-2 readings).
+interpretation, which needs a real trend window, not 1-2 readings.
 Safe to re-run: only adds observations for dates not already present,
-never overwrites or removes existing entries (preserves Story 2's
-append-only invariant).
+never overwrites or removes existing entries (history stays append-only).
 """
 
 import logging

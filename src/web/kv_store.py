@@ -1,10 +1,9 @@
-"""Upstash Redis REST API wrapper (Story 9, Section 11.3 of the tech
-design). Thin `requests`-based client, no Redis client library needed
--- matches finnhub_client.py/yahoo_client.py's plain-`requests`
-convention. Used by ticker_dashboard.py to persist config/tickers.json's
-content and the ticker/market-news caches durably across a hosted
-deployment's restarts, since Render's free tier has no persistent local
-disk.
+"""Upstash Redis REST API wrapper. Thin `requests`-based client, no
+Redis client library needed -- matches finnhub_client.py/yahoo_client.py's
+plain-`requests` convention. Used by ticker_dashboard.py and storage.py
+to persist config/tickers.json, data/indicators.json, and the
+ticker/market-news caches durably across a hosted deployment's
+restarts, since Render's free tier has no persistent local disk.
 
 Only two operations, both storing/returning a JSON-serializable value
 under a plain string key: `get_json`/`set_json`. `is_configured()` is
@@ -14,11 +13,10 @@ default, where this module is never called.
 
 Both raise `KvStoreError` on any request failure or malformed response;
 callers decide what that should mean for their own data. (In
-ticker_dashboard.py: a failed ticker_config load/save propagates --
-Story 9's AC says a broken config load should fail loudly rather than
-silently render an empty watchlist -- while the ticker/news caches
-catch it and degrade to their existing pending/error states, same as a
-missing local file.)
+ticker_dashboard.py: a failed ticker_config load/save propagates -- a
+broken config load should fail loudly rather than silently render an
+empty watchlist -- while the ticker/news caches catch it and degrade to
+their existing pending/error states, same as a missing local file.)
 """
 
 import json
@@ -39,10 +37,8 @@ def _clean_env_value(value: str) -> str:
     env var UI (e.g. Render's) with literal quotes still attached --
     those fields aren't shell-parsed, so quotes typed/pasted around a
     value become part of the literal string rather than being stripped
-    the way `source .env` would. Confirmed live: an `UPSTASH_REDIS_REST_URL`
-    of `"https://...upstash.io"` (quotes included) made `requests` raise
-    `InvalidSchema` rather than anything obviously pointing at the
-    real cause.
+    the way `source .env` would, which otherwise surfaces as `requests`
+    raising `InvalidSchema` on an oddly-quoted URL.
     """
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":

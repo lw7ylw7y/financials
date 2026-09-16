@@ -1,30 +1,24 @@
-"""Persistent store for indicator history (Story 2), Redis-backed on a
-hosted deployment (Story 11).
+"""Persistent store for indicator history, Redis-backed on a hosted
+deployment.
 
-Wraps data/indicators.json: load/save (moved here from main.py, which
-needed minimal persistence for Story 1's dedup check) plus a query
-helper for pulling an indicator's history within an optional date range.
-Appending new entries is the ingestion loop's job (main.run_ingestion);
-this module only loads, saves, queries, and trims what it's given.
+Wraps data/indicators.json: load/save plus a query helper for pulling
+an indicator's history within an optional date range. Appending new
+entries is the ingestion loop's job (main.run_ingestion); this module
+only loads, saves, queries, and trims what it's given.
 
 `load_state`/`save_state` route through `kv_store.py` (the same Upstash
-Redis wrapper Story 9 built for ticker data) when `UPSTASH_REDIS_REST_URL`
-is set, and use the local `data/indicators.json` file otherwise (local
-dev's unchanged default). This replaces the earlier design where
-`data/indicators.json` was git-committed by the scheduled GitHub Action
-and read from Render's own git checkout (Story 10) -- both the Action
-and any hosted web app now read/write the same Redis-backed state
-directly, so a live visitor's background check (`/api/check`) is no
-longer stuck writing to Render's ephemeral local disk and losing the
-result on the next restart. This does mean indicator history no longer
-has a git-diffable audit trail the way it used to -- a deliberate
-tradeoff, same one Story 9 already made for ticker data.
+Redis wrapper ticker data uses) when `UPSTASH_REDIS_REST_URL` is set,
+and use the local `data/indicators.json` file otherwise (local dev's
+default). This keeps the scheduled GitHub Action and any hosted web app
+reading/writing the same state directly, so a live visitor's background
+check (`/api/check`) is never lost to a host's ephemeral local disk.
+Indicator history has no git-diffable audit trail as a result -- a
+deliberate tradeoff, same one made for ticker data.
 
-`kv_store.py` lives in `src/web/`, not here -- rather than move it (and
-touch Story 9's already-working ticker code), this module adds `web/`
-to its own `sys.path`, matching this project's per-module
-`sys.path.insert` convention (no shared package structure to lean on
-instead).
+`kv_store.py` lives in `src/web/`, not here -- rather than move it,
+this module adds `web/` to its own `sys.path`, matching this project's
+per-module `sys.path.insert` convention (no shared package structure to
+lean on instead).
 
 A Redis failure here is *not* caught -- unlike the ticker/news caches,
 which degrade gracefully to an empty/pending state, indicator state is
@@ -33,14 +27,11 @@ than silently act as if there were no indicators at all.
 
 On first Redis-backed read with nothing stored yet, `load_state` seeds
 from the local `data/indicators.json` file (the repo's committed
-history) before returning it, mirroring `ticker_dashboard.py`'s
-`_load_raw_config` seeding for the ticker watchlist -- without this, a
-fresh Redis key (a brand-new Upstash database, or one that's been
-cleared) would silently start every indicator's history over from
-whatever FRED returns on the very next fetch, discarding months of
-accumulated readings. Confirmed this gap the hard way: Render picked up
-Redis-backed storage before this seeding existed, found an empty key,
-and quietly reduced every indicator to a single-point history.
+history) before returning it, mirroring the ticker watchlist's own
+seeding -- without this, a fresh Redis key (a brand-new Upstash
+database, or one that's been cleared) would silently start every
+indicator's history over from whatever FRED returns on the very next
+fetch, discarding months of accumulated readings.
 """
 
 import calendar

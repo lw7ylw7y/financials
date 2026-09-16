@@ -1,5 +1,5 @@
-"""HTML rendering for both v2 pages: the Indicator Digest Page
-(Story 1/1a) and the Ticker Dashboard (Story 2/3).
+"""HTML rendering for both v2 pages: the Indicator Digest Page and the
+Ticker Dashboard.
 
 A browser page, not an email, so this doesn't inherit email_template.py's
 Outlook-safe inline-style-table constraints or its CID-image sparklines —
@@ -240,8 +240,7 @@ def render_indicator_digest_page(data: dict) -> str:
 def _group_header(group_name: str) -> str:
     """Section header derived straight from the config key, e.g.
     "sector" -> "Sector" -- never a fixed lookup, so a new or renamed
-    group in config/tickers.json appears correctly with no code change
-    (Story 2/3's AC, Section 5.2 of the tech design)."""
+    group in config/tickers.json appears correctly with no code change."""
     return group_name.replace("_", " ").replace("-", " ").title()
 
 
@@ -284,8 +283,7 @@ def _render_ma_cell(price: float, ma: float | None) -> str:
     or below it, as both a color (green above / red below, matching the
     directional badges elsewhere) and a same-information arrow + signed
     percentage -- so the read doesn't depend on color perception alone.
-    "n/a" when there isn't enough history yet (Story 3's documented
-    fewer-than-window behavior).
+    "n/a" when there isn't enough history yet to compute the average.
     """
     if ma is None:
         return '<td class="num muted">n/a</td>'
@@ -306,10 +304,9 @@ def _render_ma_cell(price: float, ma: float | None) -> str:
 
 def _render_change_cell(change: float | None, change_percent: float | None) -> str:
     """Today's price move vs. the previous close -- same never-color-
-    alone convention as the moving-average cells (Section 5.2b of the
-    tech design): a signed arrow + percentage alongside the color, plus
-    the absolute $ change. "n/a" if Finnhub's quote response didn't
-    carry these fields.
+    alone convention as the moving-average cells: a signed arrow +
+    percentage alongside the color, plus the absolute $ change. "n/a"
+    if Finnhub's quote response didn't carry these fields.
     """
     if change is None or change_percent is None:
         return '<td class="num muted">n/a</td>'
@@ -330,8 +327,8 @@ def _render_change_cell(change: float | None, change_percent: float | None) -> s
 def _render_pct_off_high_cell(pct_off_high: float | None) -> str:
     """How far below the 52-week high the current price sits, as a
     plain number -- a precise complement to the range bar's visual
-    read, which already carries the color signal (Section 5.2b of the
-    tech design), so this cell deliberately doesn't repeat it.
+    read, which already carries the color signal, so this cell
+    deliberately doesn't repeat it.
     """
     if pct_off_high is None:
         return '<td class="num muted">n/a</td>'
@@ -370,9 +367,9 @@ def _render_pe_cell(pe_ratio: float | None) -> str:
 def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
     """A small "x" on every row (pending/errored/live alike -- removal
     doesn't depend on a successful fetch) that posts to
-    /api/tickers/remove (Story 7). Rendered as the row's own trailing
-    cell rather than next to the ticker symbol, so it doesn't crowd the
-    column readers scan first. Event-delegated in the page's own script
+    /api/tickers/remove. Rendered as the row's own trailing cell rather
+    than next to the ticker symbol, so it doesn't crowd the column
+    readers scan first. Event-delegated in the page's own script
     rather than bound per-button, since these rows get replaced
     wholesale by the /api/check-tickers response."""
     return (
@@ -430,8 +427,8 @@ def _render_ticker_row(card: dict) -> str:
 
 
 def _render_add_ticker_form(group_name: str) -> str:
-    """A small inline form under each group's table (Story 7) that
-    posts to /api/tickers/add. Only adds within this existing group --
+    """A small inline form under each group's table that posts to
+    /api/tickers/add. Only adds within this existing group --
     creating a new group is still a hand-edit of config/tickers.json."""
     return f"""
           <form class="add-ticker-form" data-group="{escape(group_name)}">
@@ -488,10 +485,9 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
 
 def _render_market_news(market_news: dict) -> str:
     """A single page-level feed of general market headlines shown once
-    at the top of the Ticker Dashboard (Story 6) -- deliberately
-    distinct from the per-ticker news column that was tried and removed
-    (Section 5.1 of the tech design): one feed, not one list per row, so
-    it doesn't have the table-clutter problem that got that removed.
+    at the top of the Ticker Dashboard -- deliberately distinct from a
+    per-ticker news column: one feed, not one list per row, avoids
+    cluttering the table.
     """
     if market_news["pending"]:
         return """

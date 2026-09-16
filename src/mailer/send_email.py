@@ -1,4 +1,4 @@
-"""Thin Gmail SMTP wrapper for post-release emails (Story 4)."""
+"""Thin Gmail SMTP wrapper for post-release emails."""
 
 import os
 import smtplib

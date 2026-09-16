@@ -1,21 +1,17 @@
-"""Ticker Dashboard: config loading (Story 2), per-ticker card assembly
-(Story 3), and a stored-snapshot fast-render + background-refresh split
-(Story 5, added 2026-09-13 after using the page live -- it blocked on
-every ticker's Finnhub+Yahoo fetch before showing anything).
+"""Ticker Dashboard: config loading, per-ticker card assembly, and a
+stored-snapshot fast-render + background-refresh split.
 
 Loads `config/tickers.json`'s `groups` map -- group names are never
 hardcoded here or in `page_template.py`, the dashboard renders whatever
 group keys are present, in file order, so adding, renaming, or removing
-a group is a config-only edit (Story 2's AC, Section 3.2 of the tech
-design). For each ticker, `build_ticker_cards` independently fetches a
-quote + 52-week range/market cap/P/E from Finnhub and a year of daily
-closes from Yahoo (for the moving averages -- Finnhub's free tier
-doesn't serve candles, see finnhub_client.py's docstring); a failure
-for one ticker
-(bad symbol, rate limit, request error, from either provider) is caught
-locally and turned into that ticker's error state rather than aborting
-the rest of the dashboard (Story 3's AC, Section 5.2 of the tech
-design) -- same per-item isolation pattern as v1's `run_ingestion`.
+a group is a config-only edit. For each ticker, `build_ticker_cards`
+independently fetches a quote + 52-week range/market cap/P/E from
+Finnhub and a year of daily closes from Yahoo (for the moving averages
+-- Finnhub's free tier doesn't serve candles, see finnhub_client.py's
+docstring); a failure for one ticker (bad symbol, rate limit, request
+error, from either provider) is caught locally and turned into that
+ticker's error state rather than aborting the rest of the dashboard --
+same per-item isolation pattern as v1's `run_ingestion`.
 
 `get_initial_ticker_page_data`/`check_for_ticker_updates` mirror
 `live_pull.py`'s split for the Indicator Digest Page: the initial page
@@ -27,32 +23,30 @@ a pending/loading placeholder. The background check then does the real
 fetch and persists every success, so the *next* load has fresher stale
 data to show. Unlike the indicator pipeline, there's no "skip if
 nothing changed" gate here -- there's no expensive AI call to protect,
-so the background check always re-fetches live (Story 3's AC: reloading
-re-fetches, never just replays a stale snapshot as if it were current).
-A ticker whose live fetch fails falls back to its last stored snapshot
-silently (no visible stale/live distinction, matching the Indicator
-Digest Page's dropped Live/Saved badge -- see CLAUDE.md); only a ticker
-that has *never* been successfully fetched renders as a genuine error.
+so the background check always re-fetches live rather than just
+replaying a stale snapshot as if it were current. A ticker whose live
+fetch fails falls back to its last stored snapshot silently (no visible
+stale/live distinction, matching the Indicator Digest Page's dropped
+Live/Saved badge -- see CLAUDE.md); only a ticker that has *never* been
+successfully fetched renders as a genuine error.
 
-`get_initial_market_news`/`check_for_market_news` (Story 6) are the
-same split applied to one more thing: a page-level feed of general
-market headlines, cached in `data/market_news.json` -- separate from
-the per-ticker cache since it's a single item, not one per symbol.
-Folded into the same `/api/check-tickers` background check as the
-ticker prices rather than given its own route (Section 5b of the tech
-design).
+`get_initial_market_news`/`check_for_market_news` are the same split
+applied to one more thing: a page-level feed of general market
+headlines, cached in `data/market_news.json` -- separate from the
+per-ticker cache since it's a single item, not one per symbol. Folded
+into the same `/api/check-tickers` background check as the ticker
+prices rather than given its own route.
 
-`add_ticker_to_group`/`remove_ticker_from_group` (Story 7, added
-2026-09-14) let the /tickers page itself edit config/tickers.json --
-adding or removing a ticker within an existing group, not creating or
-renaming groups (that's still a hand-edit of the file). Both read-
-modify-write the raw file directly rather than going through
-`load_ticker_config`'s cleanup pass, so an edit never silently drops
-an unrelated malformed entry elsewhere in the file.
+`add_ticker_to_group`/`remove_ticker_from_group` let the /tickers page
+itself edit config/tickers.json -- adding or removing a ticker within
+an existing group, not creating or renaming groups (that's still a
+hand-edit of the file). Both read-modify-write the raw file directly
+rather than going through `load_ticker_config`'s cleanup pass, so an
+edit never silently drops an unrelated malformed entry elsewhere in the
+file.
 
-Redis-backed storage (Story 9, added 2026-09-16, Section 11.3/11.4 of
-the tech design): Render's free tier has no persistent local disk, so
-without this, the ticker config and both caches reset to empty on
+Redis-backed storage: Render's free tier has no persistent local disk,
+so without this, the ticker config and both caches reset to empty on
 every restart/redeploy/idle-spindown. `_load_raw_config`/
 `_save_raw_config` (the config) and `load_ticker_state`/
 `save_ticker_state`/`load_market_news_state`/`save_market_news_state`
@@ -113,8 +107,8 @@ def load_ticker_config(path: str = CONFIG_PATH) -> dict[str, list[str]]:
     """Return `{group_name: [symbols]}` in file order.
 
     A malformed symbol (empty, non-alphanumeric) is skipped and logged
-    rather than raising, before it ever reaches the Finnhub client
-    (Story 2's AC) -- well-formed symbols in the same group still load.
+    rather than raising, before it ever reaches the Finnhub client --
+    well-formed symbols in the same group still load.
     """
     raw = _load_raw_config(path)
 
@@ -144,11 +138,11 @@ class TickerConfigError(Exception):
 
 def _load_raw_config(path: str = CONFIG_PATH) -> dict:
     """The full config/tickers.json dict (not just `groups`), shared by
-    `load_ticker_config` and the in-app editor (Story 7). Redis-backed
-    when `kv_store.is_configured()` (Story 9): seeds Redis from the
-    repo's bundled `path` the first time there's no `ticker_config` key
-    yet, then never touches `path` again for that deployment. Any
-    Redis failure here propagates -- see the module docstring.
+    `load_ticker_config` and the in-app editor. Redis-backed when
+    `kv_store.is_configured()`: seeds Redis from the repo's bundled
+    `path` the first time there's no `ticker_config` key yet, then
+    never touches `path` again for that deployment. Any Redis failure
+    here propagates -- see the module docstring.
     """
     if is_configured():
         raw = get_json(_TICKER_CONFIG_KEY)
@@ -175,11 +169,10 @@ def _save_raw_config(raw: dict, path: str = CONFIG_PATH) -> None:
 def add_ticker_to_group(symbol: str, group_name: str, path: str = CONFIG_PATH) -> None:
     """Append `symbol` to `group_name`'s ticker list in
     config/tickers.json and write the file back -- the in-app
-    alternative to hand-editing that file (Story 2's original AC still
-    holds: the file itself remains a perfectly valid way to make the
-    same edit). No-op if `symbol` is already in that group. Only adds
-    to an existing group -- creating a new group is still a hand-edit
-    of the file, out of scope for this editor.
+    alternative to hand-editing that file, which remains a perfectly
+    valid way to make the same edit. No-op if `symbol` is already in
+    that group. Only adds to an existing group -- creating a new group
+    is still a hand-edit of the file, out of scope for this editor.
     """
     symbol = symbol.strip().upper()
     if not _is_valid_ticker(symbol):
@@ -210,8 +203,7 @@ def remove_ticker_from_group(symbol: str, group_name: str, path: str = CONFIG_PA
 
 def _simple_moving_average(closes: list[float], window: int) -> float | None:
     """None if fewer than `window` closes are available (e.g. a
-    recently-listed ticker) -- documented behavior: show what's
-    computable, don't crash (Story 3's test plan)."""
+    recently-listed ticker) -- show what's computable, don't crash."""
     if len(closes) < window:
         return None
     return sum(closes[-window:]) / window
@@ -282,8 +274,8 @@ def build_ticker_cards(
 
     Fetches every ticker concurrently (`max_workers` threads) rather
     than one at a time -- with a large watchlist, sequential fetching
-    made the background check (Story 5) take tens of seconds.
-    `max_workers` is deliberately modest rather than maxed out: Finnhub's
+    made the background check take tens of seconds. `max_workers` is
+    deliberately modest rather than maxed out: Finnhub's
     free tier enforces an overall calls-per-minute rate limit, and
     firing every ticker's calls at once risks 429s, which would just
     turn into more error/stale-fallback cards than the sequential
@@ -334,7 +326,7 @@ def load_ticker_state(path: str = TICKER_DATA_PATH) -> dict:
     """The snapshot cache: `{symbol: {price, week52_low, week52_high,
     market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`. `{}` if
     there's nothing cached yet, the local file is corrupted, or (Redis-
-    backed, Story 9) Redis itself is unreachable -- this cache degrades
+    backed) Redis itself is unreachable -- this cache degrades
     gracefully rather than failing loudly the way `_load_raw_config`
     does, since losing it just means every row shows "Loading..."
     again, not an empty watchlist.
@@ -413,10 +405,9 @@ def check_for_ticker_updates(
 ) -> dict[str, list[dict]]:
     """The real live pull, called by the page's own background script
     after the instant stored-only render. Always re-fetches every
-    ticker live (Story 3's AC: reloading re-fetches rather than
-    replaying a stale snapshot) and persists every success back to
-    `state_path` so the *next* instant render has fresher stale data to
-    fall back on.
+    ticker live -- reloading re-fetches rather than replaying a stale
+    snapshot -- and persists every success back to `state_path` so the
+    *next* instant render has fresher stale data to fall back on.
 
     A ticker whose live fetch fails is quietly replaced with its last
     stored snapshot if one exists -- no visible stale/live distinction
@@ -452,8 +443,8 @@ def check_for_ticker_updates(
 
 def load_market_news_state(path: str = MARKET_NEWS_PATH) -> dict | None:
     """`{"headlines": [...], "fetched_at": ...}`, or `None` if there's
-    nothing cached yet, the local file is corrupted, or (Redis-backed,
-    Story 9) Redis itself is unreachable -- `None` distinguished from
+    nothing cached yet, the local file is corrupted, or (Redis-backed)
+    Redis itself is unreachable -- `None` distinguished from
     `{}` deliberately, so callers can tell "never fetched" apart from
     "fetched, turned out empty". Same graceful-degradation behavior as
     `load_ticker_state`."""
@@ -487,10 +478,10 @@ def save_market_news_state(state: dict, path: str = MARKET_NEWS_PATH) -> None:
 
 def get_initial_market_news(path: str = MARKET_NEWS_PATH) -> dict:
     """What "/tickers" renders for the market-news section -- instantly,
-    from the local cache only, no network call. Story 6: a single
-    page-level feed, not per-ticker, so unlike ticker cards there's only
-    one pending/not-pending state for the whole section, not one per
-    row. Returns `{"headlines": [...], "pending": bool}`.
+    from the local cache only, no network call. A single page-level
+    feed, not per-ticker, so unlike ticker cards there's only one
+    pending/not-pending state for the whole section, not one per row.
+    Returns `{"headlines": [...], "pending": bool}`.
     """
     stored = load_market_news_state(path)
     if stored is None:
@@ -502,17 +493,15 @@ def check_for_market_news(
     fetch_news_fn=fetch_market_news, path: str = MARKET_NEWS_PATH, now: datetime | None = None
 ) -> dict:
     """The real live pull for the market-news section, called alongside
-    `check_for_ticker_updates` by the page's background script (Section
-    5b of the tech design: folded into the same `/api/check-tickers`
-    round trip rather than given its own route/cache lifecycle, since
-    there's no evidence yet that news needs to refresh on a different
-    cadence than prices).
+    `check_for_ticker_updates` by the page's background script -- folded
+    into the same `/api/check-tickers` round trip rather than given its
+    own route/cache lifecycle, since there's no evidence that news needs
+    to refresh on a different cadence than prices.
 
     On failure, falls back to the last cached headlines if any exist --
     same silent-stale-fallback behavior as `check_for_ticker_updates`.
-    If there's nothing cached either, returns an empty list (Story 6's
-    AC: degrade to an empty/muted section, never take down the rest of
-    the page).
+    If there's nothing cached either, returns an empty list -- degrade
+    to an empty/muted section, never take down the rest of the page.
     """
     now = now or datetime.now(timezone.utc)
     try:
