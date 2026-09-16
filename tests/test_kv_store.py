@@ -85,6 +85,35 @@ class TestGetJson(unittest.TestCase):
             with self.assertRaises(KvStoreError):
                 get_json("mykey")
 
+    def test_strips_stray_quotes_pasted_around_the_url(self):
+        """Confirmed live: Render's env var fields aren't shell-parsed,
+        so a value pasted with literal surrounding quotes (e.g.
+        '"https://x.upstash.io"') keeps those quotes as part of the
+        string -- `requests` then raises InvalidSchema on the malformed
+        URL rather than anything pointing at the real cause."""
+        quoted_env = {**ENV, "UPSTASH_REDIS_REST_URL": '"https://example-db.upstash.io"'}
+        with mock.patch.dict(os.environ, quoted_env):
+            with mock.patch(
+                "kv_store.requests.get",
+                return_value=mock_response(json_body={"result": None}),
+            ) as get:
+                get_json("mykey")
+
+            called_url = get.call_args[0][0]
+            self.assertTrue(called_url.startswith("https://example-db.upstash.io/"))
+            self.assertNotIn('"', called_url)
+
+    def test_strips_stray_quotes_pasted_around_the_token(self):
+        quoted_env = {**ENV, "UPSTASH_REDIS_REST_TOKEN": "'test-token'"}
+        with mock.patch.dict(os.environ, quoted_env):
+            with mock.patch(
+                "kv_store.requests.get",
+                return_value=mock_response(json_body={"result": None}),
+            ) as get:
+                get_json("mykey")
+
+            self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer test-token")
+
 
 class TestSetJson(unittest.TestCase):
     def test_posts_json_encoded_value(self):

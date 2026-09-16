@@ -202,7 +202,7 @@ Dependency-driven:
 | H.3 `src/web/kv_store.py` — Upstash REST wrapper (`get_json`/`set_json`) | 1h | done — wire format unverified against a real Upstash instance (Section 11.3's caveat) |
 | H.4 `ticker_dashboard.py` — branch config/cache load+save through `kv_store.py` when `UPSTASH_REDIS_REST_URL` is set, else local files (unchanged path) | 2h | done |
 | H.5 Seed-on-first-read: Redis-backed `load_ticker_config()` initializes from the repo's `config/tickers.json` when the Redis key is empty | 1h | done |
-| H.6 Render setup: create the web service, connect the GitHub repo, enable auto-deploy on push to `main`, set all required env vars | 0.5h | partial — service deployed, auth confirmed working over HTTPS; `UPSTASH_REDIS_REST_URL`/`TOKEN` not yet added (H.3-H.5 landed after this deploy) |
+| H.6 Render setup: create the web service, connect the GitHub repo, enable auto-deploy on push to `main`, set all required env vars | 0.5h | done — service deployed, auth confirmed over HTTPS, `UPSTASH_REDIS_REST_URL`/`TOKEN` added and confirmed live (see the gotcha note in Section 11.5: adding env vars in Render's UI doesn't take effect until you explicitly hit "Save and Redeploy" — the service silently kept running on its old environment otherwise) |
 | H.7 Tests (below) | 2h | done — `tests/test_app.py` (auth), `tests/test_kv_store.py`, `tests/test_ticker_dashboard.py`'s `TestRedisBacked*` classes |
 | **Subtotal** | **8.5h** | |
 
@@ -216,6 +216,6 @@ Dependency-driven:
 
 ### Manual verification
 - [x] Hosted `/` and `/tickers` both prompt for credentials before rendering anything; wrong credentials are rejected
-- [ ] An in-app ticker add/remove on the hosted deployment survives a manual restart of the Render service (blocked on adding Upstash env vars to Render, H.6)
+- [x] An in-app ticker add/remove on the hosted deployment persists to Redis (confirmed: a hosted remove now correctly updates `ticker_config` in Upstash, once Render was properly redeployed with the Upstash env vars live — see the Save-and-Redeploy gotcha in Section 11.5). Since the write lands in external Redis rather than the container's own disk, it durably survives a restart by construction; an explicit restart-and-recheck hasn't been separately performed but isn't expected to reveal anything new
 - [ ] A push to `main` (e.g. a GitHub Actions ingestion commit) triggers an auto-redeploy and the hosted Indicator Digest Page reflects the new data
 - [x] `/api/check-tickers` completes without a 500 for the full 36-ticker watchlist (gunicorn `--timeout 120`, Section 11.5)

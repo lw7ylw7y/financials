@@ -33,6 +33,23 @@ class KvStoreError(Exception):
     """Raised for any Upstash REST request/response problem."""
 
 
+def _clean_env_value(value: str) -> str:
+    """Strips whitespace and a single matching pair of surrounding
+    quote characters. Defensive against a value pasted into a host's
+    env var UI (e.g. Render's) with literal quotes still attached --
+    those fields aren't shell-parsed, so quotes typed/pasted around a
+    value become part of the literal string rather than being stripped
+    the way `source .env` would. Confirmed live: an `UPSTASH_REDIS_REST_URL`
+    of `"https://...upstash.io"` (quotes included) made `requests` raise
+    `InvalidSchema` rather than anything obviously pointing at the
+    real cause.
+    """
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return value
+
+
 def is_configured() -> bool:
     return bool(os.environ.get("UPSTASH_REDIS_REST_URL"))
 
@@ -41,14 +58,14 @@ def _rest_url() -> str:
     url = os.environ.get("UPSTASH_REDIS_REST_URL")
     if not url:
         raise KvStoreError("UPSTASH_REDIS_REST_URL not set")
-    return url.rstrip("/")
+    return _clean_env_value(url).rstrip("/")
 
 
 def _headers() -> dict:
     token = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
     if not token:
         raise KvStoreError("UPSTASH_REDIS_REST_TOKEN not set")
-    return {"Authorization": f"Bearer {token}"}
+    return {"Authorization": f"Bearer {_clean_env_value(token)}"}
 
 
 def get_json(key: str) -> dict | None:

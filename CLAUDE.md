@@ -355,13 +355,30 @@ callables for this.
   Covered by `tests/test_kv_store.py` and the `TestRedisBacked*` classes
   in `tests/test_ticker_dashboard.py`; the full pre-existing suite
   passes unmodified with no Redis env vars set (the regression case).
-  **Not yet verified against a real Upstash instance** — the wire
-  format (`GET {url}/get/{key}`, `POST {url}/set/{key}` with the raw
-  JSON body) was implemented from Upstash's documented pattern, no
-  account was available to smoke-test it live. `UPSTASH_REDIS_REST_URL`/
-  `TOKEN` also aren't in Render's env vars yet (added after the first
-  deploy) — the in-app ticker editor and both caches are still on
-  Render's ephemeral local disk until that's done.
+  **Confirmed against a real Upstash instance**: the wire format
+  (`GET {url}/get/{key}`, `POST {url}/set/{key}` with the raw JSON
+  body) round-trips correctly, verified with a standalone script
+  hitting `kv_store.get_json`/`set_json` directly. `UPSTASH_REDIS_REST_URL`/
+  `TOKEN` are live on Render and a hosted ticker removal correctly
+  updates `ticker_config` in Upstash.
+  **Two Render gotchas hit along the way**, both in
+  `docs/v2_technical_design.md` Section 11.5: (1) env var edits in
+  Render's dashboard don't take effect until you explicitly hit "Save
+  and Redeploy" — without it, the service silently keeps running on
+  its old environment, no error or warning, which made
+  `/api/tickers/remove` return a real `{"ok": true}` while writing to
+  the container's ephemeral local file instead of Redis (since
+  `is_configured()` was still reading the stale, Redis-less
+  environment). (2) After that redeploy, a value pasted into Render's
+  env var field *with* surrounding quotes (`"https://...upstash.io"`)
+  keeps those quotes as part of the literal string — Render's fields
+  aren't shell-parsed — producing a `requests.exceptions.InvalidSchema`
+  500 on every page load. `kv_store.py`'s `_clean_env_value()` now
+  strips one matching pair of surrounding `"`/`'` (plus whitespace)
+  from both `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`
+  before use, so this self-heals rather than crashing next time.
+  Always check Render's Events tab for an actual redeploy timestamp
+  after an env var change, not just that the form saved.
 - `/api/check-tickers`'s gunicorn-timeout fix (confirmed on the first
   live Render deploy, `docs/v2_technical_design.md` Section 11.5):
   fetching all 36 tickers in one request occasionally exceeded
