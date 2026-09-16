@@ -9,7 +9,7 @@ for _p in (_SRC, os.path.join(_SRC, "web")):
     sys.path.insert(0, _p)
 
 import kv_store
-from kv_store import KvStoreError, get_json, hget_json, hgetall_json, hset_json, is_configured, set_json
+from kv_store import KvStoreError, get_json, hdel_json, hget_json, hgetall_json, hset_json, is_configured, set_json
 
 ENV = {
     "UPSTASH_REDIS_REST_URL": "https://example-db.upstash.io",
@@ -167,6 +167,38 @@ class TestHsetJson(unittest.TestCase):
             ):
                 with self.assertRaises(KvStoreError):
                     hset_json("ticker_cache", "SPY", {"price": 452.31})
+
+
+class TestHdelJson(unittest.TestCase):
+    """hdel_json removes one hash field entirely -- used to clean up a
+    ticker's cached snapshot once it's no longer in any watchlist
+    group, rather than leaving an orphaned entry behind forever (see
+    ticker_dashboard.delete_ticker_snapshot). Wire format confirmed
+    live: `POST {url}/hdel/{key}/{field}`.
+    """
+
+    def test_posts_to_the_field_path(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch("kv_store._session.post", return_value=mock_response(json_body={"result": 1})) as post:
+                hdel_json("ticker_cache", "SPY")
+
+            called_url = post.call_args[0][0]
+            self.assertIn("/hdel/ticker_cache/SPY", called_url)
+
+    def test_raises_on_non_200(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch("kv_store._session.post", return_value=mock_response(status_code=500)):
+                with self.assertRaises(KvStoreError):
+                    hdel_json("ticker_cache", "SPY")
+
+    def test_raises_on_request_exception(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch(
+                "kv_store._session.post",
+                side_effect=kv_store.requests.exceptions.ConnectionError("boom"),
+            ):
+                with self.assertRaises(KvStoreError):
+                    hdel_json("ticker_cache", "SPY")
 
 
 class TestHgetJson(unittest.TestCase):

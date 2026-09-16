@@ -263,3 +263,24 @@ Dependency-driven:
 - `tests/test_ticker_dashboard.py`: `TestRedisBackedTickerConfig` rewritten for the hash shape — seeding writes one `hset_json` per group with the right `order`; reads restore file order even from a deliberately-out-of-order mocked hash; add/remove each read and write only their own group's field; concurrent edits to two different groups never touch each other's field — done
 - `tests/test_page_template.py`: add-ticker script contains `checkGroup`, not `location.reload` — done
 - Manual: confirmed locally (against the real, shared Upstash instance) that all 5 configured groups (36 tickers total) complete concurrently in a few seconds per group (fastest ~1.2s, slowest ~4.5s) versus the original single request's occasional 30+s, and versus the intermediate `Semaphore(5)` regression's uniform 35-40s; confirmed no data loss in the `ticker_cache` hash after a concurrent all-groups run (every successfully-fetched symbol present; the only misses were genuine per-ticker Finnhub failures, unrelated to concurrency); confirmed live on Render that Session reuse (12.9) brought group checks under 10s; confirmed live that `ticker_config`'s old string-typed key needed the same one-time deletion as `ticker_cache` did, and that a fresh load re-seeds it as a hash with group order intact; confirmed add/remove both round-trip correctly against the real instance — verified against the actual live race, the actual live wire format, and actual live Finnhub/Yahoo/Render behavior throughout, not just in theory
+
+---
+
+## Epic: Storage Simplification
+
+### Story 13 — Redis as the Only Source of Truth
+
+| Task | Status |
+|---|---|
+| 13.1 `ticker_dashboard.py` — remove `is_configured()` branching and all `path`/`state_path` parameters from `_load_raw_config`/`load_ticker_config`, `add_ticker_to_group`/`remove_ticker_from_group`, `load_ticker_state`/`save_ticker_state`/`save_ticker_snapshot`/`delete_ticker_snapshot`, `load_market_news_state`/`save_market_news_state`, `get_initial_ticker_page_data`/`check_for_ticker_updates` — every one now always calls `kv_store.py` | done |
+| 13.2 `ticker_dashboard.py` — delete `_ticker_state_lock` (a `threading.Lock`), now fully unused with the local-file branch it guarded gone | done |
+| 13.3 `storage.py` — remove `is_configured()` branching and the `path` parameter from `load_state`/`save_state`; remove the seed-from-local-file step added for the H.12 incident (Story 11) | done — `main.py`/`backfill.py`/`live_pull.py` needed no changes, since they already called these with no path argument |
+| 13.4 Delete `config/tickers.json` and `data/indicators.json` from the repo; remove `data/tickers.json`/`data/market_news.json` from `.gitignore` | done |
+| 13.5 `tests/test_storage.py` — rewrite `TestLoadSaveState` to mock `get_json`/`set_json` directly (small in-memory fake-Redis helper) instead of writing temp files; delete the now-meaningless seeding tests | done |
+| 13.6 `tests/test_ticker_dashboard.py` — comprehensive rewrite: every local-file-based test class now mocks the relevant hash/blob Redis calls via shared `config_hash()`/`fake_hash_store()` helpers; fold the separate `is_configured()`-gated `TestRedisBacked*` classes into the main test classes (only one mode left); delete the live-watchlist smoke test (no local file left to smoke-test) | done |
+| 13.7 Update `CLAUDE.md` (env var table, architecture file-tree, Storage model section, Data flow items 5/6, multiple Status bullets) and `docs/v2_technical_design.md` (Sections 2, 3.2, 4.4, 5.2/5.2c/5.3, 5b, 8, 9, 10, 11.3/11.4/11.7, new Section 11.10) to describe the Redis-only design as current | done |
+
+**Tests**
+- `tests/test_storage.py`: write-then-reload round trip via mocked `get_json`/`set_json`; missing key initializes to `{"indicators": {}}`; a new entry never overwrites prior history across two save/load cycles; load/save failures propagate rather than degrading — done, full suite (300 tests) passes
+- `tests/test_ticker_dashboard.py`: config load/add/remove restore group order via the embedded `order` index even from a deliberately-scrambled mocked hash; add/remove read and write only their own group's field; a malformed/non-string symbol is skipped with a warning; ticker cache round-trips via `hset_json`/`hgetall_json`, degrades to `{}`/`None` on a simulated Redis outage rather than raising; market-news cache same pattern via `get_json`/`set_json` — done
+- Manual: none needed beyond the live verification already performed in Story 12's own work (the real Upstash instance round-trips for `ticker_config`/`ticker_cache` were confirmed live before this story; this story is a pure code-path deletion on top of that, verified by the full test suite passing unmodified in behavior, not a new live-data change)

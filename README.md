@@ -10,18 +10,20 @@ See `docs/investment_dashboard_requirements.md` for the full spec, plus
 `src/main.py` fetches the latest value for all 8 v1 indicators from FRED,
 tags each with its category, skips values already seen, and logs
 (without halting) any per-indicator fetch failure. Results are persisted
-to `data/indicators.json`.
+to Redis (the `indicator_state` key).
 
 ## Story 2 — Historical Storage
 
-`src/storage/storage.py` persists ingestion results to `data/indicators.json` and
+`src/storage/storage.py` persists ingestion results to Redis and
 provides:
 
-- `load_state()` / `save_state()` — read/write the store, tolerating a
-  missing or corrupted file by starting from an empty state. Redis-backed
-  (via `src/web/kv_store.py`) instead of the local file whenever
-  `UPSTASH_REDIS_REST_URL` is set — v2.1's hosted deployment, since a
-  free host's disk doesn't survive a restart; local dev is unaffected
+- `load_state()` / `save_state()` — read/write the store via `src/web/kv_store.py`
+  (Upstash's REST API), tolerating a missing key by starting from an
+  empty state. Redis-backed unconditionally — `UPSTASH_REDIS_REST_URL`/
+  `TOKEN` must be set wherever this runs, local dev included; there is
+  no local-file fallback (removed 2026-09-16 once it became clear local
+  dev and any hosted deployment always share the same live Redis in
+  practice anyway)
 - `query_history(state, key, start_date=None, end_date=None)` — an
   indicator's history, optionally filtered to an inclusive date range
 - `trim_history(history)` — drops entries older than a rolling 12-month
@@ -46,7 +48,7 @@ appending — it's a single current value, not a history.
 
 v1's only product surface is one email — there is no webpage/dashboard.
 Ingestion (`run_ingestion`) runs on every scheduled check (every 6
-hours) regardless, keeping `data/indicators.json` fresh. As of v2.1
+hours) regardless, keeping indicator state fresh in Redis. As of v2.1
 (Story 11), the AI response is refreshed on that same cadence too
 (`post_release.refresh_ai_response_if_updated`) — no throttle — while
 the digest email itself stays throttled to a **weekly rollup**
@@ -152,8 +154,8 @@ news.
 - `src/digest/build_digest_content.py` — the table/countdown/AI-assembly
   logic, shared by `post_release.py` (the weekly email) and
   `live_pull.py` (the page), so both build identical content from
-  identical code. A successful AI call is persisted to
-  `data/indicators.json`'s `last_ai_response` field.
+  identical code. A successful AI call is persisted to the
+  `indicator_state` Redis key's `last_ai_response` field.
 - `src/web/live_pull.py` — `get_initial_page_data()` builds the
   Indicator Digest Page entirely from stored data (no network calls);
   `check_for_updates()`, called by the page's own background script,
@@ -166,16 +168,15 @@ news.
   Each Indicator Digest Page row gets an inline-SVG trend sparkline. A
   "Checking for updates..." indicator shows for the duration of each
   page's background check.
-- `src/web/ticker_dashboard.py` — reads `config/tickers.json`'s groups,
-  fetches quote/52-week-range from Finnhub and daily closes from Yahoo
-  per ticker (concurrently, `ThreadPoolExecutor`), computes moving
+- `src/web/ticker_dashboard.py` — reads the `ticker_config` Redis hash's
+  groups, fetches quote/52-week-range from Finnhub and daily closes from
+  Yahoo per ticker (concurrently, `ThreadPoolExecutor`), computes moving
   averages and percent-off-high, and persists a snapshot cache
-  (`data/tickers.json`) so `/tickers` renders instantly and refreshes
-  live in the background. The watchlist and both caches read/write
-  through `src/web/kv_store.py` (Upstash Redis) instead of local files
-  when `UPSTASH_REDIS_REST_URL` is set — for a hosted deployment, whose
-  local disk doesn't survive a restart; unset (local dev's default)
-  behaves exactly as before.
+  (the `ticker_cache` Redis hash) so `/tickers` renders instantly and
+  refreshes live in the background. The watchlist and both caches read/write
+  through `src/web/kv_store.py` (Upstash Redis) unconditionally — there
+  is no local-file fallback; `UPSTASH_REDIS_REST_URL`/`TOKEN` must be
+  set wherever this runs, local dev included.
 - `src/web/app.py` — the Flask app: `GET /` and `GET /tickers` render
   instantly from stored data; `GET /api/check` is what the Indicator
   Digest Page's inline `<script>` calls in the background. The Ticker
@@ -200,11 +201,10 @@ python3 src/web/app.py
 Then open `http://127.0.0.1:5000/`. Both pages render immediately from
 stored data, then check for updates in the background.
 
-**Known trade-off:** a background check that finds new indicator data
-writes to your local `data/indicators.json`, leaving the file modified
-in your working tree until you commit or discard it. Ingestion is
-idempotent (dedup by date), so this is a working-tree diff, not a
-data-integrity issue. (This is local-only: the scheduled GitHub
-Actions workflow no longer commits this file at all as of v2.1 — see
-Story 11, `docs/v2_technical_design.md` Section 11.7 — it writes to
-Redis directly on a hosted deployment instead.)
+Indicator state, the ticker watchlist, and both ticker/news caches all
+live in Redis only (`UPSTASH_REDIS_REST_URL`/`TOKEN` in your `.env`) —
+there's no local file for any of them, so a background check that finds
+new data just writes straight to the same Redis instance both your
+local run and any hosted deployment share (see
+`docs/v2_technical_design.md` Section 11.10). Ingestion is idempotent
+(dedup by date either way).

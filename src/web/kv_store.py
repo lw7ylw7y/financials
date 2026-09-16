@@ -7,17 +7,18 @@ restarts, since Render's free tier has no persistent local disk.
 
 Two pairs of operations: `get_json`/`set_json` store/return a whole
 JSON-serializable value under a plain string key; `hset_json`/
-`hget_json`/`hgetall_json` do the same per-field within a Redis hash,
-for data (like the ticker cache and the ticker config's per-group
-entries) that needs many independent, concurrently-writable slots
-under one logical key rather than one big blob that a writer has to
-read, modify, and write back as a whole -- see ticker_dashboard.py's
-`save_ticker_snapshot` and `add_ticker_to_group`/`remove_ticker_from_group`.
-`is_configured()` is the single switch callers check to decide whether
-to use Redis at all (per `UPSTASH_REDIS_REST_URL` being set) -- unset
-is local development's default, where this module is never called.
+`hget_json`/`hgetall_json`/`hdel_json` do the same per-field within a
+Redis hash, for data (like the ticker cache and the ticker config's
+per-group entries) that needs many independent, concurrently-writable
+slots under one logical key rather than one big blob that a writer has
+to read, modify, and write back as a whole -- see ticker_dashboard.py's
+`save_ticker_snapshot`/`delete_ticker_snapshot` and
+`add_ticker_to_group`/`remove_ticker_from_group`. `is_configured()` is
+the single switch callers check to decide whether to use Redis at all
+(per `UPSTASH_REDIS_REST_URL` being set) -- unset is local development's
+default, where this module is never called.
 
-All five raise `KvStoreError` on any request failure or malformed
+All six raise `KvStoreError` on any request failure or malformed
 response; callers decide what that should mean for their own data. (In
 ticker_dashboard.py: a failed ticker_config load/save propagates -- a
 broken config load should fail loudly rather than silently render an
@@ -131,6 +132,21 @@ def hset_json(key: str, field: str, value: dict) -> None:
         response.raise_for_status()
     except requests.RequestException as e:
         raise KvStoreError(f"hset failed for key={key} field={field}: {e}") from e
+
+
+def hdel_json(key: str, field: str) -> None:
+    """Removes one field of the hash at `key`. A no-op if the field
+    (or the hash itself) doesn't exist -- used to clean up a hash
+    field that's no longer needed at all, e.g. a ticker's cached
+    snapshot once it's been removed from every watchlist group (see
+    ticker_dashboard.remove_ticker_from_group), rather than leaving an
+    orphaned entry sitting in the cache indefinitely.
+    """
+    try:
+        response = _session.post(f"{_rest_url()}/hdel/{key}/{field}", headers=_headers(), timeout=_TIMEOUT)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        raise KvStoreError(f"hdel failed for key={key} field={field}: {e}") from e
 
 
 def hget_json(key: str, field: str) -> dict | None:

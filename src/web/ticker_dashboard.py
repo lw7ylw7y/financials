@@ -1,89 +1,71 @@
 """Ticker Dashboard: config loading, per-ticker card assembly, and a
 stored-snapshot fast-render + background-refresh split.
 
-Loads `config/tickers.json`'s `groups` map -- group names are never
-hardcoded here or in `page_template.py`, the dashboard renders whatever
-group keys are present, in file order, so adding, renaming, or removing
-a group is a config-only edit. For each ticker, `build_ticker_cards`
-independently fetches a quote + 52-week range/market cap/P/E from
-Finnhub and a year of daily closes from Yahoo (for the moving averages
--- Finnhub's free tier doesn't serve candles, see finnhub_client.py's
-docstring); a failure for one ticker (bad symbol, rate limit, request
-error, from either provider) is caught locally and turned into that
-ticker's error state rather than aborting the rest of the dashboard --
-same per-item isolation pattern as v1's `run_ingestion`.
+Redis-backed, unconditionally -- there is no local-file fallback.
+`UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` must be set
+wherever this module runs (local dev included); `kv_store.py` raises a
+clear `KvStoreError` if they aren't, rather than this module silently
+falling back to something else. The watchlist (`ticker_config`) and
+both caches (`ticker_cache`, `market_news_cache`) live only in Redis:
+a wiped or brand-new key comes back empty (an empty watchlist, or a
+"nothing cached yet" cache), with no automatic reseeding. Recovering a
+wiped watchlist means re-adding tickers through the in-app editor;
+there is no local `config/tickers.json` this module reads from
+anymore.
+
+Config loading -- `load_ticker_config()` reads `ticker_config`'s
+`groups` map -- group names are never hardcoded here or in
+`page_template.py`, the dashboard renders whatever group keys are
+present, in the order the config itself defines, so adding, renaming,
+or removing a group is a config-only edit. For each ticker,
+`build_ticker_cards` independently fetches a quote + 52-week
+range/market cap/P/E from Finnhub and a year of daily closes from
+Yahoo (for the moving averages -- Finnhub's free tier doesn't serve
+candles, see finnhub_client.py's docstring); a failure for one ticker
+(bad symbol, rate limit, request error, from either provider) is
+caught locally and turned into that ticker's error state rather than
+aborting the rest of the dashboard -- same per-item isolation pattern
+as v1's `run_ingestion`.
 
 `get_initial_ticker_page_data`/`check_for_ticker_updates` mirror
 `live_pull.py`'s split for the Indicator Digest Page: the initial page
-render reads only `data/tickers.json` (a local snapshot cache, one
-entry per ticker, gitignored -- it's a cache, not the historical record
-`data/indicators.json` is) so it paints instantly regardless of how
-long a live fetch would take; a ticker with no snapshot yet renders as
-a pending/loading placeholder. The background check then does the real
-fetch and persists every success, so the *next* load has fresher stale
-data to show. Unlike the indicator pipeline, there's no "skip if
-nothing changed" gate here -- there's no expensive AI call to protect,
-so the background check always re-fetches live rather than just
-replaying a stale snapshot as if it were current. A ticker whose live
-fetch fails falls back to its last stored snapshot silently (no visible
-stale/live distinction, matching the Indicator Digest Page's dropped
-Live/Saved badge -- see CLAUDE.md); only a ticker that has *never* been
-successfully fetched renders as a genuine error.
+render reads only the `ticker_cache` snapshot (one entry per ticker)
+so it paints instantly regardless of how long a live fetch would take;
+a ticker with no snapshot yet renders as a pending/loading placeholder.
+The background check then does the real fetch and persists every
+success, so the *next* load has fresher stale data to show. Unlike the
+indicator pipeline, there's no "skip if nothing changed" gate here --
+there's no expensive AI call to protect, so the background check
+always re-fetches live rather than just replaying a stale snapshot as
+if it were current. A ticker whose live fetch fails falls back to its
+last stored snapshot silently (no visible stale/live distinction,
+matching the Indicator Digest Page's dropped Live/Saved badge -- see
+CLAUDE.md); only a ticker that has *never* been successfully fetched
+renders as a genuine error.
 
 `get_initial_market_news`/`check_for_market_news` are the same split
 applied to one more thing: a page-level feed of general market
-headlines, cached in `data/market_news.json` -- separate from the
-per-ticker cache since it's a single item, not one per symbol. Has its
-own route, checked independently of any ticker group's own check.
+headlines, cached separately (`market_news_cache`) since it's a single
+item, not one per symbol. Has its own route, checked independently of
+any ticker group's own check.
 
 `add_ticker_to_group`/`remove_ticker_from_group` let the /tickers page
-itself edit config/tickers.json -- adding or removing a ticker within
-an existing group, not creating or renaming groups (that's still a
-hand-edit of the file). Both read-modify-write the raw file directly
-rather than going through `load_ticker_config`'s cleanup pass, so an
-edit never silently drops an unrelated malformed entry elsewhere in the
-file.
-
-Redis-backed storage: Render's free tier has no persistent local disk,
-so without this, the ticker config and both caches reset to empty on
-every restart/redeploy/idle-spindown. `_load_raw_config`/
-`_save_raw_config` (the config) and `load_ticker_state`/
-`save_ticker_state`/`load_market_news_state`/`save_market_news_state`
-(the two caches) each check `kv_store.is_configured()` -- true only
-when `UPSTASH_REDIS_REST_URL` is set -- and route through `kv_store`
-instead of the local file when it is. Local development is unaffected:
-that env var is never set locally, so every one of these functions
-takes the exact same local-file path they always have. On first
-Redis-backed read with no `ticker_config` key yet, `_load_raw_config`
-seeds it from the repo's own bundled `config/tickers.json` once, so a
-fresh deploy starts with the existing watchlist rather than empty.
-Config failures propagate loudly (a broken watchlist load is worse
-than a broken page); a cache failure degrades to the same
-empty/pending state a missing local file would produce, never taking
-the page down.
+itself edit the watchlist -- adding or removing a ticker within an
+existing group, not creating or renaming groups (that's still an
+in-Redis edit nobody's built a UI for yet). Each mutates only its own
+group's hash field (see `_load_raw_config`'s docstring for why the
+config is shaped as a hash, not a single blob).
 """
 
-import json
 import logging
-import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from finnhub_client import fetch_market_news, fetch_quote, fetch_stock_metrics
-from kv_store import KvStoreError, get_json, hget_json, hgetall_json, hset_json, is_configured, set_json
+from kv_store import KvStoreError, get_json, hdel_json, hget_json, hgetall_json, hset_json, set_json
 from yahoo_client import fetch_daily_closes
-
-CONFIG_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "config", "tickers.json"
-)
-TICKER_DATA_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "data", "tickers.json"
-)
-MARKET_NEWS_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "data", "market_news.json"
-)
 
 _TICKER_RE = re.compile(r"^[A-Za-z0-9]+$")
 MA_WINDOWS = (20, 50, 200)
@@ -97,17 +79,6 @@ _TICKER_CACHE_KEY = "ticker_cache"
 _MARKET_NEWS_CACHE_KEY = "market_news_cache"
 
 logger = logging.getLogger(__name__)
-
-# Guards the local-file branch of save_ticker_snapshot's
-# read-modify-write of data/tickers.json (a plain file has no per-key
-# write primitive the way a Redis hash does). Scoped to one symbol at a
-# time, not a whole-cache merge -- losing a race here just leaves one
-# ticker showing stale data until the next check, self-healing on its
-# own. Local dev only: one developer's own machine, not the shared,
-# genuinely concurrent multi-user store the Redis branch below has to
-# handle, which is why that branch needs no lock at all -- see
-# save_ticker_snapshot.
-_ticker_state_lock = threading.Lock()
 
 # Caps how many tickers' quote/metrics/closes fetches run at once
 # GLOBALLY, across every concurrent call to build_ticker_cards, not
@@ -135,14 +106,14 @@ def _is_valid_ticker(symbol) -> bool:
     return isinstance(symbol, str) and bool(_TICKER_RE.match(symbol))
 
 
-def load_ticker_config(path: str = CONFIG_PATH) -> dict[str, list[str]]:
-    """Return `{group_name: [symbols]}` in file order.
+def load_ticker_config() -> dict[str, list[str]]:
+    """Return `{group_name: [symbols]}` in config order.
 
     A malformed symbol (empty, non-alphanumeric) is skipped and logged
     rather than raising, before it ever reaches the Finnhub client --
     well-formed symbols in the same group still load.
     """
-    raw = _load_raw_config(path)
+    raw = _load_raw_config()
 
     groups: dict[str, list[str]] = {}
     for group_name, symbols in raw.get("groups", {}).items():
@@ -162,124 +133,86 @@ def load_ticker_config(path: str = CONFIG_PATH) -> dict[str, list[str]]:
 class TickerConfigError(Exception):
     """Raised for an invalid add/remove request from the /tickers page's
     inline editor -- an unknown group or a malformed symbol. Distinct
-    from the malformed-entry-in-the-file case in `load_ticker_config`
+    from the malformed-entry-in-the-config case in `load_ticker_config`
     (logged and skipped, not raised), since this path is driven by live
     user input from a form, where the right response is telling the
     user what's wrong, not silently dropping their edit."""
 
 
-def _load_raw_config(path: str = CONFIG_PATH) -> dict:
-    """The full config/tickers.json dict (not just `groups`), shared by
-    `load_ticker_config` and the in-app editor. Redis-backed when
-    `kv_store.is_configured()`: seeds Redis from the repo's bundled
-    `path` the first time there's no `ticker_config` key yet, then
-    never touches `path` again for that deployment. Any Redis failure
-    here propagates -- see the module docstring.
+def _load_raw_config() -> dict:
+    """The full config dict (not just `groups`), shared by
+    `load_ticker_config` and the in-app editor. A Redis failure here
+    propagates -- see the module docstring; a broken watchlist load is
+    worse than a broken page.
 
-    Redis-backed, `ticker_config` is a *hash* -- one field per group,
-    each `{"symbols": [...], "order": i}` -- not a single JSON-blob
-    string, so `add_ticker_to_group`/`remove_ticker_from_group` can
-    mutate one group's field atomically without reading or rewriting
-    any other group's. Redis hash fields don't preserve insertion
-    order on read (confirmed live: HGETALL came back alphabetized, not
-    in the order fields were written), which would otherwise break
-    "groups render in file order" -- the embedded `order` index is
-    what actually restores it here, by explicit sort rather than
-    relying on Redis's own field ordering.
+    `ticker_config` is a Redis *hash* -- one field per group, each
+    `{"symbols": [...], "order": i}` -- not a single JSON-blob string,
+    so `add_ticker_to_group`/`remove_ticker_from_group` can mutate one
+    group's field atomically without reading or rewriting any other
+    group's. Redis hash fields don't preserve insertion order on read
+    (confirmed live: HGETALL came back alphabetized, not in the order
+    fields were written), which would otherwise break "groups render
+    in a stable order" -- the embedded `order` index is what actually
+    restores it here, by explicit sort rather than relying on Redis's
+    own field ordering.
     """
-    if is_configured():
-        hash_value = hgetall_json(_TICKER_CONFIG_KEY)
-        if not hash_value:
-            with open(path) as f:
-                raw = json.load(f)
-            _save_raw_config(raw, path)
-            return raw
-
-        ordered = sorted(hash_value.items(), key=lambda item: item[1]["order"])
-        return {"groups": {group_name: value["symbols"] for group_name, value in ordered}}
-
-    with open(path) as f:
-        return json.load(f)
+    hash_value = hgetall_json(_TICKER_CONFIG_KEY)
+    ordered = sorted(hash_value.items(), key=lambda item: item[1]["order"])
+    return {"groups": {group_name: value["symbols"] for group_name, value in ordered}}
 
 
-def _save_raw_config(raw: dict, path: str = CONFIG_PATH) -> None:
-    """Bulk-write the *entire* config at once -- used only for local
-    seeding (the first-ever Redis read in `_load_raw_config`, or a
-    local-file write) rather than the normal per-group edit path.
-    Prefer mutating one group's own field directly (as
-    `add_ticker_to_group`/`remove_ticker_from_group` do) for anything
-    else: unlike this function, that never has to touch every other
-    group's data just to change one.
-    """
-    if is_configured():
-        for i, (group_name, symbols) in enumerate(raw.get("groups", {}).items()):
-            hset_json(_TICKER_CONFIG_KEY, group_name, {"symbols": symbols, "order": i})
-        return
+def add_ticker_to_group(symbol: str, group_name: str) -> None:
+    """Append `symbol` to `group_name`'s ticker list -- the in-app
+    alternative to editing the watchlist directly in Redis. No-op if
+    `symbol` is already in that group. Only adds to an existing group
+    -- creating a new group is out of scope for this editor.
 
-    with open(path, "w") as f:
-        json.dump(raw, f, indent=2)
-        f.write("\n")
-
-
-def add_ticker_to_group(symbol: str, group_name: str, path: str = CONFIG_PATH) -> None:
-    """Append `symbol` to `group_name`'s ticker list in
-    config/tickers.json and write the file back -- the in-app
-    alternative to hand-editing that file, which remains a perfectly
-    valid way to make the same edit. No-op if `symbol` is already in
-    that group. Only adds to an existing group -- creating a new group
-    is still a hand-edit of the file, out of scope for this editor.
-
-    Redis-backed, this reads and writes only `group_name`'s own hash
-    field (`hget_json`/`hset_json`) -- never every other group's data,
-    so two edits to different groups (or the same group, from two
-    tabs) can't clobber each other's unrelated fields the way loading
-    the whole config, mutating it, and saving it all back would.
+    Reads and writes only `group_name`'s own hash field
+    (`hget_json`/`hset_json`) -- never every other group's data, so
+    two edits to different groups (or the same group, from two tabs)
+    can't clobber each other's unrelated fields the way loading the
+    whole config, mutating it, and saving it all back would.
     """
     symbol = symbol.strip().upper()
     if not _is_valid_ticker(symbol):
         raise TickerConfigError(f"{symbol!r} isn't a valid ticker symbol")
 
-    if is_configured():
-        group = hget_json(_TICKER_CONFIG_KEY, group_name)
-        if group is None:
-            raise TickerConfigError(f"unknown group: {group_name!r}")
-        if symbol not in group["symbols"]:
-            group["symbols"].append(symbol)
-            hset_json(_TICKER_CONFIG_KEY, group_name, group)
-        return
-
-    raw = _load_raw_config(path)
-    groups = raw.setdefault("groups", {})
-    if group_name not in groups:
+    group = hget_json(_TICKER_CONFIG_KEY, group_name)
+    if group is None:
         raise TickerConfigError(f"unknown group: {group_name!r}")
 
-    if symbol not in groups[group_name]:
-        groups[group_name].append(symbol)
-        _save_raw_config(raw, path)
+    if symbol not in group["symbols"]:
+        group["symbols"].append(symbol)
+        hset_json(_TICKER_CONFIG_KEY, group_name, group)
 
 
-def remove_ticker_from_group(symbol: str, group_name: str, path: str = CONFIG_PATH) -> None:
-    """Remove `symbol` from `group_name`'s ticker list and write the
-    file back. No-op if `symbol` isn't in that group. Redis-backed,
-    scoped to `group_name`'s own hash field only -- see
-    `add_ticker_to_group`."""
-    if is_configured():
-        group = hget_json(_TICKER_CONFIG_KEY, group_name)
-        if group is None:
-            raise TickerConfigError(f"unknown group: {group_name!r}")
-        if symbol in group["symbols"]:
-            group["symbols"] = [s for s in group["symbols"] if s != symbol]
-            hset_json(_TICKER_CONFIG_KEY, group_name, group)
-        return
+def remove_ticker_from_group(symbol: str, group_name: str) -> None:
+    """Remove `symbol` from `group_name`'s ticker list. No-op if
+    `symbol` isn't in that group. Scoped to `group_name`'s own hash
+    field only -- see `add_ticker_to_group`.
 
-    raw = _load_raw_config(path)
-    groups = raw.setdefault("groups", {})
-    if group_name not in groups:
+    Once removed from this group, also deletes `symbol`'s cached
+    snapshot (`delete_ticker_snapshot`) -- but only if it isn't still
+    used by some *other* group (the same symbol can legitimately
+    appear in more than one), checked via a fresh `load_ticker_config`
+    read after the removal. Without this, a removed ticker's stale
+    price data would linger in the cache forever: it'd never be shown
+    again (nothing in the config references it), but it'd keep taking
+    up space and never get cleaned up on its own.
+    """
+    group = hget_json(_TICKER_CONFIG_KEY, group_name)
+    if group is None:
         raise TickerConfigError(f"unknown group: {group_name!r}")
 
-    if symbol in groups[group_name]:
-        groups[group_name] = [s for s in groups[group_name] if s != symbol]
-        _save_raw_config(raw, path)
+    if symbol in group["symbols"]:
+        group["symbols"] = [s for s in group["symbols"] if s != symbol]
+        hset_json(_TICKER_CONFIG_KEY, group_name, group)
+        if not _symbol_in_any_group(symbol, load_ticker_config()):
+            delete_ticker_snapshot(symbol)
+
+
+def _symbol_in_any_group(symbol: str, config: dict[str, list[str]]) -> bool:
+    return any(symbol in symbols for symbols in config.values())
 
 
 def _simple_moving_average(closes: list[float], window: int) -> float | None:
@@ -351,7 +284,7 @@ def build_ticker_cards(
     fetch_closes_fn=fetch_daily_closes,
     max_workers: int = 5,
 ) -> dict[str, list[dict]]:
-    """Return `{group_name: [card, ...]}` in file order, one card per
+    """Return `{group_name: [card, ...]}` in config order, one card per
     ticker in `config` (defaults to `load_ticker_config()`).
 
     Fetches every ticker concurrently (`max_workers` threads) rather
@@ -404,100 +337,87 @@ def build_ticker_cards(
     return grouped_cards
 
 
-def load_ticker_state(path: str = TICKER_DATA_PATH) -> dict:
+def load_ticker_state() -> dict:
     """The snapshot cache: `{symbol: {price, week52_low, week52_high,
     market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`. `{}` if
-    there's nothing cached yet, the local file is corrupted, or (Redis-
-    backed) Redis itself is unreachable -- this cache degrades
-    gracefully rather than failing loudly the way `_load_raw_config`
-    does, since losing it just means every row shows "Loading..."
-    again, not an empty watchlist.
+    there's nothing cached yet or Redis itself is unreachable -- this
+    cache degrades gracefully rather than failing loudly the way
+    `_load_raw_config` does, since losing it just means every row
+    shows "Loading..." again, not an empty watchlist.
 
-    Redis-backed, this reads the whole `ticker_cache` *hash* (one field
-    per symbol, see `save_ticker_snapshot`) in a single HGETALL -- a
-    read never conflicts with anything, so this needs no lock either
-    way.
+    Reads the whole `ticker_cache` hash (one field per symbol, see
+    `save_ticker_snapshot`) in a single HGETALL -- a read never
+    conflicts with anything, so no lock is involved.
     """
-    if is_configured():
-        try:
-            return hgetall_json(_TICKER_CACHE_KEY)
-        except KvStoreError as e:
-            logger.error("ticker cache read failed, degrading to empty: %s", e)
-            return {}
-
     try:
-        with open(path) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        return hgetall_json(_TICKER_CACHE_KEY)
+    except KvStoreError as e:
+        logger.error("ticker cache read failed, degrading to empty: %s", e)
         return {}
 
 
-def save_ticker_state(state: dict, path: str = TICKER_DATA_PATH) -> None:
-    """Bulk-write the *entire* cache at once -- used for local seeding
-    (tests, a one-off migration) rather than the normal per-ticker
-    write path. Prefer `save_ticker_snapshot` for anything persisting
-    the result of a live fetch: unlike this function, it never has to
-    read or hold every other symbol's data just to write one.
-    Redis-backed, this fans out into one HSET per symbol so the
-    resulting hash stays consistent with `save_ticker_snapshot`'s
-    per-field writes -- not a single atomic operation across the whole
-    dict, which is fine for a bulk seed with no concurrent writers.
+def save_ticker_state(state: dict) -> None:
+    """Bulk-write every symbol in `state` as its own hash field --
+    useful for seeding/tests, not the normal per-ticker write path.
+    Prefer `save_ticker_snapshot` for persisting the result of one
+    fresh fetch: unlike this function, it never has to touch every
+    other symbol's data just to write one. Fans out into one HSET per
+    symbol so the resulting hash stays consistent with
+    `save_ticker_snapshot`'s per-field writes -- not a single atomic
+    operation across the whole dict, which is fine here since nothing
+    calls this concurrently with itself.
     """
-    if is_configured():
-        for symbol, snapshot in state.items():
-            try:
-                hset_json(_TICKER_CACHE_KEY, symbol, snapshot)
-            except KvStoreError as e:
-                logger.error("ticker cache write failed symbol=%s: %s", symbol, e)
-        return
-
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(state, f, indent=2)
-        f.write("\n")
-
-
-def save_ticker_snapshot(symbol: str, snapshot: dict, path: str = TICKER_DATA_PATH) -> None:
-    """Persists exactly one ticker's fresh snapshot. This is what
-    `check_for_ticker_updates` calls per successfully-fetched ticker,
-    instead of the old pattern of loading the *entire* cache, merging
-    every group's results into it in memory, and writing the whole
-    thing back -- that raced badly once the ticker page started firing
-    one concurrent live-check per group (Story 12): two groups' checks
-    could both load the cache before either saved, and the second save
-    would silently wipe out the first group's fresh values. Worse, that
-    race isn't limited to one process -- any number of concurrent users
-    hitting a hosted deployment hit the same shared Redis-backed cache,
-    so a lock (which only ever protects one process's own memory)
-    could never actually fix it there.
-
-    Redis-backed, each symbol is its own hash field (`HSET`) -- an
-    atomic per-field write that never reads or touches any other
-    field, so concurrent writes to *different* symbols (any number of
-    groups, any number of users, any number of gunicorn worker
-    processes) can never clobber each other's data, and even two
-    writes to the *same* symbol just leave whichever landed last, never
-    a torn mix of two updates. No lock needed at all.
-
-    Locally, this is still a read-modify-write of the single JSON file
-    -- a plain file has no per-key write primitive the way a Redis hash
-    does -- guarded by `_ticker_state_lock` so local dev's own
-    concurrent threads (`threaded=True`) can't corrupt the file. Lower
-    stakes than the Redis case: one developer's own machine, not a
-    shared multi-user store, and losing this race just leaves one
-    ticker stale until the next check.
-    """
-    if is_configured():
+    for symbol, snapshot in state.items():
         try:
             hset_json(_TICKER_CACHE_KEY, symbol, snapshot)
         except KvStoreError as e:
-            logger.error("ticker snapshot write failed symbol=%s: %s", symbol, e)
-        return
+            logger.error("ticker cache write failed symbol=%s: %s", symbol, e)
 
-    with _ticker_state_lock:
-        state = load_ticker_state(path)
-        state[symbol] = snapshot
-        save_ticker_state(state, path)
+
+def save_ticker_snapshot(symbol: str, snapshot: dict) -> None:
+    """Persists exactly one ticker's fresh snapshot. This is what
+    `check_for_ticker_updates` calls per successfully-fetched ticker,
+    instead of loading the *entire* cache, merging every group's
+    results into it in memory, and writing the whole thing back --
+    that raced badly once the ticker page started firing one
+    concurrent live-check per group (Story 12): two groups' checks
+    could both load the cache before either saved, and the second save
+    would silently wipe out the first group's fresh values. Worse, that
+    race isn't limited to one process -- any number of concurrent users
+    hitting a hosted deployment hit the same shared cache, so a lock
+    (which only ever protects one process's own memory) could never
+    actually fix it.
+
+    Each symbol is its own hash field (`HSET`) -- an atomic per-field
+    write that never reads or touches any other field, so concurrent
+    writes to *different* symbols (any number of groups, any number of
+    users, any number of gunicorn worker processes) can never clobber
+    each other's data, and even two writes to the *same* symbol just
+    leave whichever landed last, never a torn mix of two updates. No
+    lock needed at all.
+    """
+    try:
+        hset_json(_TICKER_CACHE_KEY, symbol, snapshot)
+    except KvStoreError as e:
+        logger.error("ticker snapshot write failed symbol=%s: %s", symbol, e)
+
+
+def delete_ticker_snapshot(symbol: str) -> None:
+    """Removes one ticker's cached snapshot entirely. Called by
+    `remove_ticker_from_group` once a symbol is no longer in *any*
+    watchlist group, so a removed ticker's stale price data doesn't
+    linger in the cache forever -- it would never be displayed again
+    (nothing in the config would reference it), but it'd sit there
+    taking up space indefinitely otherwise. A no-op if the symbol has
+    no cached snapshot to begin with.
+
+    One atomic `HDEL` on the symbol's own hash field -- doesn't touch
+    any other symbol's data, same reasoning as `save_ticker_snapshot`.
+    """
+    try:
+        hdel_json(_TICKER_CACHE_KEY, symbol)
+    except KvStoreError as e:
+        logger.error("ticker snapshot delete failed symbol=%s: %s", symbol, e)
 
 
 def _pending_card(symbol: str, group_name: str) -> dict:
@@ -512,18 +432,16 @@ def _card_from_snapshot(symbol: str, group_name: str, snapshot: dict) -> dict:
     return card
 
 
-def get_initial_ticker_page_data(
-    config: dict[str, list[str]] | None = None, state_path: str = TICKER_DATA_PATH
-) -> dict[str, list[dict]]:
-    """What "/tickers" renders -- instantly, from the local snapshot
-    cache only, no network calls. A ticker with no cached snapshot yet
+def get_initial_ticker_page_data(config: dict[str, list[str]] | None = None) -> dict[str, list[dict]]:
+    """What "/tickers" renders -- instantly, from the snapshot cache
+    only, no network calls. A ticker with no cached snapshot yet
     (first-ever run, or just added to the config) renders as a pending
     placeholder rather than an error -- it hasn't failed, it just
     hasn't been fetched yet; the page's own script then calls each
     group's own /api/tickers/groups/<name>/check to fetch for real.
     """
     config = config if config is not None else load_ticker_config()
-    stored = load_ticker_state(state_path)
+    stored = load_ticker_state()
 
     grouped_cards = {}
     for group_name, symbols in config.items():
@@ -541,14 +459,13 @@ def check_for_ticker_updates(
     fetch_quote_fn=fetch_quote,
     fetch_metrics_fn=fetch_stock_metrics,
     fetch_closes_fn=fetch_daily_closes,
-    state_path: str = TICKER_DATA_PATH,
     now: datetime | None = None,
 ) -> dict[str, list[dict]]:
     """The real live pull, called by the page's own background script
     after the instant stored-only render. Always re-fetches every
     ticker live -- reloading re-fetches rather than replaying a stale
-    snapshot -- and persists every success back to `state_path` so the
-    *next* instant render has fresher stale data to fall back on.
+    snapshot -- and persists every success so the *next* instant
+    render has fresher stale data to fall back on.
 
     A ticker whose live fetch fails is quietly replaced with its last
     stored snapshot if one exists -- no visible stale/live distinction
@@ -582,11 +499,11 @@ def check_for_ticker_updates(
                     **{field: card[field] for field in _SNAPSHOT_FIELDS},
                     "fetched_at": now.isoformat(),
                 }
-                save_ticker_snapshot(card["symbol"], snapshot, state_path)
+                save_ticker_snapshot(card["symbol"], snapshot)
                 resolved.append(card)
             else:
                 if stored is None:
-                    stored = load_ticker_state(state_path)
+                    stored = load_ticker_state()
                 if card["symbol"] in stored:
                     resolved.append(_card_from_snapshot(card["symbol"], group_name, stored[card["symbol"]]))
                 else:
@@ -596,57 +513,40 @@ def check_for_ticker_updates(
     return grouped_cards
 
 
-def load_market_news_state(path: str = MARKET_NEWS_PATH) -> dict | None:
+def load_market_news_state() -> dict | None:
     """`{"headlines": [...], "fetched_at": ...}`, or `None` if there's
-    nothing cached yet, the local file is corrupted, or (Redis-backed)
-    Redis itself is unreachable -- `None` distinguished from
-    `{}` deliberately, so callers can tell "never fetched" apart from
-    "fetched, turned out empty". Same graceful-degradation behavior as
-    `load_ticker_state`."""
-    if is_configured():
-        try:
-            return get_json(_MARKET_NEWS_CACHE_KEY)
-        except KvStoreError as e:
-            logger.error("market news cache read failed, degrading to no-cache-yet: %s", e)
-            return None
-
+    nothing cached yet or Redis itself is unreachable -- `None`
+    distinguished from `{}` deliberately, so callers can tell "never
+    fetched" apart from "fetched, turned out empty". Same
+    graceful-degradation behavior as `load_ticker_state`."""
     try:
-        with open(path) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        return get_json(_MARKET_NEWS_CACHE_KEY)
+    except KvStoreError as e:
+        logger.error("market news cache read failed, degrading to no-cache-yet: %s", e)
         return None
 
 
-def save_market_news_state(state: dict, path: str = MARKET_NEWS_PATH) -> None:
-    if is_configured():
-        try:
-            set_json(_MARKET_NEWS_CACHE_KEY, state)
-        except KvStoreError as e:
-            logger.error("market news cache write failed: %s", e)
-        return
-
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(state, f, indent=2)
-        f.write("\n")
+def save_market_news_state(state: dict) -> None:
+    try:
+        set_json(_MARKET_NEWS_CACHE_KEY, state)
+    except KvStoreError as e:
+        logger.error("market news cache write failed: %s", e)
 
 
-def get_initial_market_news(path: str = MARKET_NEWS_PATH) -> dict:
+def get_initial_market_news() -> dict:
     """What "/tickers" renders for the market-news section -- instantly,
-    from the local cache only, no network call. A single page-level
-    feed, not per-ticker, so unlike ticker cards there's only one
+    from the cache only, no network call. A single page-level feed,
+    not per-ticker, so unlike ticker cards there's only one
     pending/not-pending state for the whole section, not one per row.
     Returns `{"headlines": [...], "pending": bool}`.
     """
-    stored = load_market_news_state(path)
+    stored = load_market_news_state()
     if stored is None:
         return {"headlines": [], "pending": True}
     return {"headlines": stored.get("headlines", []), "pending": False}
 
 
-def check_for_market_news(
-    fetch_news_fn=fetch_market_news, path: str = MARKET_NEWS_PATH, now: datetime | None = None
-) -> dict:
+def check_for_market_news(fetch_news_fn=fetch_market_news, now: datetime | None = None) -> dict:
     """The real live pull for the market-news section, called by its own
     route (/api/market-news/check) independently of any ticker group's
     own check, since there's no evidence that news needs to refresh on
@@ -661,9 +561,9 @@ def check_for_market_news(
     now = now or datetime.now(timezone.utc)
     try:
         headlines = fetch_news_fn()
-        save_market_news_state({"headlines": headlines, "fetched_at": now.isoformat()}, path)
+        save_market_news_state({"headlines": headlines, "fetched_at": now.isoformat()})
         return {"headlines": headlines, "pending": False}
     except Exception as e:
         logger.error("market news fetch failed error=%s", e)
-        stored = load_market_news_state(path)
+        stored = load_market_news_state()
         return {"headlines": stored.get("headlines", []) if stored else [], "pending": False}

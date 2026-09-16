@@ -176,7 +176,20 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] Adding a ticker shows it immediately as a new pending row in its group and re-checks just that group for real data, without reloading the whole page (superseding the original design's `window.location.reload()`)
 - [x] `_require_auth` gates the new routes exactly as it does every other route
 - [x] The ticker cache is genuinely safe under real concurrent multi-user/multi-process access, not just within one process — Redis-backed, it's a hash (one field per symbol) with atomic per-field writes, not a lock around a whole-cache read-modify-write
-- [x] The ticker config (`config/tickers.json`'s content) gets the same treatment for consistency — Redis-backed, a hash with one field per group, each carrying an explicit order index so group display order survives Redis not preserving hash field insertion order
+- [x] The ticker config (the watchlist) gets the same treatment for consistency — Redis-backed, a hash with one field per group, each carrying an explicit order index so group display order survives Redis not preserving hash field insertion order
+
+---
+
+### Story 13 — Redis as the Only Source of Truth (no local-file fallback)
+**As** the investor, **I want** the app to always read and write the same live Redis state, on my own machine or hosted, **so that** there's never a question of which copy — a stale committed file, or Redis's current state — is actually authoritative.
+
+**Why:** every storage function (ticker config, both ticker/news caches, indicator state) had a local-file branch intended for local development without a Redis account. In practice, local dev has always pointed at the same live Upstash instance Render uses, so that branch was never really exercised — its existence just made it easy to mistake Redis's current, possibly hand-edited state for something that should match a stale committed file. That confusion caused a real, if minor, incident during Story 12's own testing: a test script mistakenly deleted a real ticker (`IVW`), and separately the committed `config/tickers.json` no longer matched Redis at all (the user's own legitimate live-site edits) — initially misread as data corruption rather than the expected, already-documented result of hosted edits going to Redis only.
+
+**Acceptance Criteria**
+- [x] `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` are required unconditionally, wherever the app runs — no local-file fallback exists anywhere for the watchlist, either cache, or indicator state
+- [x] `config/tickers.json` and `data/indicators.json` are removed from the repo, since no code reads them anymore; `.gitignore`'s now-meaningless `data/tickers.json`/`data/market_news.json` entries are removed too
+- [x] A wiped or brand-new Redis key comes back empty (an empty watchlist, or a "nothing cached/recorded yet" state) rather than crashing — recovering indicator history is `python3 src/backfill.py`'s job (already the real recovery path used during the Story 11/H.12 incident); recovering a wiped watchlist is re-adding tickers through the in-app editor. Neither is automatic, and that's an accepted tradeoff, not a gap
+- [x] The now-unused process-local lock (`ticker_dashboard._ticker_state_lock`) is deleted along with the local-file code it existed to guard — every remaining write is either a single Redis key or an atomic per-field hash write, neither needing a lock
 
 ---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)

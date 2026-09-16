@@ -25,7 +25,7 @@ graph TD
         GATE -->|yes| CAL[main.update_release_calendar]
         CAL --> BD[digest/build_digest_content.py<br/>table + countdown + AI call]
         BD -->|reuse| INT[interpret.py<br/>Gemini call]
-        BD --> SAVE[storage.save_state<br/>indicators.json + last_ai_response]
+        BD --> SAVE[storage.save_state<br/>Redis: indicator_state + last_ai_response]
         SAVE --> FRAG[page_template.render_check_response<br/>HTML fragments, JSON]
         FRAG -->|"3. script patches DOM"| PAGE1
 
@@ -33,7 +33,7 @@ graph TD
         R2 --> TD[ticker_dashboard.py]
         TD --> FH[finnhub_client.py]
         FH -->|per ticker, independently| PAGE2[Render page<br/>per-row error on failure]
-        TD -->|reads| CFG[config/tickers.json]
+        TD -->|reads| CFG[Redis: ticker_config hash]
     end
 
     style U fill:#e1f0ff
@@ -45,11 +45,10 @@ graph TD
 
 ```
 /
-├── config/
-│   └── tickers.json              # ticker watchlist (Section 7 of requirements doc)
-├── data/
-│   ├── tickers.json               # gitignored snapshot cache — not the config file above
-│   └── market_news.json          # gitignored market-news cache
+# config/tickers.json and data/*.json (originally: watchlist + ticker/news/
+# indicator caches) were deleted from the repo on 2026-09-16 — everything
+# lives in Redis only now (ticker_config, ticker_cache, market_news_cache,
+# indicator_state), see Section 11.10.
 ├── src/
 │   ├── web/
 │   │   ├── app.py                 # Flask app: GET / and GET /tickers (fast renders), GET /api/check
@@ -96,7 +95,9 @@ v1 generated the AI summary fresh for each email and never persisted it. The Ind
 - `last_ai_response` is overwritten (not appended) on every successful Gemini call — both from the weekly email (`post_release.py`) and from a page-triggered live pull (`live_pull.py`). Both call sites go through `build_digest_content()`, so this is one code path.
 - If a live pull's Gemini call fails but the FRED fetch succeeds, `last_ai_response` is left untouched and the page falls back to it, labeled with its own `generated_at`.
 
-### 3.2 `config/tickers.json`
+### 3.2 `ticker_config` (originally `config/tickers.json`, superseded — see Section 11.10)
+
+Originally a committed local file; as of the 2026-09-16 simplification (Section 11.10) the file was deleted and its content lives only in the `ticker_config` Redis hash. The logical shape is unchanged:
 
 ```json
 {
@@ -110,9 +111,9 @@ v1 generated the AI summary fresh for each email and never persisted it. The Ind
 }
 ```
 
-`groups` is read as an open map — `ticker_dashboard.py` iterates whatever keys are present, in file order, rather than a fixed set of expected group names. **No group name may ever be hardcoded** in `ticker_dashboard.py` or `page_template.py`; both derive section headers directly from this file's keys.
+`groups` is read as an open map — `ticker_dashboard.py` iterates whatever keys are present, in config order, rather than a fixed set of expected group names. **No group name may ever be hardcoded** in `ticker_dashboard.py` or `page_template.py`; both derive section headers directly from these keys.
 
-Loaded fresh on every request to `/tickers` — an edit takes effect on the next page reload with no restart required.
+Loaded fresh on every request to `/tickers` — an edit (via the in-app editor; there's no file to hand-edit anymore) takes effect on the next page reload with no restart required.
 
 ## 4. Indicator Digest Page — Fast Render + Background Check Design
 
@@ -131,8 +132,8 @@ Loaded fresh on every request to `/tickers` — an edit takes effect on the next
 ### 4.3 Client-side patching
 The rendered page shows a `#checking-indicator` ("Checking for updates...") next to the header on load. The inline script removes it once `/api/check` settles, then — only if `data_updated` is true — replaces `#table-section` and `#countdown-section`'s `innerHTML`, and — only if `ai_html` is also non-null — replaces `#ai-section`'s `innerHTML` too. If FRED found new data but Gemini failed, the table/countdown update while the AI section is left as-is.
 
-### 4.4 Known trade-off
-`check_for_updates`'s `save_state()` call writes to the same `data/indicators.json` the GitHub Actions workflow commits. A local check that finds new data leaves that file locally modified until committed or discarded. Ingestion is idempotent (dedup by date), so this never corrupts history — the risk is purely a local working-tree diff. A check that finds nothing new never calls `save_state` at all.
+### 4.4 Known trade-off (superseded — see Sections 11.7/11.10)
+~~`check_for_updates`'s `save_state()` call writes to the same `data/indicators.json` the GitHub Actions workflow commits. A local check that finds new data leaves that file locally modified until committed or discarded.~~ Indicator state moved to Redis-only (Section 11.7), then dropped its local-file fallback entirely (Section 11.10) — `save_state()` now always writes straight to the `indicator_state` Redis key, shared directly by every environment; there's no local file to leave modified. Ingestion is still idempotent (dedup by date), so concurrent writers can't corrupt history either way. A check that finds nothing new still never calls `save_state` at all.
 
 ## 5. Ticker Dashboard — Finnhub + Yahoo Integration Design
 
@@ -148,14 +149,14 @@ Thin wrapper around two Finnhub REST endpoints, each independently callable so o
 Thin wrapper around Yahoo Finance's public, unauthenticated chart endpoint (`query1.finance.yahoo.com/v8/finance/chart/{symbol}`), used only for a year of daily closes to compute the 20/50/200-day simple moving averages. Implemented as a direct `requests` call rather than the `yfinance` library, to avoid its heavier dependency tree.
 
 ### 5.2 `ticker_dashboard.py`
-For each ticker in `config/tickers.json`, independently:
+For each ticker in the watchlist (`ticker_config` — originally `config/tickers.json`, see Section 3.2), independently:
 1. Fetch quote + 52-week range/market cap/P/E (`finnhub_client.fetch_stock_metrics`, one `/stock/metric` call) from Finnhub and daily closes from Yahoo.
 2. Compute the three moving averages (`MA_WINDOWS = (20, 50, 200)`) from the Yahoo close series.
 3. On any failure for that ticker, catch it locally and mark that ticker's row as errored — the loop continues (same per-item isolation pattern as v1's `run_ingestion`). The row fails as a whole rather than partially.
 4. Compute `pct_off_high = (week52_high - price) / week52_high * 100` (no new fetch).
 5. Assemble one card dict per ticker: `{symbol, group, price, change, change_percent, week52_low, week52_high, pct_off_high, market_cap, pe_ratio, ma20, ma50, ma200, error: str | None}`. `market_cap`/`pe_ratio` can independently be `None` on an otherwise-successful card — Finnhub doesn't populate them for every symbol.
 
-Cards are grouped for rendering using the `groups` structure from `config/tickers.json`, in file order — each group's display header is derived from its config key (e.g. `sector` → "Sector"). An unrecognized/invalid symbol is skipped with a logged warning before it reaches either client.
+Cards are grouped for rendering using the `groups` structure from `ticker_config`, in config order — each group's display header is derived from its config key (e.g. `sector` → "Sector"). An unrecognized/invalid symbol is skipped with a logged warning before it reaches either client.
 
 Fetches run concurrently via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since maxing out Finnhub's free-tier rate limit risks trading slow-but-successful fetches for fast 429s). `main.run_ingestion()`/`update_release_calendar()` use the same pattern, one thread per indicator. Only the fetch calls run concurrently; state mutation and result-building run single-threaded afterward, and `executor.map`'s output-order guarantee keeps results grouped/ordered exactly as a sequential version would.
 
@@ -173,14 +174,14 @@ Columns: Ticker, Price, Change, 52-Week Range, % Off High, Market Cap, P/E, 20d/
 Each `<tr>` (`page_template._render_ticker_row`) carries `data-symbol`/`data-pct-off-high` attributes (the latter empty for a pending/errored card); the Ticker and % Off High `<th>`s carry `class="sortable" data-sort-key="symbol"|"pctOffHigh"`. A click handler in `render_ticker_dashboard_page`'s inline `<script>`, event-delegated on `#ticker-groups`, reorders that `<table>`'s `<tbody>` rows in the DOM — no server round trip, no re-render. Clicking toggles ascending/descending (tracked via `sort-asc`/`sort-desc` classes on the `<th>`, which also drive the CSS arrow via `::after`); rows with an empty `data-pct-off-high` always sort last regardless of direction. Sorting is per table (per group), purely client-side state, and is lost when that group's own `/api/tickers/groups/<name>/check` refresh lands (it replaces just that group's `.category-block` wholesale — other groups' sort state is untouched, per Section 11.8's per-group split).
 
 ### 5.2c In-app ticker editing
-`ticker_dashboard.add_ticker_to_group`/`remove_ticker_from_group` read-modify-write `config/tickers.json` directly (or Redis, Section 11.3, when configured). Only mutate an existing group's ticker list — creating/renaming/removing a group is still a hand-edit. `POST /api/tickers/add`/`/remove` (`app.py`) wrap these; invalid input raises `TickerConfigError`, returned as a 400. The remove button renders as the row's own trailing `<td>`, not next to the ticker symbol, so it doesn't crowd the column readers scan first. Both are event-delegated on `#ticker-groups`, since that div's contents survive a child group block being swapped out.
+`ticker_dashboard.add_ticker_to_group`/`remove_ticker_from_group` read and write only their own group's field in the `ticker_config` Redis hash (Sections 11.9/11.10) — never the whole config. Only mutate an existing group's ticker list — creating/renaming/removing a group is still a direct Redis edit nobody's built a UI for. `POST /api/tickers/add`/`/remove` (`app.py`) wrap these; invalid input raises `TickerConfigError`, returned as a 400. The remove button renders as the row's own trailing `<td>`, not next to the ticker symbol, so it doesn't crowd the column readers scan first. Both are event-delegated on `#ticker-groups`, since that div's contents survive a child group block being swapped out.
 
 **Remove (added 2026-09-16):** optimistic — the row is removed from the DOM immediately on confirm, before the `/api/tickers/remove` request resolves, and the page is *not* reloaded on success. A failure (network error or a 400 from `TickerConfigError`) re-inserts the row at its original position and shows an alert. This replaced an earlier `window.location.reload()`-on-success design that made every single-row removal pay the cost of a full watchlist live refresh just to reflect one row disappearing.
 
-**Add** still reloads the page on success — constructing a correct pending-row fragment client-side (to match `page_template._render_ticker_row`'s pending-state markup) wasn't worth doing for a lower-frequency action; revisit if add starts feeling as slow as remove did.
+**Add (updated 2026-09-16, Section 11.9):** also no longer reloads the page. A successful add inserts a pending row for the new symbol directly into its group's table (built via DOM APIs, not string concatenation, so the symbol can't be interpreted as markup), then re-fires that same group's own `/api/tickers/groups/<name>/check` to fetch real data for it — reusing the same `checkGroup()` helper the background check uses.
 
 ### 5.3 Freshness
-- **`data/tickers.json`** (gitignored — a cache, not the historical record `data/indicators.json` is) stores one snapshot per ticker: `{symbol: {price, change, change_percent, week52_low, week52_high, pct_off_high, market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`.
+- **`ticker_cache`** (a Redis hash, one field per symbol — Section 11.8; no longer a local file) stores one snapshot per ticker: `{symbol: {price, change, change_percent, week52_low, week52_high, pct_off_high, market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`.
 - **`ticker_dashboard.get_initial_ticker_page_data()`** — stored-only, no network, mirrors `live_pull.get_initial_page_data()`. A ticker with no cached snapshot renders as a pending/"Loading…" row.
 - **`ticker_dashboard.check_for_ticker_updates()`** — the real live pull, mirrors `live_pull.check_for_updates()`, with one difference: no "skip if nothing changed" gate — every check re-fetches every ticker live via `build_ticker_cards()` and persists every success back to the cache. A ticker whose live fetch fails resolves to its last cached snapshot silently if one exists, or the error state if not. Takes an optional `config` subset (Section 11.8) so a caller can live-check just one group.
 - **`/api/tickers/groups/<name>/check`** (Section 11.8) calls `check_for_ticker_updates(config={name: symbols})` for just that one group and returns `{"group_html": ...}` (`page_template.render_ticker_group_check_response`) for the page's script to swap into that group's own `.category-block`. **`/api/market-news/check`** is the equivalent for market news, returning `{"news_html": ...}` (`render_market_news_check_response`) for `#market-news`.
@@ -192,7 +193,7 @@ Both `render_indicator_digest_page` and `render_ticker_dashboard_page` (`page_te
 ## 5b. US Stock Market News
 - **`finnhub_client.fetch_market_news(limit=10)`** — `/news?category=general`, filtered to `category == "top news"` as the closest available signal to "US stock market news" (the raw feed is a broad wire, not market-specific).
 - **Where it renders:** once, in a `#market-news` div at the top of `render_ticker_dashboard_page`, above `#ticker-groups`.
-- **Freshness:** its own route, `/api/market-news/check` (Section 11.8), fetched independently of any ticker group's own check. Its own cache file: **`data/market_news.json`** (gitignored), shape `{"headlines": [...], "fetched_at": ...}`. `ticker_dashboard.get_initial_market_news()`/`check_for_market_news()` mirror the ticker-card split at whole-section granularity.
+- **Freshness:** its own route, `/api/market-news/check` (Section 11.8), fetched independently of any ticker group's own check. Its own cache key: **`market_news_cache`** (Redis whole-blob key, not a local file), shape `{"headlines": [...], "fetched_at": ...}`. `ticker_dashboard.get_initial_market_news()`/`check_for_market_news()` mirror the ticker-card split at whole-section granularity.
 - **Failure handling:** a failed live fetch with no cached fallback renders "Market news unavailable." rather than breaking the ticker tables below it; with a cached fallback, it degrades silently to the last known headlines.
 
 ## 6. Local Hosting & Access
@@ -215,18 +216,18 @@ All v1 secrets (`FRED_API_KEY`, `GEMINI_API_KEY`, etc.) are reused as-is by the 
 - Live pull failure falls back to stored data + stored AI response, never an error page — the table/countdown and the AI section can independently be Live or Saved
 - `save_state()` after a successful live pull reuses v1's existing dedup-by-date logic — safe to call from a second, independent trigger path (page load) in addition to the scheduled workflow
 - Per-ticker try/catch in `ticker_dashboard.py` — one bad Finnhub call logs and shows an error row, doesn't block the other tickers
-- An unrecognized ticker symbol in `config/tickers.json` is skipped with a logged warning before hitting the Finnhub client
-- Local Flask app errors (e.g. a malformed `config/tickers.json`) render a plain error page rather than a stack trace — a minimal safeguard for a local single-user tool, not full input-validation hardening
+- An unrecognized ticker symbol in the `ticker_config` watchlist is skipped with a logged warning before hitting the Finnhub client
+- Local Flask app errors (e.g. a broken `ticker_config` load) render a plain error page rather than a stack trace — a minimal safeguard for a local single-user tool, not full input-validation hardening
 
 ## 9. Open Questions / Risks
 
 - Per-visit Gemini/FRED calls (every Indicator Digest Page load, not just the scheduled check) — confirm this stays within free-tier rate limits under realistic single-user usage
-- Local `data/indicators.json` working-tree diffs after a live pull (Section 4.4) — no automated reconciliation planned; revisit if it becomes annoying in practice
+- ~~Local `data/indicators.json` working-tree diffs after a live pull (Section 4.4)~~ — moot since Section 11.10: indicator state is Redis-only, no local file to diff
 
 ## 10. One-Time Setup Checklist (in addition to v1's)
 - [ ] Add `flask` to `requirements.txt`, install
 - [ ] Create a free Finnhub API key, add `FINNHUB_API_KEY` to local `.env`
-- [ ] Create `config/tickers.json` from the format in Section 7 of the requirements doc
+- [x] ~~Create `config/tickers.json` from the format in Section 7 of the requirements doc~~ — superseded (Section 11.10): the watchlist lives in the `ticker_config` Redis hash instead; set up `UPSTASH_REDIS_REST_URL`/`TOKEN` in local `.env` and seed the watchlist through the in-app editor (or a one-off script) instead of creating a file
 - [ ] Verify `app.run(host="127.0.0.1", ...)` — confirm the app is unreachable from another device on the same network
 
 ## 11. Hosted Live Dashboard (v2.1)
@@ -254,16 +255,16 @@ Nothing about the existing route logic changes — `app.py`, `live_pull.py`, `ma
 - If both are set, every route (including `/api/check*`) requires valid credentials; a missing/incorrect header returns 401 with a `WWW-Authenticate` challenge so the browser prompts for credentials natively
 - Covered by `tests/test_app.py`; verified locally including under gunicorn (Section 11.5)
 
-### 11.3 `kv_store.py` — Upstash Redis wrapper — implemented
-- Thin wrapper using `requests` against Upstash's REST API (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, bearer-token auth) — no Redis client library needed, matching `finnhub_client.py`/`yahoo_client.py`'s plain-`requests` convention
-- Two operations: `get_json(key) -> dict | None` (`GET {url}/get/{key}`, reading the `{"result": ...}` envelope Upstash returns, `None` if the key doesn't exist) and `set_json(key, value: dict)` (`POST {url}/set/{key}` with the JSON-encoded value as the raw request body) — both raise `KvStoreError` on any non-2xx response or malformed body. `is_configured()` is the single switch other modules check (true iff `UPSTASH_REDIS_REST_URL` is set).
-  **Caveat:** this wire format was implemented from Upstash's documented REST API pattern, not verified against a live Upstash instance (no account was available in this session) — smoke-test `get_json`/`set_json` against a real Upstash database once one exists, before relying on it in production.
-- Backend selection lives in `ticker_dashboard.py`: `_load_raw_config`/`_save_raw_config` (config), `load_ticker_state`/`save_ticker_state` (ticker cache), `load_market_news_state`/`save_market_news_state` (news cache) each check `kv_store.is_configured()`; if true, they route through `kv_store.py`, else they use the existing local-file `open()` calls unchanged — one function per operation, one branch inside it, not two parallel code paths per caller. `app.py`'s routes are untouched — they still just call these functions with default args
-- Keys: `ticker_config`, `ticker_cache`, `market_news_cache`
-- A ticker/news cache failure (`KvStoreError`) is caught and degrades to the same empty/pending state a missing local file would produce (logged, not raised). A ticker **config** failure is *not* caught — it propagates out of `_load_raw_config`, per Story 9's AC that a broken watchlist load should fail loudly rather than silently render empty
+### 11.3 `kv_store.py` — Upstash Redis wrapper — implemented (extended, see Section 11.10)
+- Thin wrapper using `requests` (a shared `requests.Session()`, Section 11.8) against Upstash's REST API (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, bearer-token auth) — no Redis client library needed, matching `finnhub_client.py`/`yahoo_client.py`'s plain-`requests` convention
+- `get_json(key) -> dict | None` (`GET {url}/get/{key}`) / `set_json(key, value: dict)` (`POST {url}/set/{key}`) for a whole-blob key, plus `hset_json`/`hget_json`/`hgetall_json`/`hdel_json` (Sections 11.8/11.9) for per-field hash operations — all raise `KvStoreError` on any non-2xx response or malformed body. `is_configured()` still exists as a plain env-var check, but as of Section 11.10 nothing branches on it anymore — Redis is required unconditionally, so a caller either has both env vars set or gets a `KvStoreError` on the first call.
+  **Caveat, since resolved:** the wire format below was originally implemented from Upstash's documented REST API pattern, not verified live — every operation (`get`/`set` and later the four hash commands) has since been confirmed directly against a real Upstash instance (see Sections 11.3's own later notes, and 11.8/11.9/11.10).
+- ~~Backend selection lives in `ticker_dashboard.py`: ... each check `kv_store.is_configured()`; if true, they route through `kv_store.py`, else they use the existing local-file `open()` calls unchanged~~ — **removed entirely, Section 11.10**. Every one of these functions now calls `kv_store.py` unconditionally; there is no local-file branch left anywhere in `ticker_dashboard.py` or `storage.py`.
+- Keys: `ticker_config`, `ticker_cache`, `market_news_cache` (plus `indicator_state`, added in Section 11.7, also Redis-only as of 11.10)
+- A ticker/news cache failure (`KvStoreError`) is caught and degrades to the same empty/pending state a missing cache entry would produce (logged, not raised). A ticker **config** failure is *not* caught — it propagates out of `_load_raw_config`, per Story 9's AC that a broken watchlist load should fail loudly rather than silently render empty
 
-### 11.4 Seeding — implemented
-`_load_raw_config()`, when Redis-backed and the `ticker_config` key doesn't exist yet, reads the repo's bundled `config/tickers.json` once and writes it to Redis before returning it — so a fresh deploy starts with the existing watchlist rather than an empty one. After that first write, the repo file is no longer consulted for a hosted deployment; local development is unaffected since it never touches Redis. Covered by `tests/test_ticker_dashboard.py::TestRedisBackedTickerConfig` and `tests/test_kv_store.py` (mocked Upstash responses, no real network calls per this project's testing convention).
+### 11.4 Seeding — superseded, Section 11.10
+~~`_load_raw_config()`, when Redis-backed and the `ticker_config` key doesn't exist yet, reads the repo's bundled `config/tickers.json` once and writes it to Redis before returning it — so a fresh deploy starts with the existing watchlist rather than an empty one. After that first write, the repo file is no longer consulted for a hosted deployment; local development is unaffected since it never touches Redis.~~ This seed-from-local-file step was removed entirely on 2026-09-16 (Section 11.10), along with the file itself (`config/tickers.json` was deleted from the repo). A wiped/fresh `ticker_config` key now simply comes back as an empty watchlist; recovery is re-adding tickers through the in-app editor, not an automatic reseed.
 
 ### 11.5 Deployment mechanics
 - Flask's built-in dev server (`app.run(...)`) isn't meant for production; Render's start command instead runs `gunicorn` — added to `requirements.txt`
@@ -285,13 +286,15 @@ Nothing about the existing route logic changes — `app.py`, `live_pull.py`, `ma
 - Story 11 (Section 11.7) means GitHub Actions and any hosted Render instance now both read-modify-write the *same* Redis-backed indicator state, with no locking — a race between an overlapping scheduled run and a live visitor's background check could lose one side's update. Accepted as low-severity and self-healing: ingestion is idempotent/dedup-by-date, so a lost update is simply rediscovered the next time either side successfully re-fetches that date from FRED. Same unguarded read-modify-write pattern Story 9 already accepted for the ticker config editor — not planning real transactional locking for a single-user tool
 - Indicator history no longer has a git-diffable audit trail now that it lives in Redis instead of a committed file (Story 11) — a deliberate tradeoff, the same one Story 9 already made for ticker data
 
-### 11.7 Indicator state moves to Redis too (Story 11) — implemented
+### 11.7 Indicator state moves to Redis too (Story 11) — implemented (local-file fallback since removed, Section 11.10)
 
 **Why:** the original design (Story 10, "stays git-sourced") kept `data/indicators.json` committed by the scheduled GitHub Action and read from Render's own git checkout, specifically to avoid a second data store. Live usage surfaced a real gap: the AI response (`state["last_ai_response"]`) was only ever regenerated when an email also happened to be due (throttled to a weekly rollup), so a hosted visitor's own background check (`/api/check`) could compute a *fresher* AI take than what GitHub Actions had last committed — but that fresher result only ever landed on Render's own ephemeral disk, discarded on the next restart, while the git-committed (and therefore durable) AI response stayed stale until GitHub's own weekly-throttled cycle caught up. Moving indicator state to Redis, mirroring Story 9's ticker persistence, gives both the scheduled Action and any hosted visitor the same shared, durable state — there's no more "whoever ran most recently has the freshest copy, and it might not stick."
 
 **`storage.py`:** `load_state`/`save_state` branch on `kv_store.is_configured()` exactly like `ticker_dashboard.py`'s functions do — Redis-backed (key `indicator_state`) when `UPSTASH_REDIS_REST_URL` is set, the unchanged local `data/indicators.json` file otherwise. `kv_store.py` stays in `src/web/`; `storage.py` adds `web/` to its own `sys.path` rather than moving the file, to avoid touching Story 9's already-working ticker code. Unlike the ticker/news caches (which degrade to an empty/pending state on a Redis failure), a `KvStoreError` here is **not caught** — indicator state is core data, not a cache, so a broken load fails loudly rather than silently acting as if there were no indicators at all.
 
-**Seeding, added after a real incident:** the first version of this shipped *without* a seed-on-first-read step, unlike the ticker config's equivalent (`_load_raw_config`, Section 11.4). Render had already been given `UPSTASH_REDIS_REST_URL`/`TOKEN` (left over from Story 9) by the time this code deployed, so the very next live visit to the Indicator Digest Page found `indicator_state` completely empty and treated every indicator as brand new — persisting exactly one fresh FRED observation each, discarding the months of history that used to live in the git-committed file. Sparklines dropped to a single point; the AI response was also missing (its own live-check Gemini call didn't land that visit, and a genuine Gemini `503` high-demand period complicated the manual recovery). Fixed two ways: a one-time manual recovery (`python3 src/backfill.py` to repopulate ~12 recent real observations per indicator from FRED, then a manual `refresh_ai_response_if_updated` call once Gemini's `503`s cleared), and — the actual fix — `load_state()` now seeds from the local `data/indicators.json` file the first time the Redis key is empty, exactly mirroring `_load_raw_config`'s pattern: read the committed file, persist it to Redis, return it; a missing/corrupted local file falls back to `{"indicators": {}}` (matching `load_state`'s own long-standing local-dev tolerance) rather than raising. So a fresh Upstash database, or a manually-cleared key, now self-heals from the repo's own history instead of quietly resetting every indicator to a single point.
+**Seeding, added after a real incident:** the first version of this shipped *without* a seed-on-first-read step, unlike the ticker config's equivalent (`_load_raw_config`, Section 11.4). Render had already been given `UPSTASH_REDIS_REST_URL`/`TOKEN` (left over from Story 9) by the time this code deployed, so the very next live visit to the Indicator Digest Page found `indicator_state` completely empty and treated every indicator as brand new — persisting exactly one fresh FRED observation each, discarding the months of history that used to live in the git-committed file. Sparklines dropped to a single point; the AI response was also missing (its own live-check Gemini call didn't land that visit, and a genuine Gemini `503` high-demand period complicated the manual recovery). Fixed two ways: a one-time manual recovery (`python3 src/backfill.py` to repopulate ~12 recent real observations per indicator from FRED, then a manual `refresh_ai_response_if_updated` call once Gemini's `503`s cleared), and — the fix at the time — `load_state()` seeded from the local `data/indicators.json` file the first time the Redis key was empty, exactly mirroring `_load_raw_config`'s pattern: read the committed file, persist it to Redis, return it; a missing/corrupted local file fell back to `{"indicators": {}}` rather than raising.
+
+**That seeding step was itself removed on 2026-09-16 (Section 11.10):** with the benefit of having actually recovered from this incident once already by hand, re-running `backfill.py` was judged sufficient going forward, and keeping a committed `data/indicators.json` file around purely as a seed source (never read for anything else, easy to mistake for something that should stay in sync with live Redis) wasn't worth the confusion it invited. The file was deleted from the repo; a fresh/wiped `indicator_state` key now simply comes back as `{"indicators": {}}` with no automatic reseed, same as `ticker_config`'s equivalent change.
 
 **GitHub Actions (`indicator-check.yml`):** the "Commit and push updated indicator data" step is gone entirely — the workflow now passes `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` (new repo secrets, separate from Render's env vars) to `python3 src/main.py`, which writes straight to Redis via the same `storage.py` used everywhere else. The `permissions: contents: write` grant that authorized the old commit step is removed too, since nothing in the workflow touches git anymore.
 
@@ -347,3 +350,26 @@ Verified directly against the real Upstash instance, not just reasoned about: co
 **One-time Redis migration, same pattern as Section 11.8's ticker-cache one:** the existing `ticker_config` key was a string from the old design; confirmed live (`TYPE ticker_config` → `string`), deleted it, and confirmed a fresh `load_ticker_config()` call re-seeded it correctly as a hash with the real watchlist, group order intact, then confirmed `add_ticker_to_group`/`remove_ticker_from_group` both round-trip correctly against the real instance (add, verify, remove, verify) and that an unknown group still raises `TickerConfigError` without writing anything.
 
 **Tests:** `tests/test_kv_store.py` — new `hget_json` (one-field read, `None` for a missing field, wire format confirmed live). `tests/test_ticker_dashboard.py`'s `TestRedisBackedTickerConfig` rewritten for the hash shape: seeding writes one `hset_json` call per group with the right `order`; reads restore file order even when the mocked hash is handed back deliberately out of order; add/remove each read and write only their own group's field; a concurrent-edit test confirms two different groups' edits never touch each other's field. `tests/test_page_template.py` — asserts the add-ticker script no longer contains `location.reload` and does contain `checkGroup`. Full suite (312 tests) passes.
+
+### 11.10 Redis as the only source of truth, everywhere — local-file fallback removed entirely — implemented
+
+**Why:** every function that touched the watchlist, the two ticker/news caches, or indicator state had a local-file branch (`if kv_store.is_configured(): ... else: <open a local file>`) dating back to Stories 9/11, intended for local development without a Redis account. In practice, this project's local dev has always pointed `.env` at the same live Upstash instance Render uses — the "local file" branch was never actually exercised day-to-day. Its continued existence had a real cost: during a live-testing session for Section 11.9's `ticker_config` hash migration, a mix of (a) the author's own test script mistakenly removing a ticker (`IVW`) that was already real production data, not a test fixture, and (b) the user's own legitimate edits to the live site's watchlist while testing, produced a Redis state that no longer matched the committed `config/tickers.json`. That divergence was initially and wrongly read as "data corruption," when the existing design (Section 11.4/11.9: seed once from the file, then never touch it again for a hosted deployment) already made this exact divergence expected and harmless — a stale snapshot from whenever it was last committed is not a second source of truth to reconcile against, only a one-time bootstrap. Keeping a file around that *looked* authoritative but wasn't invited exactly this kind of mistake.
+
+**Decision:** remove the local-file code path entirely, for both the ticker dashboard and indicator state, rather than keep maintaining two parallel storage modes for a distinction that wasn't real in practice. `UPSTASH_REDIS_REST_URL`/`TOKEN` are now required unconditionally, wherever this app runs.
+
+**`ticker_dashboard.py`:**
+- `_load_raw_config`/`load_ticker_config` — no more `is_configured()` branch, no more `path` parameter, no more seed-from-local-file step (that was Section 11.4/11.9's job; removed along with the branch). Always `hgetall_json(_TICKER_CONFIG_KEY)`, sorted by each field's `order` index.
+- `add_ticker_to_group`/`remove_ticker_from_group` — no more `path` parameter; always `hget_json`/`hset_json` on their own group's field (Section 11.9's design, now the *only* path rather than one of two).
+- `load_ticker_state`/`save_ticker_state`/`save_ticker_snapshot`/`delete_ticker_snapshot` — no more `path`/`state_path` parameters or local-file branch; always the Redis hash operations from Section 11.8.
+- `load_market_news_state`/`save_market_news_state`/`get_initial_market_news`/`check_for_market_news` — same simplification, no more `path` parameter.
+- `get_initial_ticker_page_data`/`check_for_ticker_updates` — dropped the now-meaningless `state_path` parameter.
+- **`_ticker_state_lock` (a `threading.Lock`) was deleted entirely** — it existed solely to guard the local file's read-modify-write in `save_ticker_snapshot`/`delete_ticker_snapshot`'s local branch. With that branch gone, every write is either a single Redis key operation (whole-blob `market_news_cache`) or an atomic per-field hash write (`ticker_config`, `ticker_cache`) — neither needs a lock.
+- Module docstring rewritten top to bottom to describe the Redis-only design as the current, only behavior, not a fallback-guarded one.
+
+**`storage.py`:** `load_state`/`save_state` lost their `path` parameter and local-file branch entirely — always `get_json`/`set_json` against `indicator_state`. A wiped/fresh key returns `{"indicators": {}}`; recovering real history is `backfill.py`'s job (already the real recovery mechanism used during the H.12 incident, Section 11.7), not an automatic reseed. `main.py`/`backfill.py`/`live_pull.py` needed no changes — they already called `load_state()`/`save_state(state)` with no path argument.
+
+**Deleted from the repo:** `config/tickers.json` and `data/indicators.json` (both previously git-tracked, both now fully unread by any code — keeping them around would just be misleading, exactly the mistake this section's "why" describes). `.gitignore`'s `data/tickers.json`/`data/market_news.json` entries were also removed, since those files are never written anymore either — nothing local-file-shaped remains for any of the four keys.
+
+**Accepted tradeoff, explicit:** a wiped or brand-new Redis key now has no automatic reseed anywhere. Indicator state recovers via `python3 src/backfill.py` (re-fetches recent observations from FRED — accepted as sufficient specifically because it already proved itself as the real recovery path during the H.12 incident). A wiped watchlist recovers by re-adding tickers through the in-app editor — no tooling exists for bulk-restoring a watchlist from a backup; not built, since the user judged this acceptable for a single-user tool's very-infrequent worst case.
+
+**Tests:** `tests/test_storage.py` rewritten — `TestLoadSaveState` now mocks `get_json`/`set_json` directly (a small in-memory fake-Redis helper for round-trip tests) instead of writing to temp files; the old seed-related tests (`test_load_seeds_from_local_file_when_redis_key_absent`, etc.) were deleted, since there's no seeding left to test. `tests/test_ticker_dashboard.py` rewritten comprehensively: every test class that previously wrote to a temp-dir local file (`TestLoadTickerConfig`, `TestAddTickerToGroup`, `TestRemoveTickerFromGroup`, `TestTickerStatePersistence`, `TestMarketNewsPersistence`, `TestGetInitialMarketNews`, `TestCheckForMarketNews`) now mocks the relevant `hset_json`/`hget_json`/`hgetall_json`/`hdel_json`/`get_json`/`set_json` calls instead, via shared `config_hash()`/`fake_hash_store()` test helpers that build a small in-memory Redis-hash stand-in for realistic read-after-write round trips; the separate `is_configured()`-gated `TestRedisBacked*` classes were folded into the main test classes, since there's only one mode left to test, not two. The real smoke test against the live watchlist (`test_default_config_path_loads_the_live_watchlist`) was deleted — there's no local file left to smoke-test, and the suite must still run without real Upstash credentials. Full suite (300 tests) passes.
