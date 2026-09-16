@@ -30,6 +30,7 @@ from ticker_dashboard import (
     load_ticker_state,
     remove_ticker_from_group,
     save_market_news_state,
+    save_ticker_snapshot,
     save_ticker_state,
 )
 
@@ -782,38 +783,79 @@ class TestRedisBackedTickerConfig(unittest.TestCase):
 
 
 class TestRedisBackedTickerCache(unittest.TestCase):
+    """Story 12: the ticker cache is a Redis *hash* (one field per
+    symbol via hset_json/hgetall_json), not a single JSON-blob key --
+    so a per-symbol write is a genuinely atomic HSET, never a
+    read-modify-write of every other symbol's data. Patched on
+    `ticker_dashboard` itself, not `kv_store`, since `ticker_dashboard.py`
+    does `from kv_store import ...`, binding the names into its own
+    namespace (same reasoning as TestRedisBackedTickerConfig).
+    """
+
     def test_load_reads_from_redis(self):
         with (
             mock.patch("ticker_dashboard.is_configured", return_value=True),
-            mock.patch("ticker_dashboard.get_json", return_value={"SPY": {"price": 1.0}}),
+            mock.patch("ticker_dashboard.hgetall_json", return_value={"SPY": {"price": 1.0}}),
         ):
             self.assertEqual(load_ticker_state(TICKER_DATA_PATH), {"SPY": {"price": 1.0}})
 
     def test_load_degrades_to_empty_dict_on_redis_outage(self):
         with (
             mock.patch("ticker_dashboard.is_configured", return_value=True),
-            mock.patch("ticker_dashboard.get_json", side_effect=KvStoreError("redis down")),
+            mock.patch("ticker_dashboard.hgetall_json", side_effect=KvStoreError("redis down")),
         ):
             self.assertEqual(load_ticker_state(TICKER_DATA_PATH), {})
 
-    def test_save_writes_to_redis_not_the_local_file(self):
+    def test_save_snapshot_writes_one_hash_field_not_the_local_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = os.path.join(tmp_dir, "tickers.json")
             with (
                 mock.patch("ticker_dashboard.is_configured", return_value=True),
-                mock.patch("ticker_dashboard.set_json") as set_mock,
+                mock.patch("ticker_dashboard.hset_json") as hset_mock,
             ):
-                save_ticker_state({"SPY": {"price": 1.0}}, path)
+                save_ticker_snapshot("SPY", {"price": 1.0}, path)
 
-            set_mock.assert_called_once_with("ticker_cache", {"SPY": {"price": 1.0}})
+            hset_mock.assert_called_once_with("ticker_cache", "SPY", {"price": 1.0})
             self.assertFalse(os.path.exists(path))
 
-    def test_save_outage_is_swallowed_not_raised(self):
+    def test_save_snapshot_outage_is_swallowed_not_raised(self):
         with (
             mock.patch("ticker_dashboard.is_configured", return_value=True),
-            mock.patch("ticker_dashboard.set_json", side_effect=KvStoreError("redis down")),
+            mock.patch("ticker_dashboard.hset_json", side_effect=KvStoreError("redis down")),
         ):
-            save_ticker_state({"SPY": {"price": 1.0}}, TICKER_DATA_PATH)
+            save_ticker_snapshot("SPY", {"price": 1.0}, TICKER_DATA_PATH)
+
+    def test_save_state_bulk_writes_one_hash_field_per_symbol(self):
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.hset_json") as hset_mock,
+        ):
+            save_ticker_state({"SPY": {"price": 1.0}, "VGIT": {"price": 2.0}}, TICKER_DATA_PATH)
+
+        hset_mock.assert_any_call("ticker_cache", "SPY", {"price": 1.0})
+        hset_mock.assert_any_call("ticker_cache", "VGIT", {"price": 2.0})
+        self.assertEqual(hset_mock.call_count, 2)
+
+    def test_concurrent_snapshot_writes_to_different_symbols_dont_clobber_each_other(self):
+        """The whole point of the hash-field design: two symbols'
+        writes (standing in for two different groups', or two
+        different users', concurrent live checks) never touch a shared
+        blob, so neither can wipe out the other's data -- unlike the
+        old load-the-whole-cache-then-save-it-all-back pattern this
+        replaced."""
+        redis_hash = {}
+
+        def fake_hset(key, field, value):
+            redis_hash[field] = value
+
+        with (
+            mock.patch("ticker_dashboard.is_configured", return_value=True),
+            mock.patch("ticker_dashboard.hset_json", side_effect=fake_hset),
+        ):
+            save_ticker_snapshot("SPY", {"price": 1.0}, TICKER_DATA_PATH)
+            save_ticker_snapshot("VGIT", {"price": 2.0}, TICKER_DATA_PATH)
+
+        self.assertEqual(redis_hash, {"SPY": {"price": 1.0}, "VGIT": {"price": 2.0}})
 
 
 class TestRedisBackedMarketNewsCache(unittest.TestCase):

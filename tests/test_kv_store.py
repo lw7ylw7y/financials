@@ -9,7 +9,7 @@ for _p in (_SRC, os.path.join(_SRC, "web")):
     sys.path.insert(0, _p)
 
 import kv_store
-from kv_store import KvStoreError, get_json, is_configured, set_json
+from kv_store import KvStoreError, get_json, hgetall_json, hset_json, is_configured, set_json
 
 ENV = {
     "UPSTASH_REDIS_REST_URL": "https://example-db.upstash.io",
@@ -130,6 +130,76 @@ class TestSetJson(unittest.TestCase):
             with mock.patch("kv_store.requests.post", return_value=mock_response(status_code=500)):
                 with self.assertRaises(KvStoreError):
                     set_json("mykey", {"a": 1})
+
+
+class TestHsetJson(unittest.TestCase):
+    """hset_json/hgetall_json are the per-field alternative to
+    get_json/set_json's whole-key replace -- used where a single
+    caller shouldn't have to read and rewrite every other field just
+    to update one (see ticker_dashboard.save_ticker_snapshot). Wire
+    format confirmed live against a real Upstash instance: `POST
+    {url}/hset/{key}/{field}` with the raw JSON value as the body
+    (mirrors `/set/{key}`'s shape), `GET {url}/hgetall/{key}` returning
+    `{"result": [field1, value1, field2, value2, ...]}` as a flat,
+    alternating array.
+    """
+
+    def test_posts_json_encoded_value_to_the_field_path(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch("kv_store.requests.post", return_value=mock_response()) as post:
+                hset_json("ticker_cache", "SPY", {"price": 452.31})
+
+            called_url = post.call_args[0][0]
+            self.assertIn("/hset/ticker_cache/SPY", called_url)
+            self.assertEqual(json.loads(post.call_args.kwargs["data"]), {"price": 452.31})
+
+    def test_raises_on_non_200(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch("kv_store.requests.post", return_value=mock_response(status_code=500)):
+                with self.assertRaises(KvStoreError):
+                    hset_json("ticker_cache", "SPY", {"price": 452.31})
+
+    def test_raises_on_request_exception(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch(
+                "kv_store.requests.post",
+                side_effect=kv_store.requests.exceptions.ConnectionError("boom"),
+            ):
+                with self.assertRaises(KvStoreError):
+                    hset_json("ticker_cache", "SPY", {"price": 452.31})
+
+
+class TestHgetallJson(unittest.TestCase):
+    def test_decodes_the_flat_field_value_array_into_a_dict(self):
+        flat = ["SPY", json.dumps({"price": 452.31}), "VGIT", json.dumps({"price": 60.1})]
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch(
+                "kv_store.requests.get",
+                return_value=mock_response(json_body={"result": flat}),
+            ) as get:
+                result = hgetall_json("ticker_cache")
+
+            self.assertEqual(result, {"SPY": {"price": 452.31}, "VGIT": {"price": 60.1}})
+            called_url = get.call_args[0][0]
+            self.assertIn("/hgetall/ticker_cache", called_url)
+
+    def test_empty_hash_returns_empty_dict(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch("kv_store.requests.get", return_value=mock_response(json_body={"result": []})):
+                self.assertEqual(hgetall_json("ticker_cache"), {})
+
+    def test_raises_on_non_200(self):
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch("kv_store.requests.get", return_value=mock_response(status_code=500)):
+                with self.assertRaises(KvStoreError):
+                    hgetall_json("ticker_cache")
+
+    def test_raises_on_corrupt_field_value(self):
+        flat = ["SPY", "{not valid json"]
+        with mock.patch.dict(os.environ, ENV):
+            with mock.patch("kv_store.requests.get", return_value=mock_response(json_body={"result": flat})):
+                with self.assertRaises(KvStoreError):
+                    hgetall_json("ticker_cache")
 
 
 if __name__ == "__main__":

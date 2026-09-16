@@ -223,14 +223,31 @@ Three separate JSON blobs — not a database, and not the same file. Local dev k
   git-diffable audit trail as a result, a deliberate tradeoff matching Story 9's for
   ticker data. A Redis failure loading/saving this one propagates rather than
   degrading, unlike the two caches below — it's core data, not a mere cache.
-- **`data/tickers.json`** (gitignored) — a pure local cache, one
+- **`data/tickers.json`** (gitignored; Redis-backed on a hosted deployment as
+  a **hash**, key `ticker_cache`, one field per symbol — Story 12) — one
   snapshot per ticker: `{symbol: {price, change, change_percent, week52_low,
   week52_high, pct_off_high, ma20, ma50, ma200, fetched_at}}`. Never committed
-  and never scheduled — it's written only when you run the Flask app locally
-  and one of the `/api/tickers/groups/<name>/check` requests fires, purely
-  so the *next* local page load has something better than a blank "Loading…"
-  row to show instantly. Losing it is harmless (everything just shows as
-  pending again until the next live fetch).
+  and never scheduled — it's written only when one of the
+  `/api/tickers/groups/<name>/check` requests fires, purely so the *next*
+  page load has something better than a blank "Loading…" row to show
+  instantly. Losing it is harmless (everything just shows as pending again
+  until the next live fetch). **Redis-backed, each symbol is its own hash
+  field** (`ticker_dashboard.save_ticker_snapshot`, `kv_store.hset_json`/
+  `hgetall_json`) — a genuinely atomic per-symbol write, not a whole-blob
+  read-modify-write, so concurrent groups (or concurrent users, on a hosted
+  deployment) writing different symbols can never clobber each other's data.
+  Locally, still one JSON file, since a plain file has no per-key write
+  primitive the way a Redis hash does — see `ticker_dashboard.py`'s
+  `_ticker_state_lock`. **One-time migration note:** the key was previously
+  a plain JSON-blob string (`set_json`/`get_json`); a hash-type write/read
+  against a key still holding the old string type fails (Redis `WRONGTYPE`,
+  surfaced as a 400 from Upstash) and degrades to an empty cache the same
+  way any other cache-read failure does — so a hosted deployment's existing
+  `ticker_cache` key needs deleting once (`DEL ticker_cache` via Upstash) the
+  first time this code deploys, or it'll keep silently failing every
+  hash write/read indefinitely rather than self-healing on its own. Confirmed
+  live against the real Upstash instance: the old string-typed key was hit,
+  deleted, and a fresh live check repopulated it correctly as a hash.
 - **`data/market_news.json`** (gitignored) — same idea as `data/tickers.json`,
   one cached snapshot for the whole market-news feed instead of one per
   ticker: `{"headlines": [...], "fetched_at": ...}`. Also written by
@@ -321,31 +338,42 @@ work now rather than as a change-log entry.
   `--timeout 120` to avoid a bare 500 on Render. Splitting into one request
   per group (`check_for_ticker_updates(config={group: symbols})`, already
   merge-safe against the shared cache) lets a smaller group repaint well
-  before a larger one finishes, instead of an all-or-nothing wait. Because
-  every group's check now genuinely runs concurrently in local dev
-  (`app.py`'s `app.run(..., threaded=True)`),
-  `check_for_ticker_updates`'s load-merge-save of the shared
-  `data/tickers.json`/Redis cache is wrapped in
-  `ticker_dashboard._ticker_state_lock` (held only around that in-memory
-  merge and the final write, never around the network fetch) so two
-  groups finishing close together can't silently overwrite each other's
-  freshly-fetched values — a real race that concurrent per-group requests
-  made far more likely to actually trigger than it was with a single
-  combined request. Full per-ticker progressive/streaming updates (each row
-  resolving independently) remain deliberately not built — per-group
-  granularity plus concurrent fetching within a group already deliver most
-  of the same UX gain for far less complexity.
-  **Render gap, found live:** the split alone doesn't help on Render —
-  gunicorn's start command has no `--workers`/`--threads` flag, so it
-  defaults to one sync worker handling exactly one request at a time.
-  The 6 concurrent per-page-load requests (5 groups + market news) just
-  queue there, so the slowest one still waits behind every request ahead
-  of it (~35s observed, versus each group's own fetch taking a few
+  before a larger one finishes, instead of an all-or-nothing wait.
+  **Cache writes are per-symbol, not a shared-blob merge:** each
+  successfully-fetched ticker is persisted immediately via
+  `ticker_dashboard.save_ticker_snapshot` — Redis-backed, one atomic hash
+  field (`HSET`) per symbol, so any number of groups or concurrent users
+  writing different (or even the same) symbol can never clobber each
+  other's data, no locking involved at all. This replaced an earlier
+  design that loaded the *entire* cache, merged one group's results into
+  it in memory, and wrote the whole thing back under a process-local lock
+  — which raced badly once concurrent per-group requests became real (a
+  lock only ever protects one process's own memory, not the genuinely
+  concurrent multi-user traffic a hosted deployment actually has to
+  handle). Locally, `save_ticker_snapshot` still does a small
+  read-modify-write of the single JSON file (no per-key primitive there),
+  guarded by `_ticker_state_lock` — much lower stakes, since that's one
+  developer's own machine, not a shared store. Full per-ticker
+  progressive/streaming updates (each row resolving independently) remain
+  deliberately not built — per-group granularity plus concurrent fetching
+  within a group already deliver most of the same UX gain for far less
+  complexity.
+  **Render concurrency gap, found live:** the split alone doesn't help on
+  Render — gunicorn's start command has no `--workers`/`--threads` flag,
+  so it defaults to one sync worker handling exactly one request at a
+  time. The 6 concurrent per-page-load requests (5 groups + market news)
+  just queue there, so the slowest one still waits behind every request
+  ahead of it (~35s observed, versus each group's own fetch taking a few
   seconds in isolation). Fix: add `--worker-class gthread --threads 8` to
-  Render's start command — threads, not `--workers N`, since
-  `_ticker_state_lock` is a plain `threading.Lock` that only protects
-  within one process; separate worker processes wouldn't share it and
-  would reopen the exact race the lock exists to close. This is a
+  Render's start command. Threads specifically (not `--workers N`
+  separate processes) because `ticker_dashboard._fetch_concurrency_limit`
+  — the semaphore capping how many Finnhub/Yahoo fetches run at once
+  *globally*, restoring the rate-limit protection `build_ticker_cards`'s
+  own per-call `max_workers` used to provide before concurrent per-group
+  calls could each spin up their own pool — is a plain `threading.Semaphore`,
+  process-local; separate worker processes wouldn't share it, and the
+  global fetch-concurrency cap it exists to enforce would silently widen
+  back out to (worker count × max_workers). This is a
   Render-dashboard-only change (same as `--timeout 120`), not committed
   to any file — pending as of this writing, see
   `docs/v2_technical_design.md` Section 11.5/11.8.

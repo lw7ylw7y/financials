@@ -72,7 +72,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from finnhub_client import fetch_market_news, fetch_quote, fetch_stock_metrics
-from kv_store import KvStoreError, get_json, is_configured, set_json
+from kv_store import KvStoreError, get_json, hgetall_json, hset_json, is_configured, set_json
 from yahoo_client import fetch_daily_closes
 
 CONFIG_PATH = os.path.join(
@@ -98,15 +98,33 @@ _MARKET_NEWS_CACHE_KEY = "market_news_cache"
 
 logger = logging.getLogger(__name__)
 
-# Guards the load-merge-save of the shared ticker cache in
-# check_for_ticker_updates, which the page's script now calls once per
-# group concurrently -- see that function's docstring. Process-local
-# only: it doesn't protect against two separate gunicorn *worker
-# processes* racing (each has its own memory), but Render's current
-# start command runs a single worker, and this is still strictly safer
-# than the unguarded read-modify-write that existed before the
-# per-group split made the race actually likely to trigger.
+# Guards the local-file branch of save_ticker_snapshot's
+# read-modify-write of data/tickers.json (a plain file has no per-key
+# write primitive the way a Redis hash does). Scoped to one symbol at a
+# time, not a whole-cache merge -- losing a race here just leaves one
+# ticker showing stale data until the next check, self-healing on its
+# own. Local dev only: one developer's own machine, not the shared,
+# genuinely concurrent multi-user store the Redis branch below has to
+# handle, which is why that branch needs no lock at all -- see
+# save_ticker_snapshot.
 _ticker_state_lock = threading.Lock()
+
+# Caps how many tickers' quote/metrics/closes fetches run at once
+# GLOBALLY, across every concurrent call to build_ticker_cards, not
+# just within one. build_ticker_cards's own max_workers only bounds
+# concurrency *inside a single call*; that was the whole safety margin
+# when the ticker page's background check was one combined request
+# (one call, one pool of up to max_workers threads). Now that the page
+# fires one build_ticker_cards call per group concurrently, each with
+# its own max_workers-sized pool, the *global* number of simultaneous
+# Finnhub/Yahoo fetches could otherwise reach group_count * max_workers
+# instead of staying capped at max_workers -- exactly what tripped
+# Finnhub's rate limit (and likely also just overloaded a
+# resource-constrained host) once real per-group concurrency actually
+# started happening. Every _build_card call acquires this regardless of
+# which group/thread pool it's running in, restoring the original
+# global ceiling.
+_fetch_concurrency_limit = threading.Semaphore(5)
 
 
 def _is_valid_ticker(symbol) -> bool:
@@ -226,50 +244,51 @@ def _build_card(
     fetch_metrics_fn,
     fetch_closes_fn,
 ) -> dict:
-    try:
-        quote = fetch_quote_fn(symbol)
-        price = quote["price"]
-        metrics = fetch_metrics_fn(symbol)
-        closes = fetch_closes_fn(symbol)
-        ma20, ma50, ma200 = (_simple_moving_average(closes, w) for w in MA_WINDOWS)
-        week52_high = metrics["high"]
-        pct_off_high = (week52_high - price) / week52_high * 100 if week52_high else None
-        return {
-            "symbol": symbol,
-            "group": group_name,
-            "price": price,
-            "change": quote.get("change"),
-            "change_percent": quote.get("change_percent"),
-            "week52_low": metrics["low"],
-            "week52_high": week52_high,
-            "pct_off_high": pct_off_high,
-            "market_cap": metrics.get("market_cap"),
-            "pe_ratio": metrics.get("pe_ratio"),
-            "ma20": ma20,
-            "ma50": ma50,
-            "ma200": ma200,
-            "error": None,
-            "pending": False,
-        }
-    except Exception as e:
-        logger.error("ticker card build failed symbol=%s error=%s", symbol, e)
-        return {
-            "symbol": symbol,
-            "group": group_name,
-            "price": None,
-            "change": None,
-            "change_percent": None,
-            "week52_low": None,
-            "week52_high": None,
-            "pct_off_high": None,
-            "market_cap": None,
-            "pe_ratio": None,
-            "ma20": None,
-            "ma50": None,
-            "ma200": None,
-            "error": str(e),
-            "pending": False,
-        }
+    with _fetch_concurrency_limit:
+        try:
+            quote = fetch_quote_fn(symbol)
+            price = quote["price"]
+            metrics = fetch_metrics_fn(symbol)
+            closes = fetch_closes_fn(symbol)
+            ma20, ma50, ma200 = (_simple_moving_average(closes, w) for w in MA_WINDOWS)
+            week52_high = metrics["high"]
+            pct_off_high = (week52_high - price) / week52_high * 100 if week52_high else None
+            return {
+                "symbol": symbol,
+                "group": group_name,
+                "price": price,
+                "change": quote.get("change"),
+                "change_percent": quote.get("change_percent"),
+                "week52_low": metrics["low"],
+                "week52_high": week52_high,
+                "pct_off_high": pct_off_high,
+                "market_cap": metrics.get("market_cap"),
+                "pe_ratio": metrics.get("pe_ratio"),
+                "ma20": ma20,
+                "ma50": ma50,
+                "ma200": ma200,
+                "error": None,
+                "pending": False,
+            }
+        except Exception as e:
+            logger.error("ticker card build failed symbol=%s error=%s", symbol, e)
+            return {
+                "symbol": symbol,
+                "group": group_name,
+                "price": None,
+                "change": None,
+                "change_percent": None,
+                "week52_low": None,
+                "week52_high": None,
+                "pct_off_high": None,
+                "market_cap": None,
+                "pe_ratio": None,
+                "ma20": None,
+                "ma50": None,
+                "ma200": None,
+                "error": str(e),
+                "pending": False,
+            }
 
 
 def build_ticker_cards(
@@ -340,10 +359,15 @@ def load_ticker_state(path: str = TICKER_DATA_PATH) -> dict:
     gracefully rather than failing loudly the way `_load_raw_config`
     does, since losing it just means every row shows "Loading..."
     again, not an empty watchlist.
+
+    Redis-backed, this reads the whole `ticker_cache` *hash* (one field
+    per symbol, see `save_ticker_snapshot`) in a single HGETALL -- a
+    read never conflicts with anything, so this needs no lock either
+    way.
     """
     if is_configured():
         try:
-            return get_json(_TICKER_CACHE_KEY) or {}
+            return hgetall_json(_TICKER_CACHE_KEY)
         except KvStoreError as e:
             logger.error("ticker cache read failed, degrading to empty: %s", e)
             return {}
@@ -356,17 +380,71 @@ def load_ticker_state(path: str = TICKER_DATA_PATH) -> dict:
 
 
 def save_ticker_state(state: dict, path: str = TICKER_DATA_PATH) -> None:
+    """Bulk-write the *entire* cache at once -- used for local seeding
+    (tests, a one-off migration) rather than the normal per-ticker
+    write path. Prefer `save_ticker_snapshot` for anything persisting
+    the result of a live fetch: unlike this function, it never has to
+    read or hold every other symbol's data just to write one.
+    Redis-backed, this fans out into one HSET per symbol so the
+    resulting hash stays consistent with `save_ticker_snapshot`'s
+    per-field writes -- not a single atomic operation across the whole
+    dict, which is fine for a bulk seed with no concurrent writers.
+    """
     if is_configured():
-        try:
-            set_json(_TICKER_CACHE_KEY, state)
-        except KvStoreError as e:
-            logger.error("ticker cache write failed: %s", e)
+        for symbol, snapshot in state.items():
+            try:
+                hset_json(_TICKER_CACHE_KEY, symbol, snapshot)
+            except KvStoreError as e:
+                logger.error("ticker cache write failed symbol=%s: %s", symbol, e)
         return
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(state, f, indent=2)
         f.write("\n")
+
+
+def save_ticker_snapshot(symbol: str, snapshot: dict, path: str = TICKER_DATA_PATH) -> None:
+    """Persists exactly one ticker's fresh snapshot. This is what
+    `check_for_ticker_updates` calls per successfully-fetched ticker,
+    instead of the old pattern of loading the *entire* cache, merging
+    every group's results into it in memory, and writing the whole
+    thing back -- that raced badly once the ticker page started firing
+    one concurrent live-check per group (Story 12): two groups' checks
+    could both load the cache before either saved, and the second save
+    would silently wipe out the first group's fresh values. Worse, that
+    race isn't limited to one process -- any number of concurrent users
+    hitting a hosted deployment hit the same shared Redis-backed cache,
+    so a lock (which only ever protects one process's own memory)
+    could never actually fix it there.
+
+    Redis-backed, each symbol is its own hash field (`HSET`) -- an
+    atomic per-field write that never reads or touches any other
+    field, so concurrent writes to *different* symbols (any number of
+    groups, any number of users, any number of gunicorn worker
+    processes) can never clobber each other's data, and even two
+    writes to the *same* symbol just leave whichever landed last, never
+    a torn mix of two updates. No lock needed at all.
+
+    Locally, this is still a read-modify-write of the single JSON file
+    -- a plain file has no per-key write primitive the way a Redis hash
+    does -- guarded by `_ticker_state_lock` so local dev's own
+    concurrent threads (`threaded=True`) can't corrupt the file. Lower
+    stakes than the Redis case: one developer's own machine, not a
+    shared multi-user store, and losing this race just leaves one
+    ticker stale until the next check.
+    """
+    if is_configured():
+        try:
+            hset_json(_TICKER_CACHE_KEY, symbol, snapshot)
+        except KvStoreError as e:
+            logger.error("ticker snapshot write failed symbol=%s: %s", symbol, e)
+        return
+
+    with _ticker_state_lock:
+        state = load_ticker_state(path)
+        state[symbol] = snapshot
+        save_ticker_state(state, path)
 
 
 def _pending_card(symbol: str, group_name: str) -> dict:
@@ -426,41 +504,41 @@ def check_for_ticker_updates(
     fetch renders as a genuine error.
 
     The page's background script calls this once per group
-    concurrently (see app.py's /api/tickers/groups/<name>/check), so
-    the load-merge-save of the *shared* `state_path` cache is wrapped
-    in `_ticker_state_lock` -- without it, two groups' calls finishing
-    close together could each load the cache before the other's save,
-    and the second save would silently wipe out the first group's
-    freshly-fetched values. The lock is only held around that
-    load/merge/save, never around `build_ticker_cards`'s network
-    fetch, so concurrent groups still fetch fully in parallel; only the
-    brief in-memory merge and the final write are serialized.
+    concurrently (see app.py's /api/tickers/groups/<name>/check).
+    Every successfully-fetched ticker is persisted immediately via
+    `save_ticker_snapshot` -- one independent write per symbol, not a
+    load-the-whole-cache-then-save-it-all-back cycle -- so concurrent
+    groups (or concurrent users, on a hosted deployment) can never
+    clobber each other's fresh data no matter how many are running at
+    once. The stored cache is only *read* here, once, and only if some
+    ticker's live fetch failed and needs a fallback value -- a read
+    never conflicts with anything, so no locking is involved either.
     """
     now = now or datetime.now(timezone.utc)
     config = config if config is not None else load_ticker_config()
 
     live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn, fetch_closes_fn)
 
-    with _ticker_state_lock:
-        stored = load_ticker_state(state_path)
-
-        grouped_cards = {}
-        for group_name, cards in live_cards.items():
-            resolved = []
-            for card in cards:
-                if card["error"] is None:
-                    stored[card["symbol"]] = {
-                        **{field: card[field] for field in _SNAPSHOT_FIELDS},
-                        "fetched_at": now.isoformat(),
-                    }
-                    resolved.append(card)
-                elif card["symbol"] in stored:
+    stored = None  # lazily loaded only if a fallback lookup is actually needed
+    grouped_cards = {}
+    for group_name, cards in live_cards.items():
+        resolved = []
+        for card in cards:
+            if card["error"] is None:
+                snapshot = {
+                    **{field: card[field] for field in _SNAPSHOT_FIELDS},
+                    "fetched_at": now.isoformat(),
+                }
+                save_ticker_snapshot(card["symbol"], snapshot, state_path)
+                resolved.append(card)
+            else:
+                if stored is None:
+                    stored = load_ticker_state(state_path)
+                if card["symbol"] in stored:
                     resolved.append(_card_from_snapshot(card["symbol"], group_name, stored[card["symbol"]]))
                 else:
                     resolved.append(card)
-            grouped_cards[group_name] = resolved
-
-        save_ticker_state(stored, state_path)
+        grouped_cards[group_name] = resolved
 
     return grouped_cards
 
