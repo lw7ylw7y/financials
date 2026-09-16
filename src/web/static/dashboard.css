@@ -184,7 +184,7 @@ body {
 }
 
 /* Tighter than .indicator-table's default padding/font-size -- the
-   ticker table has 11 columns (vs. the Indicator Digest table's 4-5)
+   ticker table has 8 columns (vs. the Indicator Digest table's 4-5)
    and needs every column as narrow as it can be to fit the page width
    without horizontal scroll. Headers are allowed to wrap to a second
    line (`th` deliberately left out of the nowrap rule below) so a

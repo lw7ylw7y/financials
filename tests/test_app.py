@@ -103,7 +103,7 @@ class TestApiCheckTickerGroup(unittest.TestCase):
             mock.patch("app.check_for_ticker_updates") as mock_check,
         ):
             pending_fields = ("price", "change", "change_percent", "week52_low", "week52_high",
-                              "pct_off_high", "market_cap", "pe_ratio", "ma20", "ma50", "ma200")
+                              "pct_off_high", "market_cap", "pe_ratio")
             pending_card = {field: None for field in pending_fields}
             pending_card.update(symbol="SPY", group="stocks", pending=True, error=None)
             mock_check.return_value = {"stocks": [pending_card]}

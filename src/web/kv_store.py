@@ -1,5 +1,5 @@
 """Upstash Redis REST API wrapper. Thin `requests`-based client, no
-Redis client library needed -- matches finnhub_client.py/yahoo_client.py's
+Redis client library needed -- matches finnhub_client.py's
 plain-`requests` convention. Used by ticker_dashboard.py and storage.py
 to persist config/tickers.json, data/indicators.json, and the
 ticker/market-news caches durably across a hosted deployment's

@@ -297,23 +297,17 @@ class TestRemoveTickerFromGroup(unittest.TestCase):
 
 
 class TestBuildTickerCards(unittest.TestCase):
-    def test_successful_ticker_computes_price_range_and_moving_averages(self):
-        closes = [float(i) for i in range(1, 251)]  # 250 closes: 1.0 .. 250.0
-
+    def test_successful_ticker_computes_price_and_range(self):
         def fake_quote(symbol):
             return {"price": 452.31}
 
         def fake_metrics(symbol):
             return {"low": 400.0, "high": 480.0}
 
-        def fake_closes(symbol):
-            return closes
-
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=fake_quote,
             fetch_metrics_fn=fake_metrics,
-            fetch_closes_fn=fake_closes,
         )
 
         card = cards["stocks"][0]
@@ -322,25 +316,6 @@ class TestBuildTickerCards(unittest.TestCase):
         self.assertEqual(card["price"], 452.31)
         self.assertEqual(card["week52_low"], 400.0)
         self.assertEqual(card["week52_high"], 480.0)
-        self.assertEqual(card["ma20"], sum(closes[-20:]) / 20)
-        self.assertEqual(card["ma50"], sum(closes[-50:]) / 50)
-        self.assertEqual(card["ma200"], sum(closes[-200:]) / 200)
-        self.assertIsNone(card["error"])
-
-    def test_fewer_than_200_candles_leaves_ma200_none(self):
-        closes = [float(i) for i in range(1, 51)]  # only 50 closes
-
-        cards = build_ticker_cards(
-            config={"stocks": ["NEWCO"]},
-            fetch_quote_fn=lambda s: {"price": 10.0},
-            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 50.0},
-            fetch_closes_fn=lambda s: closes,
-        )
-
-        card = cards["stocks"][0]
-        self.assertEqual(card["ma20"], sum(closes[-20:]) / 20)
-        self.assertEqual(card["ma50"], sum(closes) / 50)
-        self.assertIsNone(card["ma200"])
         self.assertIsNone(card["error"])
 
     def test_one_ticker_failure_does_not_affect_others(self):
@@ -353,7 +328,6 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY", "BADSYM", "IVW"]},
             fetch_quote_fn=fake_quote,
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 3.0},
-            fetch_closes_fn=lambda s: [1.0, 2.0, 3.0],
         )
 
         spy, badsym, ivw = cards["stocks"]
@@ -371,34 +345,17 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 100.0},
             fetch_metrics_fn=fake_metrics,
-            fetch_closes_fn=lambda s: [1.0, 2.0, 3.0],
         )
 
         card = cards["stocks"][0]
         self.assertIsNotNone(card["error"])
         self.assertIsNone(card["price"])
 
-    def test_closes_failure_also_errors_the_card(self):
-        def fake_closes(symbol):
-            raise RuntimeError("chart request failed for SPY")
-
-        cards = build_ticker_cards(
-            config={"stocks": ["SPY"]},
-            fetch_quote_fn=lambda s: {"price": 100.0},
-            fetch_metrics_fn=lambda s: {"low": 1.0, "high": 3.0},
-            fetch_closes_fn=fake_closes,
-        )
-
-        card = cards["stocks"][0]
-        self.assertIsNotNone(card["error"])
-        self.assertIsNone(card["ma20"])
-
     def test_groups_and_order_match_config(self):
         cards = build_ticker_cards(
             config={"bonds": ["VGIT", "VGLT"], "stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 1.0},
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
-            fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
         self.assertEqual(list(cards.keys()), ["bonds", "stocks"])
@@ -413,7 +370,6 @@ class TestBuildTickerCards(unittest.TestCase):
             cards = build_ticker_cards(
                 fetch_quote_fn=lambda s: {"price": 1.0},
                 fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
-                fetch_closes_fn=lambda s: [1.0, 2.0],
             )
 
         self.assertEqual(list(cards.keys()), ["stocks"])
@@ -424,7 +380,6 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 450.0, "change": -2.5, "change_percent": -0.55},
             fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},
-            fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
         card = cards["stocks"][0]
@@ -437,7 +392,6 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 450.0},  # no change/change_percent keys
             fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},
-            fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
         card = cards["stocks"][0]
@@ -452,7 +406,6 @@ class TestBuildTickerCards(unittest.TestCase):
             fetch_metrics_fn=lambda s: {
                 "low": 400.0, "high": 500.0, "market_cap": 3500000.0, "pe_ratio": 34.2,
             },
-            fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
         card = cards["stocks"][0]
@@ -464,7 +417,6 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 450.0},
             fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},  # no market_cap/pe_ratio keys
-            fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
         card = cards["stocks"][0]
@@ -476,7 +428,6 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 1.0},
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
-            fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
         self.assertFalse(cards["stocks"][0]["pending"])
@@ -495,7 +446,6 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY", "IVW", "DGRO"]},
             fetch_quote_fn=fake_quote,
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
-            fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
         self.assertEqual([c["symbol"] for c in cards["stocks"]], ["SPY", "IVW", "DGRO"])
@@ -514,7 +464,6 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": symbols},
             fetch_quote_fn=slow_quote,
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
-            fetch_closes_fn=lambda s: [1.0, 2.0],
         )
         elapsed = time.monotonic() - started
 
@@ -527,7 +476,6 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": symbols},
             fetch_quote_fn=lambda s: {"price": 1.0},
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
-            fetch_closes_fn=lambda s: [1.0, 2.0],
             max_workers=5,
         )
 
@@ -542,7 +490,6 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=failing_quote,
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
-            fetch_closes_fn=lambda s: [1.0, 2.0],
         )
 
         self.assertFalse(cards["stocks"][0]["pending"])
@@ -557,7 +504,6 @@ class TestTickerCachePersistence(unittest.TestCase):
     def test_write_then_reload_matches(self):
         _, fake_hset, _, fake_hgetall, _ = fake_hash_store()
         state = {"SPY": {"price": 452.31, "week52_low": 400.0, "week52_high": 480.0,
-                          "ma20": 448.5, "ma50": 440.0, "ma200": 430.2,
                           "fetched_at": "2026-09-13T12:00:00+00:00"}}
 
         with mock.patch("ticker_dashboard.hset_json", side_effect=fake_hset), mock.patch(
@@ -624,8 +570,7 @@ class TestGetInitialTickerPageData(unittest.TestCase):
     def test_ticker_with_stored_snapshot_renders_its_values(self):
         with mock.patch(
             "ticker_dashboard.hgetall_json",
-            return_value={"SPY": {"price": 452.31, "week52_low": 400.0, "week52_high": 480.0,
-                                   "ma20": 448.5, "ma50": 440.0, "ma200": 430.2}},
+            return_value={"SPY": {"price": 452.31, "week52_low": 400.0, "week52_high": 480.0}},
         ):
             cards = get_initial_ticker_page_data(config={"stocks": ["SPY"]})
 
@@ -633,7 +578,6 @@ class TestGetInitialTickerPageData(unittest.TestCase):
         self.assertFalse(card["pending"])
         self.assertIsNone(card["error"])
         self.assertEqual(card["price"], 452.31)
-        self.assertEqual(card["ma50"], 440.0)
 
     def test_ticker_with_no_stored_snapshot_renders_pending(self):
         with mock.patch("ticker_dashboard.hgetall_json", return_value={}):
@@ -662,7 +606,6 @@ class TestCheckForTickerUpdates(unittest.TestCase):
                 config={"stocks": ["SPY"]},
                 fetch_quote_fn=lambda s: {"price": 452.31},
                 fetch_metrics_fn=lambda s: {"low": 400.0, "high": 480.0},
-                fetch_closes_fn=lambda s: [1.0] * 200,
             )
 
         self.assertFalse(cards["stocks"][0]["pending"])
@@ -673,8 +616,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
 
     def test_failed_fetch_falls_back_to_stored_snapshot_silently(self):
         _, fake_hset, _, fake_hgetall, _ = fake_hash_store(
-            {"SPY": {"price": 440.0, "week52_low": 400.0, "week52_high": 480.0,
-                     "ma20": 435.0, "ma50": 430.0, "ma200": 420.0}}
+            {"SPY": {"price": 440.0, "week52_low": 400.0, "week52_high": 480.0}}
         )
 
         def failing_quote(symbol):
@@ -687,7 +629,6 @@ class TestCheckForTickerUpdates(unittest.TestCase):
                 config={"stocks": ["SPY"]},
                 fetch_quote_fn=failing_quote,
                 fetch_metrics_fn=lambda s: {"low": 400.0, "high": 480.0},
-                fetch_closes_fn=lambda s: [1.0] * 200,
             )
 
         card = cards["stocks"][0]
@@ -704,7 +645,6 @@ class TestCheckForTickerUpdates(unittest.TestCase):
                 config={"stocks": ["NEWTICKER"]},
                 fetch_quote_fn=failing_quote,
                 fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
-                fetch_closes_fn=lambda s: [1.0, 2.0],
             )
 
         card = cards["stocks"][0]
@@ -713,8 +653,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
 
     def test_always_refetches_even_when_a_snapshot_already_exists(self):
         _, fake_hset, _, fake_hgetall, _ = fake_hash_store(
-            {"SPY": {"price": 100.0, "week52_low": 90.0, "week52_high": 110.0,
-                     "ma20": 99.0, "ma50": 98.0, "ma200": 95.0}}
+            {"SPY": {"price": 100.0, "week52_low": 90.0, "week52_high": 110.0}}
         )
         call_count = {"n": 0}
 
@@ -729,7 +668,6 @@ class TestCheckForTickerUpdates(unittest.TestCase):
                 config={"stocks": ["SPY"]},
                 fetch_quote_fn=counting_quote,
                 fetch_metrics_fn=lambda s: {"low": 90.0, "high": 110.0},
-                fetch_closes_fn=lambda s: [1.0] * 200,
             )
 
         self.assertEqual(call_count["n"], 1)

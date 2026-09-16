@@ -278,30 +278,6 @@ def _render_range_bar(symbol: str, low: float, high: float, price: float) -> str
             </div>"""
 
 
-def _render_ma_cell(price: float, ma: float | None) -> str:
-    """A moving-average value plus how far the current price sits above
-    or below it, as both a color (green above / red below, matching the
-    directional badges elsewhere) and a same-information arrow + signed
-    percentage -- so the read doesn't depend on color perception alone.
-    "n/a" when there isn't enough history yet to compute the average.
-    """
-    if ma is None:
-        return '<td class="num muted">n/a</td>'
-
-    pct_diff = (price - ma) / ma * 100
-    if pct_diff > 0:
-        css_class, arrow, color = "up", "&#9650;", SPARKLINE_UP_COLOR
-    elif pct_diff < 0:
-        css_class, arrow, color = "down", "&#9660;", SPARKLINE_DOWN_COLOR
-    else:
-        css_class, arrow, color = "flat", "", SPARKLINE_FLAT_COLOR
-
-    return (
-        f'<td class="num">{ma:,.2f} '
-        f'<span class="ma-delta {css_class}" style="color:{color};">{arrow}{abs(pct_diff):.1f}%</span></td>'
-    )
-
-
 def _render_change_cell(change: float | None, change_percent: float | None) -> str:
     """Today's price move vs. the previous close -- same never-color-
     alone convention as the moving-average cells: a signed arrow +
@@ -379,7 +355,7 @@ def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
     )
 
 
-_TICKER_DATA_COLUMN_COUNT = 9  # Price, Change, 52-Week Range, % Off High, Market Cap, P/E, 20d/50d/200d MA
+_TICKER_DATA_COLUMN_COUNT = 6  # Price, Change, 52-Week Range, % Off High, Market Cap, P/E
 
 
 def _render_ticker_row(card: dict) -> str:
@@ -419,9 +395,6 @@ def _render_ticker_row(card: dict) -> str:
                 {_render_pct_off_high_cell(card['pct_off_high'])}
                 {_render_market_cap_cell(card['market_cap'])}
                 {_render_pe_cell(card['pe_ratio'])}
-                {_render_ma_cell(card['price'], card['ma20'])}
-                {_render_ma_cell(card['price'], card['ma50'])}
-                {_render_ma_cell(card['price'], card['ma200'])}
                 {remove_cell}
               </tr>"""
 
@@ -475,9 +448,6 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
                 <th class="num sortable" data-sort-key="pctOffHigh">% Off High</th>
                 <th class="num">Market Cap</th>
                 <th class="num">P/E</th>
-                <th class="num">20d MA</th>
-                <th class="num">50d MA</th>
-                <th class="num">200d MA</th>
                 <th></th>
               </tr>
             </thead>
@@ -557,7 +527,7 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
     <div id="market-news">{_render_market_news(market_news)}</div>
     <div id="ticker-groups">{_render_ticker_groups(grouped_cards)}</div>
     <footer class="page-footer">
-      <p class="muted">Price, change, and 52-week range from Finnhub &middot; moving averages from Yahoo Finance &middot; free tier may lag by up to ~20 minutes</p>
+      <p class="muted">Price, change, and 52-week range from Finnhub &middot; free tier may lag by up to ~20 minutes</p>
     </footer>
   </main>
   <script>

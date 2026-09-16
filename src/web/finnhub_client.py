@@ -8,9 +8,7 @@ failure (bad symbol, rate limit, request error) can't affect another's
 -- confirmed returning 403 "You don't have access to this resource."
 for every symbol/resolution/asset-class tried, a free-tier restriction
 Finnhub has put in place, not a request-shape problem. The 52-week
-range, market cap, and P/E are still free via `/stock/metric`; moving
-averages need the daily close series itself, which comes from
-`yahoo_client.py` instead.
+range, market cap, and P/E are still free via `/stock/metric`.
 """
 
 import os

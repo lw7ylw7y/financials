@@ -65,10 +65,9 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - Web app, no login required
 - Tickers grouped by asset type; group names come entirely from a config file, not a fixed list — add, rename, split, or remove groups just by editing the file (see Section 7)
 - Initial watchlist (from config): SPY, IVW, DGRO (stocks) · VGIT, VGLT (bonds) · VIGI, VYMI, EMB (international) · FTEC + other Fidelity sector ETFs (sector) · MSFT, RELY + other trusted individual stocks (individual)
-- **One table per group** (not per-ticker cards). Columns: Ticker, Price, Change, 52-Week Range, % Off High, Market Cap, P/E, 20-day MA, 50-day MA, 200-day MA
+- **One table per group** (not per-ticker cards). Columns: Ticker, Price, Change, 52-Week Range, % Off High, Market Cap, P/E
 - **Market Cap** and **P/E (trailing)** — both from the same Finnhub `/stock/metric` call already used for the 52-week range, so no new fetch. Market cap formats to $T/B/M; either renders "n/a" (not an error) when Finnhub has no value for that symbol
 - **52-week range** rendered as a green (near the low)→amber→red (near the high) gradient bar with a marker at the current price's position, plus the low/high printed as text — not color-alone
-- **Each moving average** shows the value plus how far the current price sits above/below it, as both a color (green above, red below — same convention as the AI directional badges) and a signed arrow+percentage
 - **Percent off 52-week high** — its own column, the exact number behind the range bar's visual read; drives the buy decision directly
 - **Change since last close** — its own column, current session's move versus the previous close (absolute and %), colored green-up/red-down
 - **Sortable columns** — clicking the Ticker or % Off High header sorts that group's table by it (ascending, click again for descending); pending/errored rows (no ranking value) always sort last regardless of direction. Sorting is per table/group, purely client-side, and resets on the next live refresh
@@ -94,7 +93,7 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - Multi-device sync (currently single-device, config-file based)
 - In-app group management (add/rename/remove a whole group) — ticker-level add/remove within existing groups is built (Section 4.2)
 - Cycle-change / "market top" composite indicator (combining macro + sector signals) to support rare sell decisions
-- **Ticker Email Alerts** — email delivery, mirroring current Fidelity behavior, via a background job that checks prices independent of whether the dashboard is open; trigger conditions: price crosses a set threshold, price crosses the 20-day or 200-day moving average, price moves a set % above 52-week low or below 52-week high
+- **Ticker Email Alerts** — email delivery, mirroring current Fidelity behavior, via a background job that checks prices independent of whether the dashboard is open; trigger conditions: price crosses a set threshold, price moves a set % above 52-week low or below 52-week high
 - **Discount-Buy Thresholds** — alert when a ticker is a configurable % off its 52-week high, with a global default and per-ticker override; reuses the Ticker Email Alerts pipeline above
 - **React frontend** for the Ticker Dashboard (possibly the Indicator Digest Page too) — replace the current plain-string HTML rendering (`page_template.py`) with a proper componentized frontend, so each section (a ticker group, market news, etc.) is its own component. The specific problem this would have solved — the old combined `/api/check-tickers` making the whole page wait on one big request — was instead fixed directly (Story 12) by adding one `/api/tickers/groups/<name>/check` route per group plus `/api/market-news/check`, on the existing string-templating approach, considered and rejected explicitly in favor of the smaller change. A React rewrite remains backlogged only for its own sake (a proper component model, if ever wanted), not as a performance fix
 
@@ -105,7 +104,6 @@ v1's entire product surface is a single digest email — there is no webpage/das
 | Economic release calendar (next-release countdown) | FRED release calendar | Needed for CPI/jobs report/FOMC dates |
 | AI interpretation of indicators | Gemini API (free tier) | Plain-English summary + directional read; framed as informational commentary, not advice |
 | *(v2, ticker dashboard)* Price, 52-wk range | Finnhub | Free tier has ~20 min delay; acceptable given Monday-cadence buying. 52-wk range uses `/stock/metric` (`/stock/candle` is paid-tier-only) |
-| *(v2, ticker dashboard)* Moving averages (20d/50d/200d) | Yahoo Finance (public chart endpoint) | Finnhub's free tier has no daily-close source; Yahoo's chart endpoint is free, unauthenticated, and unlike stooq.io doesn't gate requests behind a bot challenge |
 | *(v2, ticker dashboard)* Percent off 52-week high | *(computed, no new source)* | `(week52_high - price) / week52_high` |
 | *(v2, ticker dashboard)* Change since last close | Finnhub | Returned by the existing quote call (`d`/`dp` fields) |
 | *(v2, ticker dashboard)* US stock market news | Finnhub | `/news?category=general`, filtered to Finnhub's `"top news"` tag |

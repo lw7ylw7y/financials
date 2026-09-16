@@ -173,9 +173,6 @@ def make_card(**overrides):
         "pct_off_high": 5.8,
         "market_cap": 3500000.0,
         "pe_ratio": 34.2,
-        "ma20": 448.5,
-        "ma50": 440.0,
-        "ma200": 430.2,
         "error": None,
         "pending": False,
     }
@@ -186,7 +183,7 @@ def make_card(**overrides):
 def make_pending_card(**overrides):
     return make_card(
         price=None, change=None, change_percent=None, week52_low=None, week52_high=None,
-        pct_off_high=None, market_cap=None, pe_ratio=None, ma20=None, ma50=None, ma200=None,
+        pct_off_high=None, market_cap=None, pe_ratio=None,
         error=None, pending=True,
         **overrides,
     )
@@ -222,9 +219,6 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn("452.31", html)
         self.assertIn("400.00", html)
         self.assertIn("480.00", html)
-        self.assertIn("448.50", html)
-        self.assertIn("440.00", html)
-        self.assertIn("430.20", html)
 
     def test_renders_column_headers(self):
         html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
@@ -235,9 +229,6 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn("% Off High", html)
         self.assertIn("Market Cap", html)
         self.assertIn(">P/E<", html)
-        self.assertIn("20d MA", html)
-        self.assertIn("50d MA", html)
-        self.assertIn("200d MA", html)
 
     def test_renders_market_cap_formatted_with_suffix(self):
         html = render_ticker_dashboard_page({"stocks": [make_card(market_cap=3500000.0)]}, NO_NEWS)
@@ -304,9 +295,6 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
             week52_low=None,
             week52_high=None,
             pct_off_high=None,
-            ma20=None,
-            ma50=None,
-            ma200=None,
             error="no quote data for SPY",
         )
 
@@ -323,9 +311,6 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
             week52_low=None,
             week52_high=None,
             pct_off_high=None,
-            ma20=None,
-            ma50=None,
-            ma200=None,
             error="no quote data for BADSYM",
         )
         ok_card = make_card(symbol="SPY")
@@ -334,21 +319,6 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
 
         self.assertIn("Unable to load data.", html)
         self.assertIn("452.31", html)
-
-    def test_missing_ma200_renders_not_available(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(ma200=None)]}, NO_NEWS)
-
-        self.assertIn("n/a", html)
-
-    def test_price_above_ma_colored_as_up(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(price=500.0, ma20=450.0)]}, NO_NEWS)
-
-        self.assertIn('class="ma-delta up"', html)
-
-    def test_price_below_ma_colored_as_down(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(price=400.0, ma20=450.0)]}, NO_NEWS)
-
-        self.assertIn('class="ma-delta down"', html)
 
     def test_positive_change_colored_up(self):
         html = render_ticker_dashboard_page({"stocks": [make_card(change=3.81, change_percent=0.85)]}, NO_NEWS)

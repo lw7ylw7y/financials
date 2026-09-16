@@ -95,7 +95,7 @@
 |---|---|
 | 3.1 `finnhub_client.py` — quote endpoint | done |
 | 3.2 `finnhub_client.py` — 52-week range + market cap + P/E via `/stock/metric` (`fetch_stock_metrics`) | done |
-| 3.3 20/50/200-day simple moving average calculation from Yahoo daily closes | done |
+| 3.3 20/50/200-day simple moving average calculation from Yahoo daily closes | removed 2026-09-16 — the moving-average columns, `yahoo_client.py`, and the `ma20`/`ma50`/`ma200` card/cache fields were all dropped, not replaced |
 | 3.4 `ticker_dashboard.py` — per-ticker assembly with independent try/catch per ticker | done |
 | 3.5 `page_template.py` — grouped tables, per-row error state | done |
 | 3.6 `/tickers` route wiring in `app.py` | done |
@@ -105,9 +105,9 @@
 | 3.10 Market Cap + P/E table columns, "n/a" when Finnhub has no value | done |
 
 **Tests**
-- Mocked Finnhub/Yahoo responses → row shows correct price, 52-week range, both moving averages
+- Mocked Finnhub responses → row shows correct price, 52-week range
 - One ticker's mocked call raises an exception → that row shows an error state, all others still render correctly
-- 52-week high/low, moving averages computed correctly from known sample data (including fewer than 200 closes available)
+- 52-week high/low computed correctly from known sample data
 - Cards render grouped under the correct headers matching `config/tickers.json`'s group keys, in file order
 - `pct_off_high` computed correctly from a known price/52-week-high pair
 - Change-since-close renders with correct sign/color for an up day, a down day, and a flat day

@@ -54,14 +54,14 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 **Acceptance Criteria**
 - [x] Page runs locally (e.g. `localhost`) — no public hosting, no domain, no login needed
 - [x] Tickers are displayed grouped under headers matching the group names in the config file exactly
-- [x] Each ticker row shows: current price, 52-week range, 20-day moving average, 50-day moving average, and 200-day moving average
+- [x] Each ticker row shows: current price and 52-week range
 - [x] The 52-week range is shown as a green (near the low)→amber→red (near the high) gradient with a marker for the current price, plus the low/high as text, so the read doesn't depend on color alone
-- [x] Each moving average shows both a color (green when price is above it, red when below — same convention as the AI directional badges) and a signed arrow+percentage, again not color-only
-- [x] Price and moving-average data is sourced from Finnhub and Yahoo Finance (Section 6 of the requirements doc); the free-tier ~20-minute delay is acceptable and does not need to be surfaced as an error state
+- [x] Price data is sourced from Finnhub (Section 6 of the requirements doc); the free-tier ~20-minute delay is acceptable and does not need to be surfaced as an error state
 - [x] A ticker whose data fails to load, and has never been successfully fetched before, shows a visible per-row error state rather than breaking the rest of the dashboard
 - [x] The page's initial paint shows the last cached snapshot instantly, with a background check re-fetching live moments later (Story 5)
 - [x] **Percent off 52-week high** — its own column, computed from price + the existing 52-week range, no new data source
-- [x] **Change since last close** — its own column, current session's absolute and % move versus the previous close, colored with the same green-up/red-down convention as the moving-average deltas
+- [x] **Change since last close** — its own column, current session's absolute and % move versus the previous close, colored green-up/red-down
+- **Removed (2026-09-16):** the 20-day/50-day/200-day moving-average columns (and the Yahoo Finance daily-close fetch they depended on) were dropped from the table and from `ticker_cache`'s stored snapshot shape — not replaced by anything
 - [x] **Sortable columns** — the Ticker and % Off High column headers are clickable and sort that group's table (ascending, then descending on a second click); pending/errored rows always sort last regardless of direction; sorting is independent per group table
 - [x] **Market Cap** and **P/E (trailing)** — their own columns, sourced from the same Finnhub call already used for the 52-week range (no new fetch); either renders "n/a" rather than erroring the row when Finnhub has no value for that symbol
 
@@ -77,7 +77,7 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 ---
 
 ### Story 5 — Ticker Dashboard: Instant Load with Background Refresh
-**As** the investor, **I want** the Ticker Dashboard to load instantly from the last known prices and refresh live in the background, **so that** I'm not staring at a blank page while dozens of tickers' worth of Finnhub and Yahoo calls complete one by one.
+**As** the investor, **I want** the Ticker Dashboard to load instantly from the last known prices and refresh live in the background, **so that** I'm not staring at a blank page while dozens of tickers' worth of Finnhub calls complete one by one.
 
 **Acceptance Criteria**
 - [x] The page's initial load is built entirely from a local snapshot cache (`data/tickers.json`, one entry per ticker) — no live fetch blocks the response, same pattern as the Indicator Digest Page
@@ -195,4 +195,4 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)
 - [x] Neither page requires user authentication
 - [x] Both pages are usable on a desktop/web browser (no mobile app)
-- [x] A data-source outage (FRED, Finnhub, Yahoo) or missing data degrades gracefully (visible error/empty state) rather than crashing the page
+- [x] A data-source outage (FRED, Finnhub) or missing data degrades gracefully (visible error/empty state) rather than crashing the page

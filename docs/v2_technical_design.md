@@ -1,7 +1,7 @@
 # V2 Technical Design — Web Dashboard
 
 **Companion to:** investment_dashboard_requirements.md, v2_user_stories.md, v1_technical_design.md
-**Adds to the v1 stack:** Flask (local web server) · Finnhub API (ticker price/52-week range) · Yahoo Finance's public chart endpoint (moving averages)
+**Adds to the v1 stack:** Flask (local web server) · Finnhub API (ticker price/52-week range)
 **Hosting:** local-only — `localhost`, bound to loopback only, started on demand
 
 **Product shape:** v2 adds two web pages served by one local Flask app: the **Indicator Digest Page** (a browsable, live-refreshing version of the v1 digest email) and the **Ticker Dashboard** (new content). Both reuse v1's existing modules rather than duplicating logic — see Section 3.
@@ -58,8 +58,7 @@ graph TD
 │   │   ├── page_template.py       # HTML rendering for both pages (plain string-building, matching
 │   │   │                          #   mailer/email_template.py's convention)
 │   │   ├── ticker_dashboard.py    # config loading, per-ticker card assembly, stored-render/live-check split
-│   │   ├── finnhub_client.py      # Finnhub API wrapper: quote, 52-week range (NOT candles — see 5.1)
-│   │   └── yahoo_client.py        # Yahoo Finance chart-endpoint wrapper: daily closes for moving averages
+│   │   └── finnhub_client.py      # Finnhub API wrapper: quote, 52-week range (NOT candles — see 5.1)
 │   ├── digest/
 │   │   ├── build_digest_content.py  # builds {table, countdown, ai_result} from state — called by both
 │   │   │                            #   post_release.py (weekly-throttled email) and live_pull.py (every
@@ -135,9 +134,11 @@ The rendered page shows a `#checking-indicator` ("Checking for updates...") next
 ### 4.4 Known trade-off (superseded — see Sections 11.7/11.10)
 ~~`check_for_updates`'s `save_state()` call writes to the same `data/indicators.json` the GitHub Actions workflow commits. A local check that finds new data leaves that file locally modified until committed or discarded.~~ Indicator state moved to Redis-only (Section 11.7), then dropped its local-file fallback entirely (Section 11.10) — `save_state()` now always writes straight to the `indicator_state` Redis key, shared directly by every environment; there's no local file to leave modified. Ingestion is still idempotent (dedup by date), so concurrent writers can't corrupt history either way. A check that finds nothing new still never calls `save_state` at all.
 
-## 5. Ticker Dashboard — Finnhub + Yahoo Integration Design
+## 5. Ticker Dashboard — Finnhub Integration Design
 
-Finnhub's free tier returns 403 for `/stock/candle` regardless of symbol, resolution, or asset class. 52-week range instead comes from a different free Finnhub endpoint; moving averages get their daily closes from Yahoo Finance's public chart endpoint. (stooq.io was evaluated and rejected — its requests go through a client-side proof-of-work bot challenge.)
+Finnhub's free tier returns 403 for `/stock/candle` regardless of symbol, resolution, or asset class. 52-week range instead comes from a different free Finnhub endpoint.
+
+**Moving averages removed (2026-09-16):** the dashboard originally also showed 20-day/50-day/200-day simple moving averages, computed from a year of daily closes fetched from Yahoo Finance's public chart endpoint (`yahoo_client.py`, since Finnhub's free tier has no daily-close source and `/stock/candle` is blocked). That column set, the Yahoo fetch, and `yahoo_client.py` itself were all removed rather than kept as unused code — not replaced by anything. `ticker_cache` snapshots and `build_ticker_cards()` cards no longer carry `ma20`/`ma50`/`ma200` fields.
 
 ### 5.1 `finnhub_client.py`
 Thin wrapper around two Finnhub REST endpoints, each independently callable so one ticker's failure can't affect another's:
@@ -145,29 +146,23 @@ Thin wrapper around two Finnhub REST endpoints, each independently callable so o
 - **52-week range** (`/stock/metric?metric=all`) — Finnhub precomputes `52WeekHigh`/`52WeekLow`, still free
 - **General news** (`/news?category=general`) — filtered client-side to Finnhub's own `"top news"` tag
 
-### 5.1a `yahoo_client.py`
-Thin wrapper around Yahoo Finance's public, unauthenticated chart endpoint (`query1.finance.yahoo.com/v8/finance/chart/{symbol}`), used only for a year of daily closes to compute the 20/50/200-day simple moving averages. Implemented as a direct `requests` call rather than the `yfinance` library, to avoid its heavier dependency tree.
-
 ### 5.2 `ticker_dashboard.py`
 For each ticker in the watchlist (`ticker_config` — originally `config/tickers.json`, see Section 3.2), independently:
-1. Fetch quote + 52-week range/market cap/P/E (`finnhub_client.fetch_stock_metrics`, one `/stock/metric` call) from Finnhub and daily closes from Yahoo.
-2. Compute the three moving averages (`MA_WINDOWS = (20, 50, 200)`) from the Yahoo close series.
-3. On any failure for that ticker, catch it locally and mark that ticker's row as errored — the loop continues (same per-item isolation pattern as v1's `run_ingestion`). The row fails as a whole rather than partially.
-4. Compute `pct_off_high = (week52_high - price) / week52_high * 100` (no new fetch).
-5. Assemble one card dict per ticker: `{symbol, group, price, change, change_percent, week52_low, week52_high, pct_off_high, market_cap, pe_ratio, ma20, ma50, ma200, error: str | None}`. `market_cap`/`pe_ratio` can independently be `None` on an otherwise-successful card — Finnhub doesn't populate them for every symbol.
+1. Fetch quote + 52-week range/market cap/P/E (`finnhub_client.fetch_stock_metrics`, one `/stock/metric` call) from Finnhub.
+2. On any failure for that ticker, catch it locally and mark that ticker's row as errored — the loop continues (same per-item isolation pattern as v1's `run_ingestion`). The row fails as a whole rather than partially.
+3. Compute `pct_off_high = (week52_high - price) / week52_high * 100` (no new fetch).
+4. Assemble one card dict per ticker: `{symbol, group, price, change, change_percent, week52_low, week52_high, pct_off_high, market_cap, pe_ratio, error: str | None}`. `market_cap`/`pe_ratio` can independently be `None` on an otherwise-successful card — Finnhub doesn't populate them for every symbol.
 
-Cards are grouped for rendering using the `groups` structure from `ticker_config`, in config order — each group's display header is derived from its config key (e.g. `sector` → "Sector"). An unrecognized/invalid symbol is skipped with a logged warning before it reaches either client.
+Cards are grouped for rendering using the `groups` structure from `ticker_config`, in config order — each group's display header is derived from its config key (e.g. `sector` → "Sector"). An unrecognized/invalid symbol is skipped with a logged warning before it reaches the client.
 
 Fetches run concurrently via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since maxing out Finnhub's free-tier rate limit risks trading slow-but-successful fetches for fast 429s). `main.run_ingestion()`/`update_release_calendar()` use the same pattern, one thread per indicator. Only the fetch calls run concurrently; state mutation and result-building run single-threaded afterward, and `executor.map`'s output-order guarantee keeps results grouped/ordered exactly as a sequential version would.
 
 ### 5.2a Rendering: one table per group
-Columns: Ticker, Price, Change, 52-Week Range, % Off High, Market Cap, P/E, 20d/50d/200d MA, then a trailing unlabeled remove-button column (Section 5.2c). Two encodings follow the "status" pattern (a small fixed good→warning→critical scale, never color-alone):
+Columns: Ticker, Price, Change, 52-Week Range, % Off High, Market Cap, P/E, then a trailing unlabeled remove-button column (Section 5.2c). Two encodings follow the "status" pattern (a small fixed good→warning→critical scale, never color-alone):
 - **52-week range** — an SVG gradient bar (green at the low end → amber at the midpoint → red at the high end) with a marker circle at the current price's position within `[low, high]`. Low/high are also printed as plain text below the bar.
-- **Each moving average** — the value plus a signed `▲`/`▼` and percentage showing how far price sits above/below that average, colored green (above)/red (below).
 - `pct_off_high` renders as a plain, uncolored number (the range bar already carries the status signal).
-- `change`/`change_percent` render with the same signed `▲`/`▼` + color convention as the moving-average cells, plus the absolute $ change.
+- `change`/`change_percent` render with a signed `▲`/`▼` + color convention, plus the absolute $ change.
 - `market_cap` (`page_template._format_market_cap`) renders as `$` plus the largest T/B/M suffix that keeps it readable (Finnhub's `marketCapitalization` comes back in millions of USD); `pe_ratio` renders as a plain one-decimal number. Either renders "n/a" when Finnhub has no value for that symbol — not an error, since it's common for micro-caps, non-US listings, or companies with no trailing earnings.
-- A ticker with `ma20`/`ma50`/`ma200` as `None` (fewer closes than that window, e.g. a recent IPO) renders "n/a" in that cell.
 - An errored ticker renders as a single row with `colspan` across the data columns (`_TICKER_DATA_COLUMN_COUNT`) and "Unable to load data.", followed by its own remove-button cell — removal doesn't depend on a successful fetch.
 
 ### 5.2b Sortable columns
@@ -181,7 +176,7 @@ Each `<tr>` (`page_template._render_ticker_row`) carries `data-symbol`/`data-pct
 **Add (updated 2026-09-16, Section 11.9):** also no longer reloads the page. A successful add inserts a pending row for the new symbol directly into its group's table (built via DOM APIs, not string concatenation, so the symbol can't be interpreted as markup), then re-fires that same group's own `/api/tickers/groups/<name>/check` to fetch real data for it — reusing the same `checkGroup()` helper the background check uses.
 
 ### 5.3 Freshness
-- **`ticker_cache`** (a Redis hash, one field per symbol — Section 11.8; no longer a local file) stores one snapshot per ticker: `{symbol: {price, change, change_percent, week52_low, week52_high, pct_off_high, market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`.
+- **`ticker_cache`** (a Redis hash, one field per symbol — Section 11.8; no longer a local file) stores one snapshot per ticker: `{symbol: {price, change, change_percent, week52_low, week52_high, pct_off_high, market_cap, pe_ratio, fetched_at}}`.
 - **`ticker_dashboard.get_initial_ticker_page_data()`** — stored-only, no network, mirrors `live_pull.get_initial_page_data()`. A ticker with no cached snapshot renders as a pending/"Loading…" row.
 - **`ticker_dashboard.check_for_ticker_updates()`** — the real live pull, mirrors `live_pull.check_for_updates()`, with one difference: no "skip if nothing changed" gate — every check re-fetches every ticker live via `build_ticker_cards()` and persists every success back to the cache. A ticker whose live fetch fails resolves to its last cached snapshot silently if one exists, or the error state if not. Takes an optional `config` subset (Section 11.8) so a caller can live-check just one group.
 - **`/api/tickers/groups/<name>/check`** (Section 11.8) calls `check_for_ticker_updates(config={name: symbols})` for just that one group and returns `{"group_html": ...}` (`page_template.render_ticker_group_check_response`) for the page's script to swap into that group's own `.category-block`. **`/api/market-news/check`** is the equivalent for market news, returning `{"news_html": ...}` (`render_market_news_check_response`) for `#market-news`.
@@ -256,7 +251,7 @@ Nothing about the existing route logic changes — `app.py`, `live_pull.py`, `ma
 - Covered by `tests/test_app.py`; verified locally including under gunicorn (Section 11.5)
 
 ### 11.3 `kv_store.py` — Upstash Redis wrapper — implemented (extended, see Section 11.10)
-- Thin wrapper using `requests` (a shared `requests.Session()`, Section 11.8) against Upstash's REST API (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, bearer-token auth) — no Redis client library needed, matching `finnhub_client.py`/`yahoo_client.py`'s plain-`requests` convention
+- Thin wrapper using `requests` (a shared `requests.Session()`, Section 11.8) against Upstash's REST API (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, bearer-token auth) — no Redis client library needed, matching `finnhub_client.py`'s plain-`requests` convention
 - `get_json(key) -> dict | None` (`GET {url}/get/{key}`) / `set_json(key, value: dict)` (`POST {url}/set/{key}`) for a whole-blob key, plus `hset_json`/`hget_json`/`hgetall_json`/`hdel_json` (Sections 11.8/11.9) for per-field hash operations — all raise `KvStoreError` on any non-2xx response or malformed body. `is_configured()` still exists as a plain env-var check, but as of Section 11.10 nothing branches on it anymore — Redis is required unconditionally, so a caller either has both env vars set or gets a `KvStoreError` on the first call.
   **Caveat, since resolved:** the wire format below was originally implemented from Upstash's documented REST API pattern, not verified live — every operation (`get`/`set` and later the four hash commands) has since been confirmed directly against a real Upstash instance (see Sections 11.3's own later notes, and 11.8/11.9/11.10).
 - ~~Backend selection lives in `ticker_dashboard.py`: ... each check `kv_store.is_configured()`; if true, they route through `kv_store.py`, else they use the existing local-file `open()` calls unchanged~~ — **removed entirely, Section 11.10**. Every one of these functions now calls `kv_store.py` unconditionally; there is no local-file branch left anywhere in `ticker_dashboard.py` or `storage.py`.

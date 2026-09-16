@@ -19,10 +19,8 @@ Config loading -- `load_ticker_config()` reads `ticker_config`'s
 present, in the order the config itself defines, so adding, renaming,
 or removing a group is a config-only edit. For each ticker,
 `build_ticker_cards` independently fetches a quote + 52-week
-range/market cap/P/E from Finnhub and a year of daily closes from
-Yahoo (for the moving averages -- Finnhub's free tier doesn't serve
-candles, see finnhub_client.py's docstring); a failure for one ticker
-(bad symbol, rate limit, request error, from either provider) is
+range/market cap/P/E from Finnhub; a failure for one ticker
+(bad symbol, rate limit, request error) is
 caught locally and turned into that ticker's error state rather than
 aborting the rest of the dashboard -- same per-item isolation pattern
 as v1's `run_ingestion`.
@@ -65,13 +63,11 @@ from datetime import datetime, timezone
 
 from finnhub_client import fetch_market_news, fetch_quote, fetch_stock_metrics
 from kv_store import KvStoreError, get_json, hdel_json, hget_json, hgetall_json, hset_json, set_json
-from yahoo_client import fetch_daily_closes
 
 _TICKER_RE = re.compile(r"^[A-Za-z0-9]+$")
-MA_WINDOWS = (20, 50, 200)
 _SNAPSHOT_FIELDS = (
     "price", "change", "change_percent", "week52_low", "week52_high",
-    "pct_off_high", "market_cap", "pe_ratio", "ma20", "ma50", "ma200",
+    "pct_off_high", "market_cap", "pe_ratio",
 )
 
 _TICKER_CONFIG_KEY = "ticker_config"
@@ -80,19 +76,19 @@ _MARKET_NEWS_CACHE_KEY = "market_news_cache"
 
 logger = logging.getLogger(__name__)
 
-# Caps how many tickers' quote/metrics/closes fetches run at once
+# Caps how many tickers' quote/metrics fetches run at once
 # GLOBALLY, across every concurrent call to build_ticker_cards, not
 # just within one -- build_ticker_cards's own max_workers only bounds
 # concurrency *inside a single call*, so without this, the page firing
 # one call per group concurrently could otherwise reach
-# group_count * max_workers simultaneous Finnhub/Yahoo fetches instead
+# group_count * max_workers simultaneous Finnhub fetches instead
 # of staying capped at a known ceiling.
 #
 # Set well above what any single page load actually needs (today's 5
 # config groups sum to at most 3+3+5+5+5=21 concurrent fetches if every
 # group's own pool were maxed out at once) rather than matched tightly
 # to it, after confirming empirically that the tight cap (5) was itself
-# the bottleneck: 36 real tickers (108 Finnhub/Yahoo calls) fetched at
+# the bottleneck: 36 real tickers fetched at
 # max_workers=20 against the live APIs completed in ~2s with zero
 # errors -- Finnhub's free tier tolerates this level of concurrency
 # fine, so throttling this hard was solving a problem that measurement
@@ -215,28 +211,17 @@ def _symbol_in_any_group(symbol: str, config: dict[str, list[str]]) -> bool:
     return any(symbol in symbols for symbols in config.values())
 
 
-def _simple_moving_average(closes: list[float], window: int) -> float | None:
-    """None if fewer than `window` closes are available (e.g. a
-    recently-listed ticker) -- show what's computable, don't crash."""
-    if len(closes) < window:
-        return None
-    return sum(closes[-window:]) / window
-
-
 def _build_card(
     symbol: str,
     group_name: str,
     fetch_quote_fn,
     fetch_metrics_fn,
-    fetch_closes_fn,
 ) -> dict:
     with _fetch_concurrency_limit:
         try:
             quote = fetch_quote_fn(symbol)
             price = quote["price"]
             metrics = fetch_metrics_fn(symbol)
-            closes = fetch_closes_fn(symbol)
-            ma20, ma50, ma200 = (_simple_moving_average(closes, w) for w in MA_WINDOWS)
             week52_high = metrics["high"]
             pct_off_high = (week52_high - price) / week52_high * 100 if week52_high else None
             return {
@@ -250,9 +235,6 @@ def _build_card(
                 "pct_off_high": pct_off_high,
                 "market_cap": metrics.get("market_cap"),
                 "pe_ratio": metrics.get("pe_ratio"),
-                "ma20": ma20,
-                "ma50": ma50,
-                "ma200": ma200,
                 "error": None,
                 "pending": False,
             }
@@ -269,9 +251,6 @@ def _build_card(
                 "pct_off_high": None,
                 "market_cap": None,
                 "pe_ratio": None,
-                "ma20": None,
-                "ma50": None,
-                "ma200": None,
                 "error": str(e),
                 "pending": False,
             }
@@ -281,7 +260,6 @@ def build_ticker_cards(
     config: dict[str, list[str]] | None = None,
     fetch_quote_fn=fetch_quote,
     fetch_metrics_fn=fetch_stock_metrics,
-    fetch_closes_fn=fetch_daily_closes,
     max_workers: int = 5,
 ) -> dict[str, list[dict]]:
     """Return `{group_name: [card, ...]}` in config order, one card per
@@ -299,8 +277,8 @@ def build_ticker_cards(
     sequential, regardless of which ticker's fetch finishes first.
 
     Each card is `{symbol, group, price, change, change_percent,
-    week52_low, week52_high, pct_off_high, market_cap, pe_ratio, ma20,
-    ma50, ma200, error, pending}` -- `error` is `None` on success, or a
+    week52_low, week52_high, pct_off_high, market_cap, pe_ratio, error,
+    pending}` -- `error` is `None` on success, or a
     message with every other field left as `None` if that ticker's
     fetch failed. `market_cap`/`pe_ratio` can independently be `None`
     even on an otherwise-successful card (Finnhub doesn't always carry
@@ -308,8 +286,7 @@ def build_ticker_cards(
     is always `False` here (this function only
     ever returns the result of an attempted fetch); see
     `get_initial_ticker_page_data` for the stored-only, not-yet-fetched
-    case. One ticker's failure (from either data source) never affects
-    the others.
+    case. One ticker's failure never affects the others.
     """
     config = config if config is not None else load_ticker_config()
     tasks = [(group_name, symbol) for group_name, symbols in config.items() for symbol in symbols]
@@ -329,7 +306,6 @@ def build_ticker_cards(
             task_group_names,
             [fetch_quote_fn] * n,
             [fetch_metrics_fn] * n,
-            [fetch_closes_fn] * n,
         )
         for (group_name, _symbol), card in zip(tasks, cards):
             grouped_cards[group_name].append(card)
@@ -339,7 +315,7 @@ def build_ticker_cards(
 
 def load_ticker_state() -> dict:
     """The snapshot cache: `{symbol: {price, week52_low, week52_high,
-    market_cap, pe_ratio, ma20, ma50, ma200, fetched_at}}`. `{}` if
+    market_cap, pe_ratio, fetched_at}}`. `{}` if
     there's nothing cached yet or Redis itself is unreachable -- this
     cache degrades gracefully rather than failing loudly the way
     `_load_raw_config` does, since losing it just means every row
@@ -458,7 +434,6 @@ def check_for_ticker_updates(
     config: dict[str, list[str]] | None = None,
     fetch_quote_fn=fetch_quote,
     fetch_metrics_fn=fetch_stock_metrics,
-    fetch_closes_fn=fetch_daily_closes,
     now: datetime | None = None,
 ) -> dict[str, list[dict]]:
     """The real live pull, called by the page's own background script
@@ -487,7 +462,7 @@ def check_for_ticker_updates(
     now = now or datetime.now(timezone.utc)
     config = config if config is not None else load_ticker_config()
 
-    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn, fetch_closes_fn)
+    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn)
 
     stored = None  # lazily loaded only if a fallback lookup is actually needed
     grouped_cards = {}

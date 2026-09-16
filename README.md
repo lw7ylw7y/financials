@@ -147,8 +147,8 @@ reachable outside your machine): the **Indicator Digest Page**, which
 shows the same content as the digest email — holistic AI
 interpretation, indicator table, next-release countdown — refreshable
 on demand instead of waiting for the next email; and the **Ticker
-Dashboard**, a Finnhub + Yahoo Finance–backed watchlist grouped by
-asset type, with moving averages, 52-week range, and general market
+Dashboard**, a Finnhub-backed watchlist grouped by
+asset type, with 52-week range and general market
 news.
 
 - `src/digest/build_digest_content.py` — the table/countdown/AI-assembly
@@ -169,9 +169,9 @@ news.
   "Checking for updates..." indicator shows for the duration of each
   page's background check.
 - `src/web/ticker_dashboard.py` — reads the `ticker_config` Redis hash's
-  groups, fetches quote/52-week-range from Finnhub and daily closes from
-  Yahoo per ticker (concurrently, `ThreadPoolExecutor`), computes moving
-  averages and percent-off-high, and persists a snapshot cache
+  groups, fetches quote/52-week-range from Finnhub per ticker
+  (concurrently, `ThreadPoolExecutor`), computes percent-off-high, and
+  persists a snapshot cache
   (the `ticker_cache` Redis hash) so `/tickers` renders instantly and
   refreshes live in the background. The watchlist and both caches read/write
   through `src/web/kv_store.py` (Upstash Redis) unconditionally — there
