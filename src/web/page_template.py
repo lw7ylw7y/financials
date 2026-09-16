@@ -598,14 +598,25 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
       if (!btn) return;
       var group = btn.dataset.group, symbol = btn.dataset.symbol;
       if (!confirm('Remove ' + symbol + ' from ' + group + '?')) return;
+
+      var row = btn.closest('tr');
+      var parent = row.parentNode;
+      var nextRow = row.nextSibling;
+      row.remove();
+
       fetch('/api/tickers/remove', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify({{group: group, symbol: symbol}})
       }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
-        if (data.error) {{ alert(data.error); return; }}
-        window.location.reload();
-      }}).catch(function() {{ alert('Failed to remove ' + symbol + '.'); }});
+        if (data.error) {{
+          alert(data.error);
+          parent.insertBefore(row, nextRow);
+        }}
+      }}).catch(function() {{
+        alert('Failed to remove ' + symbol + '.');
+        parent.insertBefore(row, nextRow);
+      }});
     }});
     tickerGroups.addEventListener('submit', function(e) {{
       var form = e.target.closest('.add-ticker-form');

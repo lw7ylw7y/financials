@@ -311,11 +311,20 @@ callables for this.
   trimmed 100→90 to match.
 - In-app ticker editing (Story 7): `ticker_dashboard.add_ticker_to_group`/
   `remove_ticker_from_group` read-modify-write `config/tickers.json`
-  directly; `/api/tickers/add`/`/remove` (`app.py`) wrap them, 400 on
-  `TickerConfigError`. Each row has a remove button, each group an
-  add-ticker field, event-delegated on `#ticker-groups`, reloading the page
-  on success rather than patching the DOM directly. Tickers only — adding,
-  renaming, or removing a whole group is still a hand-edit of the file.
+  directly (or Redis when configured, Story 9); `/api/tickers/add`/`/remove`
+  (`app.py`) wrap them, 400 on `TickerConfigError`. Each row has a remove
+  button, each group an add-ticker field, event-delegated on
+  `#ticker-groups`. Tickers only — adding, renaming, or removing a whole
+  group is still a hand-edit of the file.
+  **Remove is optimistic** (added 2026-09-16): the row is deleted from
+  the DOM immediately on confirm, no page reload on success — a failure
+  re-inserts the row at its original position and alerts. Replaced the
+  original reload-on-success design, which made removing one ticker pay
+  the cost of `/api/check-tickers`'s full all-tickers live refresh just
+  to reflect one row disappearing. **Add still reloads the page** on
+  success — not worth the complexity of constructing a client-side
+  pending-row fragment for a much less frequent action; revisit if it
+  starts feeling as slow as remove did.
   **Caution:** reassigning `ticker_dashboard.CONFIG_PATH` after import does
   *not* redirect a call using the default arg (Python binds defaults at
   def-time) — always pass `path=`/`state_path=` explicitly when testing
