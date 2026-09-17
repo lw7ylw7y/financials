@@ -105,6 +105,8 @@
 | 3.10 Market Cap + P/E table columns, "n/a" when Finnhub has no value | done |
 | 3.11 Aggregate P/E for the equity-ETF groups via Yahoo's undocumented `quoteSummary` endpoint, as a fallback when Finnhub's own P/E is empty (`yahoo_client.fetch_etf_pe_ratio`, Section 11.11) | done 2026-09-17 |
 | 3.12 PEG ratio column, from the same `/stock/metric` call as P/E (`pegTTM` falling back to `forwardPEG`); no Yahoo fallback exists, so ETFs always show "n/a" (Section 11.12) | done 2026-09-17 |
+| 3.13 Growth/quality stats (revenue/EPS growth, ROE, margin, debt/equity, dividend yield, from the existing `/stock/metric` call) and a sector-peer P/E benchmark (`fetch_company_industry` + `_SECTOR_ETF_BY_INDUSTRY` + the matching sector ETF's cached P/E) — data-only groundwork for a future AI valuation feature, no new table columns (Section 11.13) | done 2026-09-17 |
+| 3.14 AI valuation section: one batched Gemini call (`ticker_valuation.py`) judging each ETF group and every individual stock as discount/fair/overpriced, cached and throttled (`MIN_VALUATION_INTERVAL`) against the shared 20-requests/day Gemini quota, falling back to the last cached valuation on any failure (Story 14, Section 11.14) | done 2026-09-17 |
 
 **Tests**
 - Mocked Finnhub responses → row shows correct price, 52-week range

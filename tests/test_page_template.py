@@ -19,6 +19,7 @@ from page_template import (
     render_market_news_check_response,
     render_ticker_dashboard_page,
     render_ticker_group_check_response,
+    render_ticker_valuation_check_response,
 )
 
 TABLE = {
@@ -189,6 +190,21 @@ def make_pending_card(**overrides):
         **overrides,
     )
 
+
+PENDING_VALUATION = {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}
+SAMPLE_VALUATION = {
+    "overview": "Bonds look cheapest, stocks priciest.",
+    "groups": [
+        {"group": "bonds", "verdict": "discount", "reasoning": "well off highs"},
+        {"group": "stocks", "verdict": "overpriced", "reasoning": "near highs"},
+    ],
+    "individual_by_verdict": {
+        "discount": [{"symbol": "NVDA", "reasoning": "cheap vs FTEC sector benchmark"}],
+        "fair": [{"symbol": "MSFT", "reasoning": "in line with sector"}],
+        "overpriced": [{"symbol": "TSLA", "reasoning": "far above sector, negative EPS growth"}],
+    },
+    "pending": False,
+}
 
 NO_NEWS = {"headlines": [], "pending": False}
 PENDING_NEWS = {"headlines": [], "pending": True}
@@ -497,6 +513,54 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn("/api/market-news/check", html)
         self.assertIn("data.news_html", html)
 
+    def test_valuation_defaults_to_pending_placeholder_when_omitted(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
+
+        self.assertIn('id="ticker-valuation"', html)
+        self.assertIn("AI valuation not yet available.", html)
+
+    def test_renders_valuation_overview_and_group_badges(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS, SAMPLE_VALUATION)
+
+        self.assertIn("Bonds look cheapest, stocks priciest.", html)
+        self.assertIn("bonds", html)
+        self.assertIn("Discount", html)
+        self.assertIn("well off highs", html)
+
+    def test_renders_individual_tickers_under_verdict_headings(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS, SAMPLE_VALUATION)
+
+        self.assertIn("NVDA", html)
+        self.assertIn("cheap vs FTEC sector benchmark", html)
+        self.assertIn("MSFT", html)
+        self.assertIn("TSLA", html)
+        self.assertIn("far above sector, negative EPS growth", html)
+
+    def test_valuation_section_appears_above_market_news_and_ticker_groups(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS, SAMPLE_VALUATION)
+
+        self.assertLess(html.index('id="ticker-valuation"'), html.index('id="market-news"'))
+        self.assertLess(html.index('id="market-news"'), html.index('id="ticker-groups"'))
+
+    def test_valuation_patched_by_script(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS, PENDING_VALUATION)
+
+        self.assertIn("/api/tickers/valuation/check", html)
+        self.assertIn("data.valuation_html", html)
+
+    def test_valuation_html_escapes_reasoning_and_overview(self):
+        malicious = {
+            "overview": "<script>alert(1)</script>",
+            "groups": [{"group": "stocks", "verdict": "fair", "reasoning": "<script>alert(2)</script>"}],
+            "individual_by_verdict": {"discount": [], "fair": [], "overpriced": []},
+            "pending": False,
+        }
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS, malicious)
+
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertNotIn("<script>alert(2)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
 
 class TestRenderTickerGroupCheckResponse(unittest.TestCase):
     def test_returns_group_html_for_the_same_cards(self):
@@ -526,6 +590,25 @@ class TestRenderMarketNewsCheckResponse(unittest.TestCase):
         fragments = render_market_news_check_response(NO_NEWS)
 
         self.assertNotIn("<!doctype html>", fragments["news_html"])
+
+
+class TestRenderTickerValuationCheckResponse(unittest.TestCase):
+    def test_returns_valuation_html(self):
+        fragments = render_ticker_valuation_check_response(SAMPLE_VALUATION)
+
+        self.assertIn("valuation_html", fragments)
+        self.assertIn("Bonds look cheapest, stocks priciest.", fragments["valuation_html"])
+        self.assertIn("NVDA", fragments["valuation_html"])
+
+    def test_pending_returns_placeholder(self):
+        fragments = render_ticker_valuation_check_response(PENDING_VALUATION)
+
+        self.assertIn("AI valuation not yet available.", fragments["valuation_html"])
+
+    def test_does_not_include_the_full_page_shell(self):
+        fragments = render_ticker_valuation_check_response(SAMPLE_VALUATION)
+
+        self.assertNotIn("<!doctype html>", fragments["valuation_html"])
 
 
 if __name__ == "__main__":

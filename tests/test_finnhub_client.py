@@ -13,6 +13,7 @@ for _p in (
 import requests
 from finnhub_client import (
     FinnhubApiError,
+    fetch_company_industry,
     fetch_market_news,
     fetch_quote,
     fetch_stock_metrics,
@@ -78,11 +79,39 @@ class TestFetchStockMetrics(unittest.TestCase):
             {
                 "low": 629.28, "high": 779.37, "market_cap": 3500000.0,
                 "pe_ratio": 34.2, "peg_ratio": 2.1,
+                "revenue_growth": None, "eps_growth": None, "roe": None,
+                "net_margin": None, "debt_to_equity": None, "dividend_yield": None,
             },
         )
 
     @patch("finnhub_client._session.get")
-    def test_missing_market_cap_pe_and_peg_degrade_to_none(self, mock_get):
+    def test_parses_growth_and_quality_fields(self, mock_get):
+        mock_get.return_value = Mock(
+            json=lambda: {
+                "metric": {
+                    "52WeekLow": 1.0,
+                    "52WeekHigh": 2.0,
+                    "revenueGrowthTTMYoy": 14.24,
+                    "epsGrowthTTMYoy": 32.61,
+                    "roeTTM": 137.18,
+                    "netProfitMarginTTM": 27.62,
+                    "totalDebt/totalEquityAnnual": 1.3547,
+                    "dividendYieldIndicatedAnnual": 0.505,
+                }
+            }
+        )
+
+        result = fetch_stock_metrics("AAPL", api_key="test-key")
+
+        self.assertEqual(result["revenue_growth"], 14.24)
+        self.assertEqual(result["eps_growth"], 32.61)
+        self.assertEqual(result["roe"], 137.18)
+        self.assertEqual(result["net_margin"], 27.62)
+        self.assertEqual(result["debt_to_equity"], 1.3547)
+        self.assertEqual(result["dividend_yield"], 0.505)
+
+    @patch("finnhub_client._session.get")
+    def test_missing_market_cap_pe_peg_and_growth_fields_degrade_to_none(self, mock_get):
         mock_get.return_value = Mock(
             json=lambda: {"metric": {"52WeekLow": 629.28, "52WeekHigh": 779.37}}
         )
@@ -92,6 +121,12 @@ class TestFetchStockMetrics(unittest.TestCase):
         self.assertIsNone(result["market_cap"])
         self.assertIsNone(result["pe_ratio"])
         self.assertIsNone(result["peg_ratio"])
+        self.assertIsNone(result["revenue_growth"])
+        self.assertIsNone(result["eps_growth"])
+        self.assertIsNone(result["roe"])
+        self.assertIsNone(result["net_margin"])
+        self.assertIsNone(result["debt_to_equity"])
+        self.assertIsNone(result["dividend_yield"])
 
     @patch("finnhub_client._session.get")
     def test_pe_falls_back_through_alternate_fields(self, mock_get):
@@ -201,6 +236,36 @@ class TestFetchMarketNews(unittest.TestCase):
     def test_raises_without_api_key(self):
         with self.assertRaises(FinnhubApiError):
             fetch_market_news(api_key=None)
+
+
+class TestFetchCompanyIndustry(unittest.TestCase):
+    @patch("finnhub_client._session.get")
+    def test_returns_finnhub_industry(self, mock_get):
+        mock_get.return_value = Mock(json=lambda: {"finnhubIndustry": "Semiconductors"})
+
+        result = fetch_company_industry("AMD", api_key="test-key")
+
+        self.assertEqual(result, "Semiconductors")
+
+    @patch("finnhub_client._session.get")
+    def test_missing_industry_returns_none(self, mock_get):
+        mock_get.return_value = Mock(json=lambda: {})
+
+        result = fetch_company_industry("SPY", api_key="test-key")
+
+        self.assertIsNone(result)
+
+    @patch("finnhub_client._session.get")
+    def test_raises_on_request_exception(self, mock_get):
+        mock_get.side_effect = requests.ConnectionError("boom")
+
+        with self.assertRaises(FinnhubApiError):
+            fetch_company_industry("AMD", api_key="test-key")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_raises_without_api_key(self):
+        with self.assertRaises(FinnhubApiError):
+            fetch_company_industry("AMD", api_key=None)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,24 @@ for _subdir in ("fred", "storage", "digest", "mailer"):
 
 from email_template import CATEGORY_LABELS, CATEGORY_ORDER, DIRECTIONAL_STYLE, DISCLAIMER
 
+# Reuses the indicator digest's own bullish/bearish/neutral palette
+# rather than inventing a second green/red/gray scale -- "discount" is
+# the same "good" read as "bullish", "overpriced" the same "bad" read
+# as "bearish", "fair" the same neutral gray.
+VALUATION_STYLE = {
+    "discount": DIRECTIONAL_STYLE["bullish"],
+    "fair": DIRECTIONAL_STYLE["neutral"],
+    "overpriced": DIRECTIONAL_STYLE["bearish"],
+}
+VALUATION_HEADINGS = {"discount": "Discount", "fair": "Fair", "overpriced": "Overpriced"}
+# Distinct from email_template.DISCLAIMER, which is worded specifically
+# around "indicator trends" -- this section is about ticker valuation,
+# not the macro indicators, so it needs its own wording.
+VALUATION_DISCLAIMER = (
+    "This is automated commentary based on the price and fundamentals data "
+    "shown above, not personalized financial advice."
+)
+
 # Mirrors src/mailer/sparkline.py's palette so the email and web trend
 # lines read as the same feature, even though the email renders its
 # version as a matplotlib PNG (email clients strip <svg>) and this one
@@ -478,6 +496,68 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
     return "".join(sections)
 
 
+def _render_valuation_group_badge(group_verdict: dict) -> str:
+    style = VALUATION_STYLE[group_verdict["verdict"]]
+    return (
+        f'<div class="valuation-group-badge" style="background:{style["bg"]};border-left:3px solid {style["accent"]};">'
+        f'<span class="valuation-group-name">{escape(group_verdict["group"])}</span> '
+        f'<span class="directional-badge" style="color:{style["text"]};">{VALUATION_HEADINGS[group_verdict["verdict"]]}</span>'
+        f'<p class="valuation-group-reasoning">{escape(group_verdict["reasoning"])}</p>'
+        f"</div>"
+    )
+
+
+def _render_valuation_ticker_column(verdict: str, tickers: list[dict]) -> str:
+    style = VALUATION_STYLE[verdict]
+    if not tickers:
+        items = '<p class="muted">None.</p>'
+    else:
+        items = "<ul>" + "".join(
+            f'<li><strong>{escape(t["symbol"])}</strong> &mdash; {escape(t["reasoning"])}</li>'
+            for t in tickers
+        ) + "</ul>"
+    return f"""
+          <div class="valuation-column" style="border-top:3px solid {style['accent']};">
+            <p class="category-label" style="color:{style['text']};">{VALUATION_HEADINGS[verdict]}</p>
+            {items}
+          </div>"""
+
+
+def _render_ticker_valuation(valuation: dict) -> str:
+    """The AI valuation section shown once at the top of the Ticker
+    Dashboard: an overall paragraph plus a discount/fair/overpriced
+    badge per ETF group, then the individual-stock group's tickers
+    sorted under three "Discount"/"Fair"/"Overpriced" headings rather
+    than one flat list -- see `ticker_valuation.py` for how the AI
+    response is grouped and `ticker_dashboard.MIN_VALUATION_INTERVAL`
+    for why this doesn't refresh nearly as often as ticker prices do.
+    A `pending` valuation (nothing generated yet, or the one Gemini
+    call so far has failed with nothing to fall back on -- e.g. a
+    quota 429 on a brand-new deployment) shows a muted placeholder
+    rather than an error.
+    """
+    if valuation["pending"]:
+        return """
+        <section class="card">
+          <p class="muted">AI valuation not yet available.</p>
+        </section>"""
+
+    by_verdict = valuation["individual_by_verdict"]
+    columns = "".join(
+        _render_valuation_ticker_column(verdict, by_verdict.get(verdict, []))
+        for verdict in ("discount", "fair", "overpriced")
+    )
+    group_badges = "".join(_render_valuation_group_badge(g) for g in valuation["groups"])
+
+    return f"""
+        <section class="card">
+          <p class="ai-summary">{escape(valuation['overview'])}</p>
+          <div class="valuation-group-badges">{group_badges}</div>
+          <div class="valuation-columns">{columns}</div>
+          <p class="disclaimer">{escape(VALUATION_DISCLAIMER)}</p>
+        </section>"""
+
+
 def _render_market_news(market_news: dict) -> str:
     """A single page-level feed of general market headlines shown once
     at the top of the Ticker Dashboard -- deliberately distinct from a
@@ -511,21 +591,34 @@ def _render_market_news(market_news: dict) -> str:
         </section>"""
 
 
-def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
+_PENDING_VALUATION = {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}
+
+
+def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict, valuation: dict | None = None) -> str:
     """`grouped_cards` per ticker_dashboard.get_initial_ticker_page_data,
-    `market_news` per ticker_dashboard.get_initial_market_news -- both
-    built entirely from local caches, so this renders instantly, same
-    as the Indicator Digest Page. A ticker with no cached snapshot yet
-    renders as a "Loading..." placeholder row; market news with no
-    cache yet renders its own "Loading..." placeholder. The page's own
-    script then fetches each group's own
-    /api/tickers/groups/<name>/check plus /api/market-news/check
-    independently in the background -- a group with fewer tickers
-    finishes and repaints before a slower one does, rather than the
-    whole page waiting on one combined request the way it used to. A
-    "Checking for updates..." indicator is shown until every one of
-    those requests has settled, one way or another.
+    `market_news` per ticker_dashboard.get_initial_market_news,
+    `valuation` per ticker_dashboard.get_initial_ticker_valuation --
+    all three built entirely from local caches, so this renders
+    instantly, same as the Indicator Digest Page. A ticker with no
+    cached snapshot yet renders as a "Loading..." placeholder row;
+    market news and the AI valuation each render their own
+    "Loading..."/"not yet available" placeholder when uncached. The
+    page's own script then fetches each group's own
+    /api/tickers/groups/<name>/check, /api/market-news/check, and
+    /api/tickers/valuation/check independently in the background -- a
+    group with fewer tickers finishes and repaints before a slower one
+    does, rather than the whole page waiting on one combined request
+    the way it used to. A "Checking for updates..." indicator is shown
+    until every one of those requests has settled, one way or another
+    -- the valuation check included, even though it usually just
+    returns its throttled, already-cached value straight back rather
+    than making a real Gemini call (see MIN_VALUATION_INTERVAL).
+
+    `valuation` defaults to a pending placeholder (rather than being
+    required) so callers that don't care about this section -- most
+    existing tests -- don't need to pass it.
     """
+    valuation = valuation if valuation is not None else _PENDING_VALUATION
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -542,6 +635,7 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
         <span class="checking-indicator muted" id="checking-indicator">Checking for updates&hellip;</span>
       </div>
     </header>
+    <div id="ticker-valuation">{_render_ticker_valuation(valuation)}</div>
     <div id="market-news">{_render_market_news(market_news)}</div>
     <div id="ticker-groups">{_render_ticker_groups(grouped_cards)}</div>
     <footer class="page-footer">
@@ -575,6 +669,11 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict) -> str:
       fetch('/api/market-news/check').then(function(r) {{ return r.json(); }}).then(function(data) {{
         document.getElementById('market-news').innerHTML = data.news_html;
       }}).catch(function() {{ /* stay on the stored snapshot already shown */ }})
+    );
+    checks.push(
+      fetch('/api/tickers/valuation/check').then(function(r) {{ return r.json(); }}).then(function(data) {{
+        document.getElementById('ticker-valuation').innerHTML = data.valuation_html;
+      }}).catch(function() {{ /* stay on the stored valuation already shown */ }})
     );
     Promise.allSettled(checks).then(hideCheckingIndicator);
 
@@ -701,6 +800,12 @@ def render_market_news_check_response(market_news: dict) -> dict:
     """HTML fragment for GET /api/market-news/check, independent of any
     ticker group's own check."""
     return {"news_html": _render_market_news(market_news)}
+
+
+def render_ticker_valuation_check_response(valuation: dict) -> dict:
+    """HTML fragment for GET /api/tickers/valuation/check, independent
+    of any ticker group's or market news' own check."""
+    return {"valuation_html": _render_ticker_valuation(valuation)}
 
 
 def render_check_response(content: dict) -> dict:

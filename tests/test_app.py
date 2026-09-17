@@ -37,6 +37,7 @@ class TestDashboardAuth(unittest.TestCase):
             ("app.get_initial_page_data", {"table": {}, "countdown": {"entries": []}, "ai_result": None}),
             ("app.get_initial_ticker_page_data", {}),
             ("app.get_initial_market_news", {"headlines": [], "pending": False}),
+            ("app.get_initial_ticker_valuation", {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}),
         ):
             patcher = mock.patch(target, return_value=value)
             patcher.start()
@@ -82,6 +83,12 @@ class TestDashboardAuth(unittest.TestCase):
     def test_ticker_group_check_route_requires_auth_too(self):
         with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "alice", "DASHBOARD_PASSWORD": "secret"}):
             response = self.client.get("/api/tickers/groups/stocks/check")
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_ticker_valuation_check_route_requires_auth_too(self):
+        with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "alice", "DASHBOARD_PASSWORD": "secret"}):
+            response = self.client.get("/api/tickers/valuation/check")
 
         self.assertEqual(response.status_code, 401)
 
@@ -138,6 +145,23 @@ class TestApiCheckMarketNews(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("news_html", response.get_json())
+
+
+class TestApiCheckTickerValuation(unittest.TestCase):
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.env_patcher = mock.patch.dict(os.environ, NO_AUTH_ENV)
+        self.env_patcher.start()
+        self.addCleanup(self.env_patcher.stop)
+
+    def test_returns_valuation_html(self):
+        valuation = {"overview": "Test.", "groups": [], "individual_by_verdict": {}, "pending": False}
+        with mock.patch("app.check_for_ticker_valuation", return_value=valuation):
+            response = self.client.get("/api/tickers/valuation/check")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("valuation_html", response.get_json())
+        self.assertIn("Test.", response.get_json()["valuation_html"])
 
 
 if __name__ == "__main__":

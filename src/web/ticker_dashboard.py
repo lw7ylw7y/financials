@@ -32,6 +32,23 @@ just as harmless as a missing Finnhub value -- both mean the row shows
 "n/a", never an error, since Yahoo's endpoint is an undocumented,
 unofficial one Finnhub isn't (see yahoo_client.py's module docstring).
 
+Beyond price/range/P/E, each individual-company ticker (any group not
+in `_EQUITY_ETF_GROUPS` or `bonds` -- see `_NON_COMPANY_GROUPS`) also
+gets a handful of growth/quality stats straight from the same
+`fetch_stock_metrics` call (revenue growth, EPS growth, ROE, net
+margin, debt/equity, dividend yield -- see
+`finnhub_client.fetch_stock_metrics`'s docstring), plus a sector-peer
+P/E benchmark: `_sector_benchmark` looks up the ticker's industry
+(`finnhub_client.fetch_company_industry`, a new Finnhub call), maps it
+to one of the configured sector-ETF tickers via
+`_SECTOR_ETF_BY_INDUSTRY`, and reads that ETF's own already-cached
+`pe_ratio` straight out of `ticker_cache` -- no new Yahoo/Finnhub call
+for the benchmark value itself, since the sector groups already
+compute it. None of this feeds the rendered table (Section 11.13's
+"data only" scope) -- it exists so a future AI valuation feature has
+real comparison points (peer P/E, growth, quality, leverage) instead
+of judging a raw P/E number in isolation.
+
 `get_initial_ticker_page_data`/`check_for_ticker_updates` mirror
 `live_pull.py`'s split for the Indicator Digest Page: the initial page
 render reads only the `ticker_cache` snapshot (one entry per ticker)
@@ -54,6 +71,19 @@ headlines, cached separately (`market_news_cache`) since it's a single
 item, not one per symbol. Has its own route, checked independently of
 any ticker group's own check.
 
+`get_initial_ticker_valuation`/`check_for_ticker_valuation` are the
+same split again, for a page-level AI valuation section (one Gemini
+call reasoning across the whole watchlist at once --
+`ticker_valuation.py` -- rather than per ticker): a discount/fair/
+overpriced read per ETF group plus one per individual stock, cached
+under `ticker_valuation_cache`. Unlike every other background check
+here, this one is also throttled by time (`MIN_VALUATION_INTERVAL`),
+not just "does it exist yet" -- Gemini's free tier cap makes refreshing
+this on every page load unworkable. A throttle-skip or an outright AI
+failure (including a quota 429) both fall back to whatever was last
+successfully cached, the same silent-stale-fallback pattern
+`check_for_ticker_updates` uses for a single ticker's price.
+
 `add_ticker_to_group`/`remove_ticker_from_group` let the /tickers page
 itself edit the watchlist -- adding or removing a ticker within an
 existing group, not creating or renaming groups (that's still an
@@ -66,21 +96,43 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from finnhub_client import fetch_market_news, fetch_quote, fetch_stock_metrics
+from finnhub_client import (
+    FinnhubApiError,
+    fetch_company_industry,
+    fetch_market_news,
+    fetch_quote,
+    fetch_stock_metrics,
+)
 from kv_store import KvStoreError, get_json, hdel_json, hget_json, hgetall_json, hset_json, set_json
+from ticker_valuation import TickerValuationError, interpret_ticker_valuation
 from yahoo_client import YahooApiError, fetch_etf_pe_ratio
 
 _TICKER_RE = re.compile(r"^[A-Za-z0-9]+$")
 _SNAPSHOT_FIELDS = (
     "price", "change", "change_percent", "week52_low", "week52_high",
     "pct_off_high", "market_cap", "pe_ratio", "peg_ratio",
+    "revenue_growth", "eps_growth", "roe", "net_margin", "debt_to_equity",
+    "dividend_yield", "sector_pe_ratio", "sector_symbol",
 )
 
 _TICKER_CONFIG_KEY = "ticker_config"
 _TICKER_CACHE_KEY = "ticker_cache"
 _MARKET_NEWS_CACHE_KEY = "market_news_cache"
+_TICKER_VALUATION_CACHE_KEY = "ticker_valuation_cache"
+
+# Gemini's free tier caps gemini-3.8-flash at 20 requests/day total
+# (confirmed live via a 429 RESOURCE_EXHAUSTED during development) --
+# shared with the indicator digest's own calls on the same model, so
+# refreshing the valuation on every page load or background check
+# (the way ticker prices themselves refresh) would burn through it
+# fast. Verdicts also aren't intraday-sensitive -- fundamentals don't
+# meaningfully change within a few hours -- so a coarse time-based
+# throttle is enough; unlike MIN_DIGEST_INTERVAL (which only gates
+# *sending* an email, reusing whatever AI response already exists),
+# this one gates the AI call itself.
+MIN_VALUATION_INTERVAL = timedelta(hours=6)
 
 # The fund groups -- as opposed to `bonds` (fixed income, no equity
 # P/E to speak of) or `individual` (already gets a real per-company P/E
@@ -90,6 +142,56 @@ _MARKET_NEWS_CACHE_KEY = "market_news_cache"
 # equity funds, not a rendering detail, so a newly added fund group
 # needs adding here too.
 _EQUITY_ETF_GROUPS = frozenset({"stocks", "international", "sector"})
+
+# Groups that aren't individual companies at all -- the fund groups
+# above, plus `bonds` (fixed income, no industry/sector-peer notion).
+# A ticker in any other group is assumed to be an individual company
+# and gets a sector-peer P/E lookup attempted (`_sector_benchmark`);
+# this is deliberately the inverse of an allowlist (unlike
+# `_EQUITY_ETF_GROUPS`) so a newly added individual-stock group works
+# without a code change, at the cost of a wasted (harmless) Finnhub
+# profile lookup if a future non-equity, non-bond group ever appears.
+_NON_COMPANY_GROUPS = _EQUITY_ETF_GROUPS | {"bonds"}
+
+# Maps a Finnhub `finnhubIndustry` string (its own proprietary
+# taxonomy, not a GICS sector name -- see `finnhub_client.fetch_company_industry`)
+# to the ticker of a configured Fidelity MSCI sector ETF covering the
+# same GICS sector, for a peer-P/E comparison. Deliberately partial: an
+# industry with no entry here (or a GICS sector this watchlist doesn't
+# track a fund for, e.g. Energy/Industrials/Materials) just means no
+# sector benchmark is available for that ticker -- not an error, and
+# not worth failing loudly over, since this table is meant to grow
+# incrementally as new industries are observed in a real watchlist
+# rather than trying to enumerate Finnhub's full taxonomy upfront.
+_SECTOR_ETF_BY_INDUSTRY = {
+    "Technology": "FTEC",
+    "Semiconductors": "FTEC",
+    "Software": "FTEC",
+    "Computer Hardware": "FTEC",
+    "IT Services": "FTEC",
+    "Media": "FCOM",
+    "Communications": "FCOM",
+    "Telecommunications Equipment": "FCOM",
+    "Retail": "FDIS",
+    "Automobiles": "FDIS",
+    "Leisure Products": "FDIS",
+    "Hotels, Restaurants & Leisure": "FDIS",
+    "Food Products": "FSTA",
+    "Beverages": "FSTA",
+    "Household Products": "FSTA",
+    "Packaged Foods": "FSTA",
+    "Healthcare": "FHLC",
+    "Biotechnology": "FHLC",
+    "Pharmaceuticals": "FHLC",
+    "Medical Devices & Instruments": "FHLC",
+    "Financial Services": "FNCL",
+    "Banking": "FNCL",
+    "Insurance": "FNCL",
+    "Capital Markets": "FNCL",
+    "Real Estate": "FREL",
+    "REIT": "FREL",
+    "Utilities": "FUTY",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -244,12 +346,46 @@ def _fallback_etf_pe_ratio(symbol: str, group_name: str, fetch_etf_pe_fn) -> flo
         return None
 
 
+def _sector_benchmark(symbol: str, group_name: str, fetch_industry_fn) -> tuple[float | None, str | None]:
+    """A peer-comparison P/E for `symbol`, if it's plausibly an
+    individual company (`group_name` not in `_NON_COMPANY_GROUPS`) and
+    its industry maps to one of the sector ETFs this watchlist already
+    tracks. Returns `(sector_pe_ratio, sector_symbol)`, both `None` if
+    no benchmark is available -- an ETF/bond ticker, an industry
+    `_SECTOR_ETF_BY_INDUSTRY` doesn't recognize, or a genuine failure
+    (Finnhub or Redis) fetching either piece. Never raises: this is
+    extra context for a future AI feature, not core card data, so it
+    must never take down a card whose price/range already succeeded.
+
+    Deliberately reads the sector ETF's `pe_ratio` straight out of
+    `ticker_cache` (whatever was last fetched for it, possibly stale)
+    rather than fetching it fresh here -- the sector groups already
+    compute this value on their own schedule, so re-fetching it again
+    per individual stock would be redundant work for no real freshness
+    gain, and would need its own Yahoo-fallback logic duplicated here.
+    """
+    if group_name in _NON_COMPANY_GROUPS:
+        return None, None
+    try:
+        industry = fetch_industry_fn(symbol)
+        sector_symbol = _SECTOR_ETF_BY_INDUSTRY.get(industry)
+        if sector_symbol is None:
+            return None, None
+        sector_snapshot = hget_json(_TICKER_CACHE_KEY, sector_symbol)
+        sector_pe_ratio = sector_snapshot.get("pe_ratio") if sector_snapshot else None
+        return sector_pe_ratio, sector_symbol
+    except (FinnhubApiError, KvStoreError) as e:
+        logger.warning("sector benchmark lookup failed symbol=%s error=%s", symbol, e)
+        return None, None
+
+
 def _build_card(
     symbol: str,
     group_name: str,
     fetch_quote_fn,
     fetch_metrics_fn,
     fetch_etf_pe_fn,
+    fetch_industry_fn,
 ) -> dict:
     with _fetch_concurrency_limit:
         try:
@@ -261,6 +397,7 @@ def _build_card(
             pe_ratio = metrics.get("pe_ratio")
             if pe_ratio is None:
                 pe_ratio = _fallback_etf_pe_ratio(symbol, group_name, fetch_etf_pe_fn)
+            sector_pe_ratio, sector_symbol = _sector_benchmark(symbol, group_name, fetch_industry_fn)
             return {
                 "symbol": symbol,
                 "group": group_name,
@@ -273,6 +410,14 @@ def _build_card(
                 "market_cap": metrics.get("market_cap"),
                 "pe_ratio": pe_ratio,
                 "peg_ratio": metrics.get("peg_ratio"),
+                "revenue_growth": metrics.get("revenue_growth"),
+                "eps_growth": metrics.get("eps_growth"),
+                "roe": metrics.get("roe"),
+                "net_margin": metrics.get("net_margin"),
+                "debt_to_equity": metrics.get("debt_to_equity"),
+                "dividend_yield": metrics.get("dividend_yield"),
+                "sector_pe_ratio": sector_pe_ratio,
+                "sector_symbol": sector_symbol,
                 "error": None,
                 "pending": False,
             }
@@ -290,6 +435,14 @@ def _build_card(
                 "market_cap": None,
                 "pe_ratio": None,
                 "peg_ratio": None,
+                "revenue_growth": None,
+                "eps_growth": None,
+                "roe": None,
+                "net_margin": None,
+                "debt_to_equity": None,
+                "dividend_yield": None,
+                "sector_pe_ratio": None,
+                "sector_symbol": None,
                 "error": str(e),
                 "pending": False,
             }
@@ -300,6 +453,7 @@ def build_ticker_cards(
     fetch_quote_fn=fetch_quote,
     fetch_metrics_fn=fetch_stock_metrics,
     fetch_etf_pe_fn=fetch_etf_pe_ratio,
+    fetch_industry_fn=fetch_company_industry,
     max_workers: int = 5,
 ) -> dict[str, list[dict]]:
     """Return `{group_name: [card, ...]}` in config order, one card per
@@ -318,10 +472,12 @@ def build_ticker_cards(
 
     Each card is `{symbol, group, price, change, change_percent,
     week52_low, week52_high, pct_off_high, market_cap, pe_ratio,
-    peg_ratio, error, pending}` -- `error` is `None` on success, or a
-    message with every other field left as `None` if that ticker's
-    fetch failed. `market_cap`/`pe_ratio`/`peg_ratio` can independently
-    be `None` even on an otherwise-successful card (Finnhub doesn't
+    peg_ratio, revenue_growth, eps_growth, roe, net_margin,
+    debt_to_equity, dividend_yield, sector_pe_ratio, sector_symbol,
+    error, pending}` -- `error` is `None` on success, or a message with
+    every other field left as `None` if that ticker's fetch failed.
+    `market_cap`/`pe_ratio`/`peg_ratio` can independently be `None`
+    even on an otherwise-successful card (Finnhub doesn't
     always carry them -- see `finnhub_client.fetch_stock_metrics`, and
     never carries any of the three for an ETF); for a ticker in
     `_EQUITY_ETF_GROUPS`, a `None` Finnhub `pe_ratio` additionally tries
@@ -329,8 +485,21 @@ def build_ticker_cards(
     on `None` for real -- see `_fallback_etf_pe_ratio`. There is no
     equivalent fallback for `peg_ratio`: Yahoo's own aggregate-holdings
     module has no PEG field for a fund, only P/E, P/B, P/S, and P/CF,
-    so an ETF's PEG is always `None`. `pending`
-    is always `False` here (this function only
+    so an ETF's PEG is always `None`.
+
+    `revenue_growth`/`eps_growth`/`roe`/`net_margin`/`debt_to_equity`/
+    `dividend_yield` are the same growth/quality fields
+    `fetch_stock_metrics` returns -- no new fetch, same degrade-to-`None`
+    behavior. `sector_pe_ratio`/`sector_symbol` come from
+    `_sector_benchmark` (Finnhub's `fetch_industry_fn`, mapped to a
+    configured sector ETF, whose own cached `pe_ratio` is read from
+    `ticker_cache`) -- both `None` for any ticker in
+    `_NON_COMPANY_GROUPS`, an unmapped industry, or a lookup failure.
+    None of these eight fields are rendered anywhere yet (see
+    `page_template.py`) -- they exist as inputs for a future AI
+    valuation feature, not the current table.
+
+    `pending` is always `False` here (this function only
     ever returns the result of an attempted fetch); see
     `get_initial_ticker_page_data` for the stored-only, not-yet-fetched
     case. One ticker's failure never affects the others.
@@ -354,6 +523,7 @@ def build_ticker_cards(
             [fetch_quote_fn] * n,
             [fetch_metrics_fn] * n,
             [fetch_etf_pe_fn] * n,
+            [fetch_industry_fn] * n,
         )
         for (group_name, _symbol), card in zip(tasks, cards):
             grouped_cards[group_name].append(card)
@@ -363,7 +533,9 @@ def build_ticker_cards(
 
 def load_ticker_state() -> dict:
     """The snapshot cache: `{symbol: {price, week52_low, week52_high,
-    market_cap, pe_ratio, peg_ratio, fetched_at}}`. `{}` if
+    market_cap, pe_ratio, peg_ratio, revenue_growth, eps_growth, roe,
+    net_margin, debt_to_equity, dividend_yield, sector_pe_ratio,
+    sector_symbol, fetched_at}}`. `{}` if
     there's nothing cached yet or Redis itself is unreachable -- this
     cache degrades gracefully rather than failing loudly the way
     `_load_raw_config` does, since losing it just means every row
@@ -483,6 +655,7 @@ def check_for_ticker_updates(
     fetch_quote_fn=fetch_quote,
     fetch_metrics_fn=fetch_stock_metrics,
     fetch_etf_pe_fn=fetch_etf_pe_ratio,
+    fetch_industry_fn=fetch_company_industry,
     now: datetime | None = None,
 ) -> dict[str, list[dict]]:
     """The real live pull, called by the page's own background script
@@ -511,7 +684,7 @@ def check_for_ticker_updates(
     now = now or datetime.now(timezone.utc)
     config = config if config is not None else load_ticker_config()
 
-    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn, fetch_etf_pe_fn)
+    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn, fetch_etf_pe_fn, fetch_industry_fn)
 
     stored = None  # lazily loaded only if a fallback lookup is actually needed
     grouped_cards = {}
@@ -591,3 +764,99 @@ def check_for_market_news(fetch_news_fn=fetch_market_news, now: datetime | None 
         logger.error("market news fetch failed error=%s", e)
         stored = load_market_news_state()
         return {"headlines": stored.get("headlines", []) if stored else [], "pending": False}
+
+
+def load_ticker_valuation() -> dict | None:
+    """The cached AI valuation: `{"overview", "groups",
+    "individual_by_verdict", "generated_at"}`, or `None` if nothing's
+    ever been generated, or Redis itself is unreachable -- degrades
+    the same way `load_market_news_state` does, since losing this just
+    means the section shows as pending again, not an error.
+    """
+    try:
+        return get_json(_TICKER_VALUATION_CACHE_KEY)
+    except KvStoreError as e:
+        logger.error("ticker valuation cache read failed, degrading to no-cache-yet: %s", e)
+        return None
+
+
+def save_ticker_valuation(data: dict) -> None:
+    try:
+        set_json(_TICKER_VALUATION_CACHE_KEY, data)
+    except KvStoreError as e:
+        logger.error("ticker valuation cache write failed: %s", e)
+
+
+def _build_valuation_cards(config: dict[str, list[str]], stored: dict[str, dict]) -> dict[str, list[dict]]:
+    """Reshapes `ticker_cache` snapshots into the `{group: [card, ...]}`
+    shape `ticker_valuation.py` expects: one dict per symbol with
+    `symbol` attached (a snapshot in `stored` is keyed by symbol, not
+    carrying it as its own field) plus whatever `_SNAPSHOT_FIELDS` it
+    already has. A symbol with no snapshot yet is skipped entirely --
+    there's nothing useful to tell the AI about it, unlike a pending
+    table row which still needs a placeholder to render.
+    """
+    return {
+        group_name: [{"symbol": symbol, **stored[symbol]} for symbol in symbols if symbol in stored]
+        for group_name, symbols in config.items()
+    }
+
+
+def get_initial_ticker_valuation() -> dict:
+    """What "/tickers" renders for the AI valuation section --
+    instantly, from the cache only, no network or Gemini call. Returns
+    the cached blob plus `pending: False`, or a pending placeholder if
+    nothing's ever been generated yet.
+    """
+    stored = load_ticker_valuation()
+    if stored is None:
+        return {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}
+    return {**stored, "pending": False}
+
+
+def check_for_ticker_valuation(
+    now: datetime | None = None,
+    interpret_fn=interpret_ticker_valuation,
+    config: dict[str, list[str]] | None = None,
+) -> dict:
+    """The real AI valuation call, throttled by `MIN_VALUATION_INTERVAL`
+    rather than re-run on every page load/background check the way
+    ticker prices themselves are -- see that constant's docstring for
+    why. Within the throttle window, returns the cached valuation
+    unchanged without calling Gemini at all.
+
+    Built from the already-cached `ticker_cache` snapshots
+    (`load_ticker_state`), not a fresh live fetch -- a valuation
+    doesn't need millisecond-fresh prices, and re-fetching every
+    ticker again here would double the Finnhub/Yahoo traffic a page
+    load already costs, for no real benefit.
+
+    On any failure -- including a Gemini quota/429, the free tier's
+    real failure mode in practice (confirmed live during development)
+    -- falls back to the last cached valuation, exactly like
+    `check_for_ticker_updates` falls back to a ticker's last snapshot:
+    the page keeps showing a stale-but-valid AI read rather than an
+    error or a blank section. If nothing has ever been generated
+    successfully, degrades to the same pending placeholder
+    `get_initial_ticker_valuation` returns.
+    """
+    now = now or datetime.now(timezone.utc)
+    cached = load_ticker_valuation()
+
+    if cached is not None:
+        generated_at = datetime.fromisoformat(cached["generated_at"])
+        if now - generated_at < MIN_VALUATION_INTERVAL:
+            return {**cached, "pending": False}
+
+    try:
+        config = config if config is not None else load_ticker_config()
+        cards_by_group = _build_valuation_cards(config, load_ticker_state())
+        result = interpret_fn(cards_by_group)
+        result["generated_at"] = now.isoformat()
+        save_ticker_valuation(result)
+        return {**result, "pending": False}
+    except TickerValuationError as e:
+        logger.error("ticker valuation failed error=%s", e)
+        if cached is not None:
+            return {**cached, "pending": False}
+        return {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}

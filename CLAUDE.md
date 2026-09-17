@@ -54,7 +54,7 @@ source .env && set +a`) before running anything that needs them.
 | Var | Required for |
 |---|---|
 | `FRED_API_KEY` | any ingestion (Stories 1-3) |
-| `GEMINI_API_KEY` | AI interpretation — optional; both the email and the web page degrade gracefully (no AI section) without it |
+| `GEMINI_API_KEY` | AI interpretation — optional; the email, the Indicator Digest Page, and the Ticker Dashboard's AI valuation section all degrade gracefully (no AI section, or the last cached valuation) without it or on any API failure. Shared across a single `gemini-3.8-flash` free-tier quota (20 requests/day total, confirmed live) — the indicator digest's calls and the ticker valuation's calls draw from the same pool |
 | `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | sending the digest email |
 | `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range/market-cap/P-E fetch and the market-news feed — without it, the background check's live fetch fails for every ticker and for market news, each falling back to its own cached Redis data (`ticker_cache`/`market_news_cache`) where a cache entry exists, or an error/unavailable state where none does; Story 2's config loading needs no API key |
 | `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` | HTTP Basic Auth in front of every `src/web/app.py` route (Story 8) — set on a hosted deployment; both unset (the local-dev default) leaves auth off entirely, unchanged from before Story 8 |
@@ -94,6 +94,7 @@ src/
             as plain inline SVG, since browsers don't have that limitation)
   web/      app.py (Flask routes: GET "/", GET "/tickers", GET "/api/check",
             GET "/api/tickers/groups/<name>/check", GET "/api/market-news/check",
+            GET "/api/tickers/valuation/check",
             POST "/api/tickers/add", POST "/api/tickers/remove";
             _require_auth() before_request hook gates every route behind HTTP Basic Auth when
             DASHBOARD_USERNAME/PASSWORD are both set, no-op otherwise
@@ -132,12 +133,15 @@ src/
             deletes the symbol's ticker_cache entry via
             delete_ticker_snapshot() once it's confirmed unused by
             every other group),
-            finnhub_client.py (quote/52wk-range+market-cap+P-E
-            (fetch_stock_metrics)/general-news REST wrapper, raises
-            FinnhubApiError per-call — NOT candles: see
-            its docstring, Finnhub's free tier blocks `/stock/candle`
-            outright, and NOT a fund-level P/E either — Finnhub never
-            populates one for an ETF, only for individual companies),
+            finnhub_client.py (quote/52wk-range+market-cap+P-E+PEG+
+            growth-quality-stats (fetch_stock_metrics)/company-industry
+            (fetch_company_industry)/general-news REST wrapper, raises
+            FinnhubApiError per-call — NOT candles or analyst price
+            targets: see its docstring, Finnhub's free tier blocks
+            `/stock/candle` and `/stock/price-target` outright, and NOT
+            a fund-level P/E, PEG, or growth/quality stat either —
+            Finnhub never populates any of those for an ETF, only for
+            individual companies),
             yahoo_client.py (fetch_etf_pe_ratio: an ETF's aggregate
             trailing P/E across its holdings, the one fund-level stat
             Finnhub can't provide for free — via Yahoo's undocumented
@@ -147,6 +151,15 @@ src/
             per-call, always caught by ticker_dashboard.py and
             degraded to "n/a" rather than erroring a card, since this
             endpoint is expected to be more fragile than Finnhub's own),
+            ticker_valuation.py (interpret_ticker_valuation: one batched
+            Gemini call reasoning across the whole watchlist —
+            discount/fair/overpriced per ETF group plus per individual
+            stock — rather than one call per ticker, since
+            gemini-3.8-flash's free tier caps at 20 requests/day total,
+            shared with the indicator digest's own calls; raises
+            TickerValuationError per-call, always caught by
+            ticker_dashboard.py and degraded to the last cached
+            valuation, same pattern as yahoo_client.py's fragility),
             kv_store.py (Upstash Redis REST wrapper — get_json/set_json
             for a whole-blob key, hset_json/hget_json/hgetall_json/
             hdel_json for per-field hash operations, raises
@@ -364,6 +377,21 @@ work now rather than as a change-log entry.
   (comfortably above the current watchlist's natural per-group-pool sum
   of 21) — confirmed live: the same 5-group check dropped from 35-40s
   back to ~1-4.5s per group.
+- **HTTP connection pool sizing (2026-09-17, found live via a user-reported
+  warning):** `finnhub_client.py`/`yahoo_client.py`/`kv_store.py`'s shared
+  `_session`s each mount an `HTTPAdapter(pool_maxsize=25)` now, matching
+  `_fetch_concurrency_limit`'s 25 — `requests`' own default caps a host's
+  pool at 10, silently below that ceiling, which surfaced as urllib3's
+  "Connection pool is full, discarding connection: finnhub.io" warning
+  once concurrent per-ticker fetches (including the newer
+  `sector_pe_ratio` `hget_json` lookups, which run inside the same
+  concurrent fetch phase) actually reached that count. A discarded
+  connection isn't reused — it pays a fresh DNS+TCP+TLS handshake next
+  time, exactly the cost these shared sessions exist to avoid — so a
+  pool smaller than the real concurrency ceiling silently defeated the
+  whole point of connection reuse without ever raising a visible error.
+  Confirmed live: a full watchlist background check produced zero pool
+  warnings after the fix, versus reliably producing them before it.
 - `ticker_dashboard.build_ticker_cards()` fetches every ticker concurrently
   via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since
   maxing out Finnhub's free-tier rate limit risks trading slow-but-successful
@@ -441,6 +469,95 @@ work now rather than as a change-log entry.
   but at two decimal places (matching how Yahoo's own site displays
   PEG, e.g. `2.67`) rather than one, since PEG values are conventionally
   read to that precision.
+- **Valuation-context data, gathered but not yet rendered (2026-09-17):**
+  groundwork for a future AI valuation feature (discount/fair/overpriced
+  per ticker) — deliberately data-only, no new table columns, per the
+  user's explicit scoping. Two additions:
+  - **Growth/quality fields:** `fetch_stock_metrics()` now also returns
+    `revenue_growth`/`eps_growth`/`roe`/`net_margin`/`debt_to_equity`/
+    `dividend_yield` (Finnhub's `revenueGrowthTTMYoy`/`epsGrowthTTMYoy`/
+    `roeTTM`/`netProfitMarginTTM`/`totalDebt/totalEquityAnnual`/
+    `dividendYieldIndicatedAnnual` respectively) — same `/stock/metric`
+    call already made for P/E/PEG, no new fetch, same degrade-to-`None`
+    pattern. A curated cross-section of Finnhub's dozens of available
+    fields, not exhaustive — picked so a low P/E can be told apart from
+    a value trap (shrinking revenue, high debt) rather than assumed a
+    genuine discount.
+  - **Sector-peer P/E benchmark:** `finnhub_client.fetch_company_industry()`
+    (`/stock/profile2`, confirmed free-tier) gets a ticker's Finnhub-assigned
+    industry (e.g. "Semiconductors"); `ticker_dashboard._SECTOR_ETF_BY_INDUSTRY`
+    maps a curated set of these to one of the configured Fidelity
+    sector-ETF tickers (e.g. → `FTEC`); `ticker_dashboard._sector_benchmark()`
+    then reads that ETF's own already-cached `pe_ratio` straight out of
+    `ticker_cache` — no new fetch for the benchmark value itself, since
+    the `sector` group already computes it via the ETF P/E fallback
+    above. Attached to the card as `sector_pe_ratio`/`sector_symbol`.
+    Only attempted for a ticker whose group isn't already a fund or
+    bonds (`ticker_dashboard._NON_COMPANY_GROUPS`); an unmapped
+    industry, a not-yet-cached sector ETF, or a genuine Finnhub/Redis
+    failure all degrade to `(None, None)`, never an error on the card.
+    Verified live: AMD/AAPL (Semiconductors/Technology) both correctly
+    map to `FTEC`, RELY (Financial Services) to `FNCL`.
+  - `_SNAPSHOT_FIELDS` (and so `ticker_cache`'s stored shape) gained all
+    eight new fields; confirmed round-tripping live against the real
+    watchlist with zero errors. Analyst consensus (`/stock/recommendation`,
+    also confirmed free-tier) was investigated but not built — the user
+    scoped this pass to the two items above only.
+- **AI valuation section, built on top of the above (2026-09-17):** a new
+  section at the top of `/tickers` — an overview paragraph plus a
+  discount/fair/overpriced badge per ETF group (sorted discount-first,
+  overpriced-last, regardless of the order Gemini returns them in —
+  sorting is done in code, not trusted to the AI), then the
+  `individual` group's own tickers listed under three "Discount"/
+  "Fair"/"Overpriced" column headings (not one flat list) with a
+  one-sentence reasoning each. One batched Gemini call reasons across
+  the *entire* watchlist at once (`ticker_valuation.py`,
+  `interpret_ticker_valuation`) rather than one call per ticker —
+  confirmed live that gemini-3.8-flash's free tier caps at 20
+  requests/day total (a `429 RESOURCE_EXHAUSTED`), shared with the
+  indicator digest's own calls on the same model, so a per-ticker
+  design would have been unworkable. The system prompt explicitly
+  instructs the model to call out a low P/E backed by shrinking
+  revenue/negative EPS growth/high debt as a value trap rather than a
+  genuine discount — confirmed live it does exactly this (e.g. called
+  QCOM and INTC out as value traps despite low P/Es, in the
+  development sample run).
+
+  **Caching and throttling (`ticker_dashboard.py`):** `ticker_valuation_cache`
+  (a new whole-blob Redis key) stores `{overview, groups,
+  individual_by_verdict, generated_at}`. Unlike every other background
+  check on this page, `check_for_ticker_valuation()` is throttled by
+  *time* (`MIN_VALUATION_INTERVAL`, 6 hours), not just "does cached
+  data exist yet" — refreshing on every page load/background check the
+  way ticker prices do would burn through the shared 20/day quota in
+  minutes. Within the throttle window, the cached value is returned
+  without calling Gemini at all. The AI call itself is built from
+  already-cached `ticker_cache` snapshots (`load_ticker_state()`), not
+  a fresh live fetch — no extra Finnhub/Yahoo traffic for this section.
+
+  **Graceful degradation, the actual point of this section (explicitly
+  requested):** any AI failure — a throttle-skip returns the cache
+  unchanged already, but a genuine failure (malformed response, or a
+  quota `429`, confirmed live as the real-world failure mode) falls
+  back to the last successfully cached valuation, exactly like
+  `check_for_ticker_updates` falls back to a stale ticker snapshot.
+  Confirmed live end-to-end against the real Redis instance and a real
+  quota-exhausted Gemini call: (1) nothing cached yet + AI failure →
+  pending placeholder, never an error; (2) something cached (even
+  hours stale) + AI failure → that cached value is shown, unchanged;
+  (3) within the throttle window → Gemini isn't even called.
+
+  **Rendering (`page_template.py`):** `_render_ticker_valuation()`
+  reuses `email_template.DIRECTIONAL_STYLE`'s existing green/gray/red
+  palette (`VALUATION_STYLE`: discount→bullish, fair→neutral,
+  overpriced→bearish) rather than inventing a new one. Grouping
+  individual tickers under verdict headings, rather than one flat
+  list, was an explicit user request. New route
+  `GET /api/tickers/valuation/check`, checked independently of any
+  ticker group's or market news' own check, patching `#ticker-valuation`
+  in place — same per-section-check pattern as market news, folded
+  into the same `Promise.allSettled` that clears the page's
+  "Checking for updates..." indicator.
 - Market Cap and trailing P/E: `finnhub_client.fetch_stock_metrics()` (the
   successor to the old `fetch_52_week_range()` — same `/stock/metric` call,
   now also pulling `marketCapitalization` and `peTTM` with fallback through

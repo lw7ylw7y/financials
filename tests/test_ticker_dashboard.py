@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
@@ -18,17 +19,22 @@ from ticker_dashboard import (
     build_ticker_cards,
     check_for_market_news,
     check_for_ticker_updates,
+    check_for_ticker_valuation,
     delete_ticker_snapshot,
     get_initial_market_news,
     get_initial_ticker_page_data,
+    get_initial_ticker_valuation,
     load_market_news_state,
     load_ticker_config,
     load_ticker_state,
+    load_ticker_valuation,
     remove_ticker_from_group,
     save_market_news_state,
     save_ticker_snapshot,
     save_ticker_state,
+    save_ticker_valuation,
 )
+from ticker_valuation import TickerValuationError
 
 
 def config_hash(groups: dict) -> dict:
@@ -545,6 +551,7 @@ class TestBuildTickerCards(unittest.TestCase):
                 fetch_quote_fn=lambda s: {"price": 60.0},
                 fetch_metrics_fn=lambda s: {"low": 55.0, "high": 65.0},  # no pe_ratio
                 fetch_etf_pe_fn=fail_if_called,
+                fetch_industry_fn=lambda s: None,
             )
 
             self.assertIsNone(cards[group_name][0]["pe_ratio"], group_name)
@@ -578,6 +585,113 @@ class TestBuildTickerCards(unittest.TestCase):
         card = cards["stocks"][0]
         self.assertIsNone(card["error"])
         self.assertIsNone(card["pe_ratio"])
+
+    def test_passes_through_growth_and_quality_fields(self):
+        cards = build_ticker_cards(
+            config={"individual": ["AAPL"]},
+            fetch_quote_fn=lambda s: {"price": 150.0},
+            fetch_metrics_fn=lambda s: {
+                "low": 100.0, "high": 200.0, "revenue_growth": 14.24, "eps_growth": 32.61,
+                "roe": 137.18, "net_margin": 27.62, "debt_to_equity": 1.3547, "dividend_yield": 0.505,
+            },
+            fetch_industry_fn=lambda s: None,
+        )
+
+        card = cards["individual"][0]
+        self.assertEqual(card["revenue_growth"], 14.24)
+        self.assertEqual(card["eps_growth"], 32.61)
+        self.assertEqual(card["roe"], 137.18)
+        self.assertEqual(card["net_margin"], 27.62)
+        self.assertEqual(card["debt_to_equity"], 1.3547)
+        self.assertEqual(card["dividend_yield"], 0.505)
+
+    def test_missing_growth_and_quality_fields_degrade_to_none(self):
+        cards = build_ticker_cards(
+            config={"individual": ["AAPL"]},
+            fetch_quote_fn=lambda s: {"price": 150.0},
+            fetch_metrics_fn=lambda s: {"low": 100.0, "high": 200.0},
+            fetch_industry_fn=lambda s: None,
+        )
+
+        card = cards["individual"][0]
+        for field in ("revenue_growth", "eps_growth", "roe", "net_margin", "debt_to_equity", "dividend_yield"):
+            self.assertIsNone(card[field], field)
+
+    def test_sector_benchmark_attached_for_individual_stock(self):
+        with mock.patch("ticker_dashboard.hget_json", return_value={"pe_ratio": 32.2}) as hget_mock:
+            cards = build_ticker_cards(
+                config={"individual": ["AMD"]},
+                fetch_quote_fn=lambda s: {"price": 150.0},
+                fetch_metrics_fn=lambda s: {"low": 100.0, "high": 200.0},
+                fetch_industry_fn=lambda s: "Semiconductors",
+            )
+
+        card = cards["individual"][0]
+        self.assertEqual(card["sector_pe_ratio"], 32.2)
+        self.assertEqual(card["sector_symbol"], "FTEC")
+        hget_mock.assert_called_once_with("ticker_cache", "FTEC")
+
+    def test_no_sector_benchmark_for_unmapped_industry(self):
+        def fail_if_called(key, field):
+            raise AssertionError("should not look up a cached P/E for an unmapped industry")
+
+        with mock.patch("ticker_dashboard.hget_json", side_effect=fail_if_called):
+            cards = build_ticker_cards(
+                config={"individual": ["RELY"]},
+                fetch_quote_fn=lambda s: {"price": 20.0},
+                fetch_metrics_fn=lambda s: {"low": 15.0, "high": 25.0},
+                fetch_industry_fn=lambda s: "Some Made-Up Industry",
+            )
+
+        card = cards["individual"][0]
+        self.assertIsNone(card["sector_pe_ratio"])
+        self.assertIsNone(card["sector_symbol"])
+
+    def test_no_sector_benchmark_when_the_matching_etf_has_no_cached_snapshot_yet(self):
+        with mock.patch("ticker_dashboard.hget_json", return_value=None):
+            cards = build_ticker_cards(
+                config={"individual": ["AMD"]},
+                fetch_quote_fn=lambda s: {"price": 150.0},
+                fetch_metrics_fn=lambda s: {"low": 100.0, "high": 200.0},
+                fetch_industry_fn=lambda s: "Semiconductors",
+            )
+
+        self.assertIsNone(cards["individual"][0]["sector_pe_ratio"])
+
+    def test_no_sector_benchmark_attempted_for_etf_or_bond_groups(self):
+        def fail_if_called(symbol):
+            raise AssertionError("should not look up an industry for a fund or bond ticker")
+
+        for group_name in ("stocks", "international", "sector", "bonds"):
+            cards = build_ticker_cards(
+                config={group_name: ["SPY"]},
+                fetch_quote_fn=lambda s: {"price": 450.0},
+                fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},
+                fetch_etf_pe_fn=lambda s: None,
+                fetch_industry_fn=fail_if_called,
+            )
+
+            card = cards[group_name][0]
+            self.assertIsNone(card["sector_pe_ratio"], group_name)
+            self.assertIsNone(card["sector_symbol"], group_name)
+
+    def test_sector_benchmark_lookup_failure_degrades_gracefully(self):
+        from finnhub_client import FinnhubApiError
+
+        def failing_industry(symbol):
+            raise FinnhubApiError("profile request failed")
+
+        cards = build_ticker_cards(
+            config={"individual": ["AMD"]},
+            fetch_quote_fn=lambda s: {"price": 150.0},
+            fetch_metrics_fn=lambda s: {"low": 100.0, "high": 200.0},
+            fetch_industry_fn=failing_industry,
+        )
+
+        card = cards["individual"][0]
+        self.assertIsNone(card["error"])
+        self.assertIsNone(card["sector_pe_ratio"])
+        self.assertIsNone(card["sector_symbol"])
 
 
 class TestTickerCachePersistence(unittest.TestCase):
@@ -845,6 +959,151 @@ class TestCheckForMarketNews(unittest.TestCase):
 
         self.assertFalse(result["pending"])
         self.assertEqual(result["headlines"], [])
+
+
+SAMPLE_VALUATION_RESULT = {
+    "overview": "Bonds look cheapest.",
+    "groups": [{"group": "bonds", "verdict": "discount", "reasoning": "off highs"}],
+    "individual_by_verdict": {
+        "discount": [{"symbol": "AMD", "reasoning": "cheap vs sector"}],
+        "fair": [],
+        "overpriced": [],
+    },
+}
+
+
+class TestTickerValuationCachePersistence(unittest.TestCase):
+    def test_write_then_reload_matches(self):
+        store = {}
+        state = {**SAMPLE_VALUATION_RESULT, "generated_at": "2026-09-17T12:00:00+00:00"}
+
+        with mock.patch("ticker_dashboard.set_json", side_effect=lambda k, v: store.__setitem__(k, v)), mock.patch(
+            "ticker_dashboard.get_json", side_effect=lambda k: store.get(k)
+        ):
+            save_ticker_valuation(state)
+            reloaded = load_ticker_valuation()
+
+        self.assertEqual(reloaded, state)
+
+    def test_missing_key_returns_none(self):
+        with mock.patch("ticker_dashboard.get_json", return_value=None):
+            self.assertIsNone(load_ticker_valuation())
+
+    def test_load_degrades_to_none_on_redis_outage(self):
+        with mock.patch("ticker_dashboard.get_json", side_effect=KvStoreError("redis down")):
+            self.assertIsNone(load_ticker_valuation())
+
+    def test_save_outage_is_swallowed_not_raised(self):
+        with mock.patch("ticker_dashboard.set_json", side_effect=KvStoreError("redis down")):
+            save_ticker_valuation(SAMPLE_VALUATION_RESULT)
+
+
+class TestGetInitialTickerValuation(unittest.TestCase):
+    def test_returns_pending_placeholder_when_nothing_cached(self):
+        with mock.patch("ticker_dashboard.get_json", return_value=None):
+            result = get_initial_ticker_valuation()
+
+        self.assertTrue(result["pending"])
+        self.assertIsNone(result["overview"])
+
+    def test_returns_cached_valuation_as_not_pending(self):
+        cached = {**SAMPLE_VALUATION_RESULT, "generated_at": "2026-09-17T12:00:00+00:00"}
+        with mock.patch("ticker_dashboard.get_json", return_value=cached):
+            result = get_initial_ticker_valuation()
+
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["overview"], "Bonds look cheapest.")
+
+
+class TestCheckForTickerValuation(unittest.TestCase):
+    def test_calls_ai_and_persists_when_nothing_cached_yet(self):
+        store = {}
+
+        def fake_interpret(cards_by_group):
+            return dict(SAMPLE_VALUATION_RESULT)
+
+        with mock.patch("ticker_dashboard.hgetall_json", return_value={"AMD": {"price": 150.0}}), mock.patch(
+            "ticker_dashboard.get_json", side_effect=lambda k: store.get(k)
+        ), mock.patch("ticker_dashboard.set_json", side_effect=lambda k, v: store.__setitem__(k, v)):
+            result = check_for_ticker_valuation(
+                config={"individual": ["AMD"]}, interpret_fn=fake_interpret
+            )
+
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["overview"], "Bonds look cheapest.")
+        self.assertIn("generated_at", store["ticker_valuation_cache"])
+
+    def test_within_throttle_window_returns_cached_value_without_calling_ai(self):
+        now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+        cached = {**SAMPLE_VALUATION_RESULT, "generated_at": (now - timedelta(hours=1)).isoformat()}
+
+        def fail_if_called(cards_by_group):
+            raise AssertionError("should not call the AI within the throttle window")
+
+        with mock.patch("ticker_dashboard.get_json", return_value=cached):
+            result = check_for_ticker_valuation(now=now, interpret_fn=fail_if_called)
+
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["overview"], "Bonds look cheapest.")
+
+    def test_past_throttle_window_calls_ai_again(self):
+        now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+        stale_cached = {**SAMPLE_VALUATION_RESULT, "generated_at": (now - timedelta(hours=7)).isoformat()}
+        fresh_result = {**SAMPLE_VALUATION_RESULT, "overview": "Refreshed."}
+
+        with mock.patch("ticker_dashboard.get_json", return_value=stale_cached), mock.patch(
+            "ticker_dashboard.hgetall_json", return_value={}
+        ), mock.patch("ticker_dashboard.set_json"):
+            result = check_for_ticker_valuation(
+                now=now, config={}, interpret_fn=lambda cards_by_group: dict(fresh_result)
+            )
+
+        self.assertEqual(result["overview"], "Refreshed.")
+
+    def test_ai_failure_falls_back_to_cached_valuation(self):
+        cached = {**SAMPLE_VALUATION_RESULT, "generated_at": "2020-01-01T00:00:00+00:00"}  # long stale
+
+        def failing_interpret(cards_by_group):
+            raise TickerValuationError("quota exceeded")
+
+        with mock.patch("ticker_dashboard.get_json", return_value=cached), mock.patch(
+            "ticker_dashboard.hgetall_json", return_value={}
+        ):
+            result = check_for_ticker_valuation(config={}, interpret_fn=failing_interpret)
+
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["overview"], "Bonds look cheapest.")
+
+    def test_ai_failure_with_nothing_cached_returns_pending_placeholder(self):
+        def failing_interpret(cards_by_group):
+            raise TickerValuationError("quota exceeded")
+
+        with mock.patch("ticker_dashboard.get_json", return_value=None), mock.patch(
+            "ticker_dashboard.hgetall_json", return_value={}
+        ):
+            result = check_for_ticker_valuation(config={}, interpret_fn=failing_interpret)
+
+        self.assertTrue(result["pending"])
+
+    def test_builds_valuation_cards_from_cached_snapshots_not_a_live_fetch(self):
+        captured = {}
+
+        def capturing_interpret(cards_by_group):
+            captured["cards_by_group"] = cards_by_group
+            return dict(SAMPLE_VALUATION_RESULT)
+
+        stored_cache = {"AMD": {"price": 150.0, "pe_ratio": 40.0}}
+        with mock.patch("ticker_dashboard.get_json", return_value=None), mock.patch(
+            "ticker_dashboard.hgetall_json", return_value=stored_cache
+        ), mock.patch("ticker_dashboard.set_json"):
+            check_for_ticker_valuation(
+                config={"individual": ["AMD", "NEVERFETCHED"]}, interpret_fn=capturing_interpret
+            )
+
+        self.assertEqual(
+            captured["cards_by_group"],
+            {"individual": [{"symbol": "AMD", "price": 150.0, "pe_ratio": 40.0}]},
+        )
 
 
 if __name__ == "__main__":

@@ -3,8 +3,9 @@
 editor, "/api/tickers/add" and "/api/tickers/remove"). The ticker
 page's background live check hits one route per group
 ("/api/tickers/groups/<name>/check") plus one for market news
-("/api/market-news/check") rather than a single combined route, so a
-group with fewer tickers repaints before a slower one finishes. Bound
+("/api/market-news/check") and one for the AI valuation section
+("/api/tickers/valuation/check") rather than a single combined route,
+so a group with fewer tickers repaints before a slower one finishes. Bound
 to loopback only (127.0.0.1), never 0.0.0.0, so it is unreachable from
 anything but the machine it's running on, per the local-only hosting
 decision in Section 4.1 of investment_dashboard_requirements.md.
@@ -35,14 +36,17 @@ from page_template import (
     render_market_news_check_response,
     render_ticker_dashboard_page,
     render_ticker_group_check_response,
+    render_ticker_valuation_check_response,
 )
 from ticker_dashboard import (
     TickerConfigError,
     add_ticker_to_group,
     check_for_market_news,
     check_for_ticker_updates,
+    check_for_ticker_valuation,
     get_initial_market_news,
     get_initial_ticker_page_data,
+    get_initial_ticker_valuation,
     load_ticker_config,
     remove_ticker_from_group,
 )
@@ -88,7 +92,8 @@ def indicator_digest_page():
 def ticker_dashboard_page():
     grouped_cards = get_initial_ticker_page_data()
     market_news = get_initial_market_news()
-    return render_ticker_dashboard_page(grouped_cards, market_news)
+    valuation = get_initial_ticker_valuation()
+    return render_ticker_dashboard_page(grouped_cards, market_news, valuation)
 
 
 @app.route("/api/check")
@@ -122,6 +127,16 @@ def api_check_market_news():
     api_check_ticker_group."""
     market_news = check_for_market_news()
     return jsonify(render_market_news_check_response(market_news))
+
+
+@app.route("/api/tickers/valuation/check")
+def api_check_ticker_valuation():
+    """Called independently of any ticker group's or market news' own
+    check. Usually returns the already-cached valuation straight back
+    without a real Gemini call -- see
+    ticker_dashboard.MIN_VALUATION_INTERVAL."""
+    valuation = check_for_ticker_valuation()
+    return jsonify(render_ticker_valuation_check_response(valuation))
 
 
 @app.route("/api/tickers/add", methods=["POST"])

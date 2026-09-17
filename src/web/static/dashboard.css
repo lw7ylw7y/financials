@@ -285,6 +285,54 @@ body {
 
 .add-ticker-form button:hover { border-color: #2563eb; color: #2563eb; }
 
+/* AI valuation section: a small badge per ETF group (background/
+   border-left color set inline per-verdict, same convention as
+   #ai-section's directional badge), then three equal columns for the
+   individual-stock group's discount/fair/overpriced buckets. Columns
+   stack to one per row below 700px so this doesn't force horizontal
+   scroll on a narrow viewport, matching the rest of the page's
+   mobile-friendly layout. */
+.valuation-group-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px 0;
+}
+
+.valuation-group-badge {
+  flex: 1 1 200px;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.valuation-group-name {
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.valuation-group-reasoning {
+  font-size: 13px;
+  margin: 4px 0 0 0;
+}
+
+.valuation-columns {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 700px) {
+  .valuation-columns { grid-template-columns: 1fr; }
+}
+
+.valuation-column ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.valuation-column li { margin-bottom: 6px; }
+
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;

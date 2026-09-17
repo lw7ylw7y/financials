@@ -194,6 +194,22 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] The now-unused process-local lock (`ticker_dashboard._ticker_state_lock`) is deleted along with the local-file code it existed to guard — every remaining write is either a single Redis key or an atomic per-field hash write, neither needing a lock
 
 ---
+
+### Story 14 — Ticker Dashboard: AI Valuation Section
+**As** the investor, **I want** an AI read on which of my tickers/groups look like a discount, fair value, or overpriced, **so that** I don't have to manually compare P/E, PEG, growth, and sector benchmarks myself for every row.
+
+**Why:** the Market Cap/P/E/PEG columns (this doc's Section 4.2) and the sector-peer/growth-quality data gathered for it give the raw numbers, but reading them ticker-by-ticker to spot a value trap (a low P/E paired with shrinking revenue or high debt) is exactly the kind of synthesis an LLM is well-suited for, mirroring what `interpret.py` already does for the indicator digest.
+
+**Acceptance Criteria**
+- [x] One section at the top of `/tickers`, above market news: an overview paragraph plus a discount/fair/overpriced badge per ETF group, sorted most-attractive-first
+- [x] Every ticker in the `individual` group gets its own discount/fair/overpriced verdict with a one-sentence reasoning, listed under three "Discount"/"Fair"/"Overpriced" headings (not one flat list) — an explicit requirement, not just whatever order the AI returns them in
+- [x] One batched AI call reasons across the *entire* watchlist at once, not one call per ticker — confirmed live that gemini-3.8-flash's free tier caps at 20 requests/day total, shared with the indicator digest's own calls on the same model, making a per-ticker design unworkable
+- [x] The AI is given the sector-peer P/E benchmark and growth/quality stats (revenue growth, EPS growth, ROE, margin, debt/equity) alongside P/E and PEG, and its system prompt explicitly instructs it to call out a low P/E backed by weak fundamentals as a value trap rather than a genuine discount — confirmed live it does this (e.g. flagged INTC and QCOM as value traps despite low P/Es)
+- [x] The valuation is cached (`ticker_valuation_cache`) and refreshes on a multi-hour throttle, not on every page load or background check — protecting the shared Gemini quota
+- [x] Any AI failure, including a quota/rate-limit error, falls back to the last successfully cached valuation shown as-is, never an error state — confirmed live against a real `429 RESOURCE_EXHAUSTED` response. With nothing ever cached, degrades to a muted "not yet available" placeholder instead
+- [x] Has its own background-check route (`/api/tickers/valuation/check`), checked independently of any ticker group's or market news' own check, folded into the same "Checking for updates..." indicator
+
+---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)
 - [x] Neither page requires user authentication
 - [x] Both pages are usable on a desktop/web browser (no mobile app)

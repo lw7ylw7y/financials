@@ -30,6 +30,7 @@ import json
 import os
 
 import requests
+from requests.adapters import HTTPAdapter
 
 _TIMEOUT = 10
 
@@ -39,7 +40,21 @@ _TIMEOUT = 10
 # handshake to the same Upstash host. See finnhub_client.py's identical
 # _session for the full reasoning; Session objects are documented
 # thread-safe for this kind of concurrent reuse.
+#
+# Those HSET writes themselves run sequentially (see
+# ticker_dashboard.check_for_ticker_updates's docstring -- only the
+# fetch phase is concurrent), but Section 11.13's sector-peer P/E
+# lookup (`ticker_dashboard._sector_benchmark`) calls `hget_json`
+# *from inside* that concurrent fetch phase, one per individual-company
+# ticker, gated by the same up-to-25-concurrent
+# `ticker_dashboard._fetch_concurrency_limit` semaphore finnhub_client.py's
+# calls are. `requests`' default HTTPAdapter caps a host's pool at 10,
+# below that ceiling -- raised here for the same reason and to the same
+# value as finnhub_client.py's, confirmed live via urllib3's "Connection
+# pool is full, discarding connection" warning once this pattern was
+# actually exercised concurrently.
 _session = requests.Session()
+_session.mount("https://", HTTPAdapter(pool_maxsize=25))
 
 
 class KvStoreError(Exception):

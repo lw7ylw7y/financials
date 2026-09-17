@@ -18,6 +18,7 @@ exactly once against a freshly-fetched crumb before giving up.
 import threading
 
 import requests
+from requests.adapters import HTTPAdapter
 
 _CRUMB_COOKIE_URL = "https://fc.yahoo.com"
 _CRUMB_URL = "https://query2.finance.yahoo.com/v1/test/getcrumb"
@@ -25,10 +26,17 @@ _QUOTE_SUMMARY_URL = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/
 _USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
 # Shared across every call for connection reuse (see finnhub_client.py's
-# identical _session) -- also what carries the cookie the crumb
-# handshake sets, which every subsequent quoteSummary call needs
-# alongside the crumb value itself.
+# identical _session, including its pool_maxsize=25 -- matched here for
+# the same reason: this fallback is called from inside the same
+# per-ticker critical section `finnhub_client._session` is, gated by
+# the same `ticker_dashboard._fetch_concurrency_limit`, so it's exposed
+# to the same up-to-25-concurrent-calls pattern and the same "pool
+# full, discarding connection" problem if left at `requests`' default
+# of 10) -- also what carries the cookie the crumb handshake sets,
+# which every subsequent quoteSummary call needs alongside the crumb
+# value itself.
 _session = requests.Session()
+_session.mount("https://", HTTPAdapter(pool_maxsize=25))
 _session.headers.update({"User-Agent": _USER_AGENT})
 
 _crumb: str | None = None
