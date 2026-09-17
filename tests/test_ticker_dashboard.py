@@ -308,6 +308,7 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=fake_quote,
             fetch_metrics_fn=fake_metrics,
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         card = cards["stocks"][0]
@@ -328,6 +329,7 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY", "BADSYM", "IVW"]},
             fetch_quote_fn=fake_quote,
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 3.0},
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         spy, badsym, ivw = cards["stocks"]
@@ -345,6 +347,7 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 100.0},
             fetch_metrics_fn=fake_metrics,
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         card = cards["stocks"][0]
@@ -356,6 +359,7 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"bonds": ["VGIT", "VGLT"], "stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 1.0},
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         self.assertEqual(list(cards.keys()), ["bonds", "stocks"])
@@ -370,6 +374,7 @@ class TestBuildTickerCards(unittest.TestCase):
             cards = build_ticker_cards(
                 fetch_quote_fn=lambda s: {"price": 1.0},
                 fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
+                fetch_etf_pe_fn=lambda s: None,
             )
 
         self.assertEqual(list(cards.keys()), ["stocks"])
@@ -380,6 +385,7 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 450.0, "change": -2.5, "change_percent": -0.55},
             fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         card = cards["stocks"][0]
@@ -392,6 +398,7 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 450.0},  # no change/change_percent keys
             fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         card = cards["stocks"][0]
@@ -399,35 +406,41 @@ class TestBuildTickerCards(unittest.TestCase):
         self.assertIsNone(card["change_percent"])
         self.assertIsNotNone(card["pct_off_high"])
 
-    def test_passes_through_market_cap_and_pe_ratio(self):
+    def test_passes_through_market_cap_pe_ratio_and_peg_ratio(self):
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 450.0},
             fetch_metrics_fn=lambda s: {
-                "low": 400.0, "high": 500.0, "market_cap": 3500000.0, "pe_ratio": 34.2,
+                "low": 400.0, "high": 500.0, "market_cap": 3500000.0,
+                "pe_ratio": 34.2, "peg_ratio": 2.1,
             },
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         card = cards["stocks"][0]
         self.assertEqual(card["market_cap"], 3500000.0)
         self.assertEqual(card["pe_ratio"], 34.2)
+        self.assertEqual(card["peg_ratio"], 2.1)
 
-    def test_missing_market_cap_and_pe_ratio_degrade_to_none(self):
+    def test_missing_market_cap_pe_ratio_and_peg_ratio_degrade_to_none(self):
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 450.0},
-            fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},  # no market_cap/pe_ratio keys
+            fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},  # no market_cap/pe_ratio/peg_ratio keys
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         card = cards["stocks"][0]
         self.assertIsNone(card["market_cap"])
         self.assertIsNone(card["pe_ratio"])
+        self.assertIsNone(card["peg_ratio"])
 
     def test_successful_card_is_not_pending(self):
         cards = build_ticker_cards(
             config={"stocks": ["SPY"]},
             fetch_quote_fn=lambda s: {"price": 1.0},
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         self.assertFalse(cards["stocks"][0]["pending"])
@@ -446,6 +459,7 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY", "IVW", "DGRO"]},
             fetch_quote_fn=fake_quote,
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         self.assertEqual([c["symbol"] for c in cards["stocks"]], ["SPY", "IVW", "DGRO"])
@@ -464,6 +478,7 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": symbols},
             fetch_quote_fn=slow_quote,
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_etf_pe_fn=lambda s: None,
         )
         elapsed = time.monotonic() - started
 
@@ -476,6 +491,7 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": symbols},
             fetch_quote_fn=lambda s: {"price": 1.0},
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_etf_pe_fn=lambda s: None,
             max_workers=5,
         )
 
@@ -490,9 +506,78 @@ class TestBuildTickerCards(unittest.TestCase):
             config={"stocks": ["SPY"]},
             fetch_quote_fn=failing_quote,
             fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
+            fetch_etf_pe_fn=lambda s: None,
         )
 
         self.assertFalse(cards["stocks"][0]["pending"])
+
+    def test_falls_back_to_etf_pe_for_equity_fund_groups(self):
+        for group_name in ("stocks", "international", "sector"):
+            cards = build_ticker_cards(
+                config={group_name: ["SPY"]},
+                fetch_quote_fn=lambda s: {"price": 450.0},
+                fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},  # no pe_ratio
+                fetch_etf_pe_fn=lambda s: 24.8,
+            )
+
+            self.assertEqual(cards[group_name][0]["pe_ratio"], 24.8, group_name)
+
+    def test_no_yahoo_fallback_exists_for_peg_ratio(self):
+        # Only pe_ratio gets an ETF fallback -- Yahoo's aggregate-holdings
+        # module has no PEG field for a fund at all, so peg_ratio should
+        # stay None even when the (unused here) etf_pe_fn would return a value.
+        cards = build_ticker_cards(
+            config={"stocks": ["SPY"]},
+            fetch_quote_fn=lambda s: {"price": 450.0},
+            fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},  # no pe_ratio/peg_ratio
+            fetch_etf_pe_fn=lambda s: 24.8,
+        )
+
+        self.assertIsNone(cards["stocks"][0]["peg_ratio"])
+
+    def test_does_not_fall_back_to_etf_pe_for_bonds_or_individual(self):
+        def fail_if_called(symbol):
+            raise AssertionError("should not fetch an ETF P/E for this group")
+
+        for group_name in ("bonds", "individual"):
+            cards = build_ticker_cards(
+                config={group_name: ["VGIT"]},
+                fetch_quote_fn=lambda s: {"price": 60.0},
+                fetch_metrics_fn=lambda s: {"low": 55.0, "high": 65.0},  # no pe_ratio
+                fetch_etf_pe_fn=fail_if_called,
+            )
+
+            self.assertIsNone(cards[group_name][0]["pe_ratio"], group_name)
+
+    def test_does_not_fall_back_when_finnhub_already_has_a_pe_ratio(self):
+        def fail_if_called(symbol):
+            raise AssertionError("should not need the ETF fallback when Finnhub already has a value")
+
+        cards = build_ticker_cards(
+            config={"stocks": ["AMD"]},
+            fetch_quote_fn=lambda s: {"price": 150.0},
+            fetch_metrics_fn=lambda s: {"low": 100.0, "high": 200.0, "pe_ratio": 40.1},
+            fetch_etf_pe_fn=fail_if_called,
+        )
+
+        self.assertEqual(cards["stocks"][0]["pe_ratio"], 40.1)
+
+    def test_etf_pe_fallback_failure_degrades_to_none_without_erroring_the_card(self):
+        from yahoo_client import YahooApiError
+
+        def failing_etf_pe(symbol):
+            raise YahooApiError("crumb request failed")
+
+        cards = build_ticker_cards(
+            config={"stocks": ["SPY"]},
+            fetch_quote_fn=lambda s: {"price": 450.0},
+            fetch_metrics_fn=lambda s: {"low": 400.0, "high": 500.0},
+            fetch_etf_pe_fn=failing_etf_pe,
+        )
+
+        card = cards["stocks"][0]
+        self.assertIsNone(card["error"])
+        self.assertIsNone(card["pe_ratio"])
 
 
 class TestTickerCachePersistence(unittest.TestCase):
@@ -606,6 +691,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
                 config={"stocks": ["SPY"]},
                 fetch_quote_fn=lambda s: {"price": 452.31},
                 fetch_metrics_fn=lambda s: {"low": 400.0, "high": 480.0},
+                fetch_etf_pe_fn=lambda s: None,
             )
 
         self.assertFalse(cards["stocks"][0]["pending"])
@@ -629,6 +715,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
                 config={"stocks": ["SPY"]},
                 fetch_quote_fn=failing_quote,
                 fetch_metrics_fn=lambda s: {"low": 400.0, "high": 480.0},
+                fetch_etf_pe_fn=lambda s: None,
             )
 
         card = cards["stocks"][0]
@@ -645,6 +732,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
                 config={"stocks": ["NEWTICKER"]},
                 fetch_quote_fn=failing_quote,
                 fetch_metrics_fn=lambda s: {"low": 1.0, "high": 2.0},
+                fetch_etf_pe_fn=lambda s: None,
             )
 
         card = cards["stocks"][0]
@@ -668,6 +756,7 @@ class TestCheckForTickerUpdates(unittest.TestCase):
                 config={"stocks": ["SPY"]},
                 fetch_quote_fn=counting_quote,
                 fetch_metrics_fn=lambda s: {"low": 90.0, "high": 110.0},
+                fetch_etf_pe_fn=lambda s: None,
             )
 
         self.assertEqual(call_count["n"], 1)

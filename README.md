@@ -169,8 +169,12 @@ news.
   "Checking for updates..." indicator shows for the duration of each
   page's background check.
 - `src/web/ticker_dashboard.py` — reads the `ticker_config` Redis hash's
-  groups, fetches quote/52-week-range from Finnhub per ticker
-  (concurrently, `ThreadPoolExecutor`), computes percent-off-high, and
+  groups, fetches quote/52-week-range/market-cap/P-E/PEG from Finnhub
+  per ticker (concurrently, `ThreadPoolExecutor`), computes
+  percent-off-high, falls back to `src/web/yahoo_client.py`'s
+  aggregate-holdings P/E (an undocumented Yahoo endpoint, best-effort)
+  for the equity-ETF groups when Finnhub has none (no equivalent
+  fallback exists for PEG, so ETFs always show "n/a" there), and
   persists a snapshot cache
   (the `ticker_cache` Redis hash) so `/tickers` renders instantly and
   refreshes live in the background. The watchlist and both caches read/write

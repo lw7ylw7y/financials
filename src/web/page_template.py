@@ -331,13 +331,29 @@ def _render_market_cap_cell(market_cap: float | None) -> str:
 
 
 def _render_pe_cell(pe_ratio: float | None) -> str:
-    """Trailing P/E as a plain number -- "n/a" when Finnhub has none
-    (common for money-losing or thinly-covered companies, see
-    `finnhub_client.fetch_stock_metrics`), not an error.
+    """Trailing P/E as a plain number -- "n/a" when there's nothing to
+    show, not an error: Finnhub has none (common for money-losing or
+    thinly-covered companies, see `finnhub_client.fetch_stock_metrics`)
+    and, for the equity-fund groups, Yahoo's aggregate-holdings fallback
+    also came up empty (`ticker_dashboard._EQUITY_ETF_GROUPS`,
+    `yahoo_client.fetch_etf_pe_ratio`).
     """
     if pe_ratio is None:
         return '<td class="num muted">n/a</td>'
     return f'<td class="num">{pe_ratio:.1f}</td>'
+
+
+def _render_peg_cell(peg_ratio: float | None) -> str:
+    """PEG (P/E to growth) as a plain number -- "n/a" when Finnhub has
+    none (common for companies with no analyst growth estimate, or any
+    ETF, since Finnhub never computes fund-level fundamentals at all;
+    see `finnhub_client.fetch_stock_metrics`). Unlike `pe_ratio`, there
+    is no Yahoo fallback for this field -- its aggregate-holdings
+    module has no PEG equivalent for a fund.
+    """
+    if peg_ratio is None:
+        return '<td class="num muted">n/a</td>'
+    return f'<td class="num">{peg_ratio:.2f}</td>'
 
 
 def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
@@ -355,7 +371,7 @@ def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
     )
 
 
-_TICKER_DATA_COLUMN_COUNT = 6  # Price, Change, 52-Week Range, % Off High, Market Cap, P/E
+_TICKER_DATA_COLUMN_COUNT = 7  # Price, Change, 52-Week Range, % Off High, Market Cap, P/E, PEG
 
 
 def _render_ticker_row(card: dict) -> str:
@@ -395,6 +411,7 @@ def _render_ticker_row(card: dict) -> str:
                 {_render_pct_off_high_cell(card['pct_off_high'])}
                 {_render_market_cap_cell(card['market_cap'])}
                 {_render_pe_cell(card['pe_ratio'])}
+                {_render_peg_cell(card['peg_ratio'])}
                 {remove_cell}
               </tr>"""
 
@@ -448,6 +465,7 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
                 <th class="num sortable" data-sort-key="pctOffHigh">% Off High</th>
                 <th class="num">Market Cap</th>
                 <th class="num">P/E</th>
+                <th class="num">PEG</th>
                 <th></th>
               </tr>
             </thead>

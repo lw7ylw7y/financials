@@ -77,21 +77,24 @@ def fetch_quote(symbol: str, api_key: str | None = None) -> dict:
 
 
 def fetch_stock_metrics(symbol: str, api_key: str | None = None) -> dict:
-    """52-week high/low, market cap, and trailing P/E for `symbol`, all
-    from Finnhub's own precomputed `/stock/metric` (free tier, unlike
-    `/stock/candle`) -- one call covers all four, no extra request per
-    field. Returns {"low": float, "high": float, "market_cap": float |
-    None, "pe_ratio": float | None}.
+    """52-week high/low, market cap, trailing P/E, and PEG ratio for
+    `symbol`, all from Finnhub's own precomputed `/stock/metric` (free
+    tier, unlike `/stock/candle`) -- one call covers all five, no extra
+    request per field. Returns {"low": float, "high": float,
+    "market_cap": float | None, "pe_ratio": float | None, "peg_ratio":
+    float | None}.
 
     52-week low/high are required -- a response missing either raises.
-    `market_cap` (Finnhub's `marketCapitalization`, in millions of USD) and
-    `pe_ratio` degrade to `None` (not a raised error) when absent --
-    common for micro-caps, non-US-listed symbols, or a company with no
-    trailing twelve months of earnings; the UI shows "n/a" rather than
-    erroring the whole row over an optional field. `pe_ratio` prefers
-    `peTTM`, falling back to `peBasicExclExtraTTM` then
-    `peNormalizedAnnual` -- Finnhub doesn't populate `peTTM` for every
-    symbol, and the fallbacks are the closest equivalents it does
+    `market_cap`/`pe_ratio`/`peg_ratio` degrade to `None` (not a raised
+    error) when absent -- common for micro-caps, non-US-listed symbols,
+    a company with no trailing twelve months of earnings, or (for all
+    three) an ETF, which Finnhub never computes fund-level fundamentals
+    for at all; the UI shows "n/a" rather than erroring the whole row
+    over an optional field. `pe_ratio` prefers `peTTM`, falling back to
+    `peBasicExclExtraTTM` then `peNormalizedAnnual`; `peg_ratio` prefers
+    the trailing `pegTTM`, falling back to the forward-looking
+    `forwardPEG` -- Finnhub doesn't populate every field for every
+    symbol, and these fallbacks are the closest equivalents it does
     usually have.
     """
     api_key = _require_api_key(api_key)
@@ -118,11 +121,16 @@ def fetch_stock_metrics(symbol: str, api_key: str | None = None) -> dict:
     if pe_ratio is None:
         pe_ratio = metric.get("peNormalizedAnnual")
 
+    peg_ratio = metric.get("pegTTM")
+    if peg_ratio is None:
+        peg_ratio = metric.get("forwardPEG")
+
     return {
         "low": float(low),
         "high": float(high),
         "market_cap": float(market_cap) if market_cap is not None else None,
         "pe_ratio": float(pe_ratio) if pe_ratio is not None else None,
+        "peg_ratio": float(peg_ratio) if peg_ratio is not None else None,
     }
 
 

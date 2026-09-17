@@ -173,6 +173,7 @@ def make_card(**overrides):
         "pct_off_high": 5.8,
         "market_cap": 3500000.0,
         "pe_ratio": 34.2,
+        "peg_ratio": 2.1,
         "error": None,
         "pending": False,
     }
@@ -183,7 +184,7 @@ def make_card(**overrides):
 def make_pending_card(**overrides):
     return make_card(
         price=None, change=None, change_percent=None, week52_low=None, week52_high=None,
-        pct_off_high=None, market_cap=None, pe_ratio=None,
+        pct_off_high=None, market_cap=None, pe_ratio=None, peg_ratio=None,
         error=None, pending=True,
         **overrides,
     )
@@ -229,6 +230,7 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn("% Off High", html)
         self.assertIn("Market Cap", html)
         self.assertIn(">P/E<", html)
+        self.assertIn(">PEG<", html)
 
     def test_renders_market_cap_formatted_with_suffix(self):
         html = render_ticker_dashboard_page({"stocks": [make_card(market_cap=3500000.0)]}, NO_NEWS)
@@ -247,6 +249,16 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
 
     def test_missing_pe_ratio_renders_not_available(self):
         html = render_ticker_dashboard_page({"stocks": [make_card(pe_ratio=None)]}, NO_NEWS)
+
+        self.assertIn("n/a", html)
+
+    def test_renders_peg_ratio(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(peg_ratio=2.1)]}, NO_NEWS)
+
+        self.assertIn("2.10", html)
+
+    def test_missing_peg_ratio_renders_not_available(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card(peg_ratio=None)]}, NO_NEWS)
 
         self.assertIn("n/a", html)
 

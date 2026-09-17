@@ -136,9 +136,17 @@ src/
             (fetch_stock_metrics)/general-news REST wrapper, raises
             FinnhubApiError per-call — NOT candles: see
             its docstring, Finnhub's free tier blocks `/stock/candle`
-            outright), yahoo_client.py (daily closes
-            from Yahoo's public chart endpoint, no API key — the only
-            source for moving averages; raises YahooApiError per-call),
+            outright, and NOT a fund-level P/E either — Finnhub never
+            populates one for an ETF, only for individual companies),
+            yahoo_client.py (fetch_etf_pe_ratio: an ETF's aggregate
+            trailing P/E across its holdings, the one fund-level stat
+            Finnhub can't provide for free — via Yahoo's undocumented
+            `quoteSummary` endpoint, which unlike a plain public
+            endpoint needs an unofficial cookie+crumb handshake this
+            module manages itself, no API key; raises YahooApiError
+            per-call, always caught by ticker_dashboard.py and
+            degraded to "n/a" rather than erroring a card, since this
+            endpoint is expected to be more fragile than Finnhub's own),
             kv_store.py (Upstash Redis REST wrapper — get_json/set_json
             for a whole-blob key, hset_json/hget_json/hgetall_json/
             hdel_json for per-field hash operations, raises
@@ -392,14 +400,56 @@ work now rather than as a change-log entry.
   groups' sort state is untouched. The earlier top-discount row highlight
   (Story 3) was removed in favor of this — don't re-add it without the
   user explicitly asking.
+- **Aggregate P/E for ETFs (2026-09-17):** Finnhub's `/stock/metric`
+  never carries a P/E for a fund, only for individual companies (verified
+  live against every symbol across `stocks`/`bonds`/`international`/
+  `sector`) — every ETF showed "n/a" before this. `yahoo_client.py`
+  (reintroduced; the earlier version, removed alongside moving averages,
+  had a completely different purpose) adds `fetch_etf_pe_ratio()`,
+  called only as a fallback when Finnhub's own `pe_ratio` is `None`, and
+  only for `ticker_dashboard._EQUITY_ETF_GROUPS` (`stocks`,
+  `international`, `sector` — deliberately hardcoded by name, unlike
+  every other group reference in that module, since this is a fact
+  about which groups hold equity funds, not a rendering detail; `bonds`
+  has no equity P/E to speak of, and `individual` already gets a real
+  per-company value from Finnhub directly). Sourced from Yahoo's
+  undocumented `quoteSummary` `topHoldings` module
+  (`equityHoldings.priceToEarnings`), which is actually an earnings
+  *yield* (E/P) — inverted before use (confirmed against SPY: raw
+  `0.04035` → P/E ≈24.8, matching Yahoo's own displayed figure). Unlike
+  the plain, fully public chart endpoint this app already used for
+  daily closes, `quoteSummary` now requires an unofficial cookie+crumb
+  handshake; `yahoo_client.py` manages this itself (crumb cached in
+  memory per process, one retry against a freshly-fetched crumb on a
+  401). Built deliberately fragile-and-accepted rather than skipped:
+  every failure mode (network error, crumb rejected twice, unexpected
+  response shape, a symbol/fund with nothing to report) degrades to
+  `None` — the row simply keeps showing "n/a" — never an error that
+  takes down an otherwise-successful card. No new tests were required
+  to relax the "no network calls in tests" rule: `tests/test_yahoo_client.py`
+  mocks `yahoo_client._session.get` the same way `test_finnhub_client.py`
+  does.
+- **PEG ratio (2026-09-17):** its own column, from the same
+  `/stock/metric` call `fetch_stock_metrics` already makes for P/E —
+  `peg_ratio` prefers Finnhub's `pegTTM`, falling back to the
+  forward-looking `forwardPEG`. No Yahoo fallback exists for this one:
+  Yahoo's own aggregate-holdings module (used for the ETF P/E fallback
+  above) has no PEG field for a fund at all, only P/E, P/B, P/S, and
+  P/CF, so an ETF's PEG stays "n/a" unconditionally — individual
+  stocks are the only rows that can show a value here. Rendered via
+  `page_template._render_peg_cell()`, mirroring `_render_pe_cell()`
+  but at two decimal places (matching how Yahoo's own site displays
+  PEG, e.g. `2.67`) rather than one, since PEG values are conventionally
+  read to that precision.
 - Market Cap and trailing P/E: `finnhub_client.fetch_stock_metrics()` (the
   successor to the old `fetch_52_week_range()` — same `/stock/metric` call,
   now also pulling `marketCapitalization` and `peTTM` with fallback through
   `peBasicExclExtraTTM`/`peNormalizedAnnual`) so there's no new fetch per
   ticker. `page_template._format_market_cap()` renders the raw
   millions-of-USD figure as `$T`/`$B`/`$M`; either column renders "n/a"
-  (not an error) when Finnhub has no value for that symbol. At 11
-  columns, the ticker table needed tighter styling than the Indicator
+  (not an error) when Finnhub has no value for that symbol. At 9
+  columns (now including PEG, added 2026-09-17 — see below), the
+  ticker table needed tighter styling than the Indicator
   Digest table to fit without horizontal scroll: `dashboard.css`'s
   `.ticker-table` rule trims cell padding and (for data cells only)
   font-size below `.indicator-table`'s defaults, and deliberately

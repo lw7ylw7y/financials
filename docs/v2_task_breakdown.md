@@ -95,7 +95,7 @@
 |---|---|
 | 3.1 `finnhub_client.py` — quote endpoint | done |
 | 3.2 `finnhub_client.py` — 52-week range + market cap + P/E via `/stock/metric` (`fetch_stock_metrics`) | done |
-| 3.3 20/50/200-day simple moving average calculation from Yahoo daily closes | removed 2026-09-16 — the moving-average columns, `yahoo_client.py`, and the `ma20`/`ma50`/`ma200` card/cache fields were all dropped, not replaced |
+| 3.3 20/50/200-day simple moving average calculation from Yahoo daily closes | removed 2026-09-16 — the moving-average columns and the `ma20`/`ma50`/`ma200` card/cache fields were dropped, not replaced; `yahoo_client.py` itself was reintroduced 2026-09-17 for an unrelated purpose (task 3.11) |
 | 3.4 `ticker_dashboard.py` — per-ticker assembly with independent try/catch per ticker | done |
 | 3.5 `page_template.py` — grouped tables, per-row error state | done |
 | 3.6 `/tickers` route wiring in `app.py` | done |
@@ -103,6 +103,8 @@
 | 3.8 `finnhub_client.fetch_quote()` — parse `d`/`dp` alongside `c` | done |
 | 3.9 Two new table columns (% off high, change) with the signed-value + green/red-arrow convention | done |
 | 3.10 Market Cap + P/E table columns, "n/a" when Finnhub has no value | done |
+| 3.11 Aggregate P/E for the equity-ETF groups via Yahoo's undocumented `quoteSummary` endpoint, as a fallback when Finnhub's own P/E is empty (`yahoo_client.fetch_etf_pe_ratio`, Section 11.11) | done 2026-09-17 |
+| 3.12 PEG ratio column, from the same `/stock/metric` call as P/E (`pegTTM` falling back to `forwardPEG`); no Yahoo fallback exists, so ETFs always show "n/a" (Section 11.12) | done 2026-09-17 |
 
 **Tests**
 - Mocked Finnhub responses → row shows correct price, 52-week range

@@ -23,7 +23,14 @@ range/market cap/P/E from Finnhub; a failure for one ticker
 (bad symbol, rate limit, request error) is
 caught locally and turned into that ticker's error state rather than
 aborting the rest of the dashboard -- same per-item isolation pattern
-as v1's `run_ingestion`.
+as v1's `run_ingestion`. Finnhub never has a P/E for a fund (only for
+individual companies), so `_EQUITY_ETF_GROUPS` (`stocks`,
+`international`, `sector` -- the fund groups, as opposed to `bonds` or
+`individual`) additionally try `yahoo_client.fetch_etf_pe_ratio` as a
+fallback when Finnhub's own comes back empty; a fallback failure is
+just as harmless as a missing Finnhub value -- both mean the row shows
+"n/a", never an error, since Yahoo's endpoint is an undocumented,
+unofficial one Finnhub isn't (see yahoo_client.py's module docstring).
 
 `get_initial_ticker_page_data`/`check_for_ticker_updates` mirror
 `live_pull.py`'s split for the Indicator Digest Page: the initial page
@@ -63,16 +70,26 @@ from datetime import datetime, timezone
 
 from finnhub_client import fetch_market_news, fetch_quote, fetch_stock_metrics
 from kv_store import KvStoreError, get_json, hdel_json, hget_json, hgetall_json, hset_json, set_json
+from yahoo_client import YahooApiError, fetch_etf_pe_ratio
 
 _TICKER_RE = re.compile(r"^[A-Za-z0-9]+$")
 _SNAPSHOT_FIELDS = (
     "price", "change", "change_percent", "week52_low", "week52_high",
-    "pct_off_high", "market_cap", "pe_ratio",
+    "pct_off_high", "market_cap", "pe_ratio", "peg_ratio",
 )
 
 _TICKER_CONFIG_KEY = "ticker_config"
 _TICKER_CACHE_KEY = "ticker_cache"
 _MARKET_NEWS_CACHE_KEY = "market_news_cache"
+
+# The fund groups -- as opposed to `bonds` (fixed income, no equity
+# P/E to speak of) or `individual` (already gets a real per-company P/E
+# from Finnhub directly). Deliberately hardcoded by name, unlike every
+# other group-name reference in this module (which just reads whatever
+# groups the config defines): this is a fact about which groups hold
+# equity funds, not a rendering detail, so a newly added fund group
+# needs adding here too.
+_EQUITY_ETF_GROUPS = frozenset({"stocks", "international", "sector"})
 
 logger = logging.getLogger(__name__)
 
@@ -211,11 +228,28 @@ def _symbol_in_any_group(symbol: str, config: dict[str, list[str]]) -> bool:
     return any(symbol in symbols for symbols in config.values())
 
 
+def _fallback_etf_pe_ratio(symbol: str, group_name: str, fetch_etf_pe_fn) -> float | None:
+    """Best-effort only: Yahoo's undocumented crumb gate can fail or
+    change shape at any time, and that must never take down a card
+    whose price/range already loaded fine from Finnhub -- so a failure
+    here just means the row keeps showing "n/a" for P/E, same as if
+    Finnhub itself had nothing.
+    """
+    if group_name not in _EQUITY_ETF_GROUPS:
+        return None
+    try:
+        return fetch_etf_pe_fn(symbol)
+    except YahooApiError as e:
+        logger.warning("ETF aggregate P/E fetch failed symbol=%s error=%s", symbol, e)
+        return None
+
+
 def _build_card(
     symbol: str,
     group_name: str,
     fetch_quote_fn,
     fetch_metrics_fn,
+    fetch_etf_pe_fn,
 ) -> dict:
     with _fetch_concurrency_limit:
         try:
@@ -224,6 +258,9 @@ def _build_card(
             metrics = fetch_metrics_fn(symbol)
             week52_high = metrics["high"]
             pct_off_high = (week52_high - price) / week52_high * 100 if week52_high else None
+            pe_ratio = metrics.get("pe_ratio")
+            if pe_ratio is None:
+                pe_ratio = _fallback_etf_pe_ratio(symbol, group_name, fetch_etf_pe_fn)
             return {
                 "symbol": symbol,
                 "group": group_name,
@@ -234,7 +271,8 @@ def _build_card(
                 "week52_high": week52_high,
                 "pct_off_high": pct_off_high,
                 "market_cap": metrics.get("market_cap"),
-                "pe_ratio": metrics.get("pe_ratio"),
+                "pe_ratio": pe_ratio,
+                "peg_ratio": metrics.get("peg_ratio"),
                 "error": None,
                 "pending": False,
             }
@@ -251,6 +289,7 @@ def _build_card(
                 "pct_off_high": None,
                 "market_cap": None,
                 "pe_ratio": None,
+                "peg_ratio": None,
                 "error": str(e),
                 "pending": False,
             }
@@ -260,6 +299,7 @@ def build_ticker_cards(
     config: dict[str, list[str]] | None = None,
     fetch_quote_fn=fetch_quote,
     fetch_metrics_fn=fetch_stock_metrics,
+    fetch_etf_pe_fn=fetch_etf_pe_ratio,
     max_workers: int = 5,
 ) -> dict[str, list[dict]]:
     """Return `{group_name: [card, ...]}` in config order, one card per
@@ -277,12 +317,19 @@ def build_ticker_cards(
     sequential, regardless of which ticker's fetch finishes first.
 
     Each card is `{symbol, group, price, change, change_percent,
-    week52_low, week52_high, pct_off_high, market_cap, pe_ratio, error,
-    pending}` -- `error` is `None` on success, or a
+    week52_low, week52_high, pct_off_high, market_cap, pe_ratio,
+    peg_ratio, error, pending}` -- `error` is `None` on success, or a
     message with every other field left as `None` if that ticker's
-    fetch failed. `market_cap`/`pe_ratio` can independently be `None`
-    even on an otherwise-successful card (Finnhub doesn't always carry
-    them -- see `finnhub_client.fetch_stock_metrics`). `pending`
+    fetch failed. `market_cap`/`pe_ratio`/`peg_ratio` can independently
+    be `None` even on an otherwise-successful card (Finnhub doesn't
+    always carry them -- see `finnhub_client.fetch_stock_metrics`, and
+    never carries any of the three for an ETF); for a ticker in
+    `_EQUITY_ETF_GROUPS`, a `None` Finnhub `pe_ratio` additionally tries
+    `fetch_etf_pe_fn` (Yahoo's aggregate holdings P/E) before settling
+    on `None` for real -- see `_fallback_etf_pe_ratio`. There is no
+    equivalent fallback for `peg_ratio`: Yahoo's own aggregate-holdings
+    module has no PEG field for a fund, only P/E, P/B, P/S, and P/CF,
+    so an ETF's PEG is always `None`. `pending`
     is always `False` here (this function only
     ever returns the result of an attempted fetch); see
     `get_initial_ticker_page_data` for the stored-only, not-yet-fetched
@@ -306,6 +353,7 @@ def build_ticker_cards(
             task_group_names,
             [fetch_quote_fn] * n,
             [fetch_metrics_fn] * n,
+            [fetch_etf_pe_fn] * n,
         )
         for (group_name, _symbol), card in zip(tasks, cards):
             grouped_cards[group_name].append(card)
@@ -315,7 +363,7 @@ def build_ticker_cards(
 
 def load_ticker_state() -> dict:
     """The snapshot cache: `{symbol: {price, week52_low, week52_high,
-    market_cap, pe_ratio, fetched_at}}`. `{}` if
+    market_cap, pe_ratio, peg_ratio, fetched_at}}`. `{}` if
     there's nothing cached yet or Redis itself is unreachable -- this
     cache degrades gracefully rather than failing loudly the way
     `_load_raw_config` does, since losing it just means every row
@@ -434,6 +482,7 @@ def check_for_ticker_updates(
     config: dict[str, list[str]] | None = None,
     fetch_quote_fn=fetch_quote,
     fetch_metrics_fn=fetch_stock_metrics,
+    fetch_etf_pe_fn=fetch_etf_pe_ratio,
     now: datetime | None = None,
 ) -> dict[str, list[dict]]:
     """The real live pull, called by the page's own background script
@@ -462,7 +511,7 @@ def check_for_ticker_updates(
     now = now or datetime.now(timezone.utc)
     config = config if config is not None else load_ticker_config()
 
-    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn)
+    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn, fetch_etf_pe_fn)
 
     stored = None  # lazily loaded only if a fallback lookup is actually needed
     grouped_cards = {}

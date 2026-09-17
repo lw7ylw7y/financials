@@ -64,6 +64,8 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - **Removed (2026-09-16):** the 20-day/50-day/200-day moving-average columns (and the Yahoo Finance daily-close fetch they depended on) were dropped from the table and from `ticker_cache`'s stored snapshot shape — not replaced by anything
 - [x] **Sortable columns** — the Ticker and % Off High column headers are clickable and sort that group's table (ascending, then descending on a second click); pending/errored rows always sort last regardless of direction; sorting is independent per group table
 - [x] **Market Cap** and **P/E (trailing)** — their own columns, sourced from the same Finnhub call already used for the 52-week range (no new fetch); either renders "n/a" rather than erroring the row when Finnhub has no value for that symbol
+- **Added (2026-09-17):** Finnhub never has a P/E for a fund, so the equity-ETF groups (`stocks`, `international`, `sector`) additionally fall back to Yahoo's aggregate-holdings P/E when Finnhub's own is empty — best-effort against an undocumented, unofficial Yahoo endpoint; a failure there degrades to "n/a" like any other missing value, never an error
+- [x] **PEG ratio** — its own column (2026-09-17), sourced from the same Finnhub call as P/E (`pegTTM`, falling back to `forwardPEG`); no Yahoo fallback exists for it, so it's only ever populated for individual stocks — every ETF's PEG renders "n/a"
 
 ---
 
