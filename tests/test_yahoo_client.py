@@ -34,6 +34,7 @@ def quote_summary_response(status_code=200, raw_pe=None, no_result=False):
 class TestFetchEtfPeRatio(unittest.TestCase):
     def setUp(self):
         yahoo_client._crumb = None
+        yahoo_client._crumb_failure = None
 
     @patch("yahoo_client._session.get")
     def test_inverts_earnings_yield_into_a_pe_ratio(self, mock_get):
@@ -98,6 +99,37 @@ class TestFetchEtfPeRatio(unittest.TestCase):
 
         with self.assertRaises(YahooApiError):
             fetch_etf_pe_ratio("SPY")
+
+    @patch("yahoo_client._session.get")
+    def test_crumb_failure_is_cached_to_avoid_hammering(self, mock_get):
+        mock_get.side_effect = requests.ConnectionError("boom")
+
+        with self.assertRaises(YahooApiError):
+            fetch_etf_pe_ratio("SPY")
+        calls_after_first_failure = mock_get.call_count
+
+        with self.assertRaises(YahooApiError):
+            fetch_etf_pe_ratio("DGRO")
+
+        self.assertEqual(mock_get.call_count, calls_after_first_failure)
+
+    @patch("yahoo_client.time.monotonic")
+    @patch("yahoo_client._session.get")
+    def test_crumb_retried_once_cooldown_elapses(self, mock_get, mock_monotonic):
+        mock_monotonic.side_effect = [0.0, 1000.0]
+        mock_get.side_effect = [
+            requests.ConnectionError("boom"),
+            Mock(),  # cookie priming GET
+            Mock(text="abc123"),  # crumb GET
+            quote_summary_response(raw_pe=0.04),
+        ]
+
+        with self.assertRaises(YahooApiError):
+            fetch_etf_pe_ratio("SPY")
+
+        result = fetch_etf_pe_ratio("DGRO")
+
+        self.assertAlmostEqual(result, 1 / 0.04)
 
     @patch("yahoo_client._session.get")
     def test_crumb_is_cached_across_calls(self, mock_get):

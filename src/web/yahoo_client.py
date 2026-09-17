@@ -12,10 +12,17 @@ to fail occasionally and `ticker_dashboard.py` treats that as a normal,
 silent "n/a" rather than an error that takes down a ticker's whole
 card. A crumb is fetched once per process and cached in memory; a
 request that comes back 401 (an expired/invalidated crumb) is retried
-exactly once against a freshly-fetched crumb before giving up.
+exactly once against a freshly-fetched crumb before giving up. A
+crumb-fetch failure is cached too (`_CRUMB_RETRY_COOLDOWN_SECONDS`) --
+seen live as Yahoo 429-rate-limiting this app's shared-hosting IP at
+the crumb endpoint itself, which without a cooldown would otherwise
+have every equity ETF's own lookup in the same check cycle retry the
+handshake independently and pile more requests onto the very endpoint
+already rate-limiting them.
 """
 
 import threading
+import time
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -42,6 +49,14 @@ _session.headers.update({"User-Agent": _USER_AGENT})
 _crumb: str | None = None
 _crumb_lock = threading.Lock()
 
+# A crumb fetch failure (seen live as Yahoo 429-rate-limiting the
+# shared-hosting IP this app runs from) is cached too, not just a
+# success -- otherwise every equity ETF's own lookup in the same
+# check cycle retries the handshake independently, piling more
+# requests onto exactly the endpoint that's already rate-limiting us.
+_crumb_failure: tuple[float, "YahooApiError"] | None = None
+_CRUMB_RETRY_COOLDOWN_SECONDS = 300
+
 
 class YahooApiError(Exception):
     """Raised for a genuine Yahoo request/response problem. Never
@@ -64,11 +79,30 @@ def _fetch_crumb() -> str:
     return crumb
 
 
+def _fetch_crumb_with_cooldown() -> str:
+    """`_fetch_crumb`, but a failure is remembered for
+    `_CRUMB_RETRY_COOLDOWN_SECONDS` and re-raised without hitting the
+    network again -- callers must hold `_crumb_lock`.
+    """
+    global _crumb_failure
+    if _crumb_failure is not None:
+        failed_at, error = _crumb_failure
+        if time.monotonic() - failed_at < _CRUMB_RETRY_COOLDOWN_SECONDS:
+            raise error
+    try:
+        crumb = _fetch_crumb()
+    except YahooApiError as e:
+        _crumb_failure = (time.monotonic(), e)
+        raise
+    _crumb_failure = None
+    return crumb
+
+
 def _get_crumb() -> str:
     global _crumb
     with _crumb_lock:
         if _crumb is None:
-            _crumb = _fetch_crumb()
+            _crumb = _fetch_crumb_with_cooldown()
         return _crumb
 
 
@@ -81,7 +115,7 @@ def _refresh_crumb_if_unchanged(stale_crumb: str) -> str:
     global _crumb
     with _crumb_lock:
         if _crumb is None or _crumb == stale_crumb:
-            _crumb = _fetch_crumb()
+            _crumb = _fetch_crumb_with_cooldown()
         return _crumb
 
 

@@ -392,6 +392,31 @@ work now rather than as a change-log entry.
   whole point of connection reuse without ever raising a visible error.
   Confirmed live: a full watchlist background check produced zero pool
   warnings after the fix, versus reliably producing them before it.
+- **ETF P/E stuck on "n/a" on Render — likely a categorical IP block,
+  not (only) our own traffic (2026-09-17):** confirmed live via a
+  Render log line: `crumb request failed: 429 Client Error: Too Many
+  Requests` from `query2.finance.yahoo.com/v1/test/getcrumb`, while
+  the identical code against the identical Yahoo endpoint succeeds
+  reliably from local dev (`fetch_etf_pe_ratio('SPY')` → correct P/E
+  every time). That localhost/Render split — not "sometimes fails,
+  sometimes works" — points to Yahoo rate-limiting or blocking
+  Render's shared-hosting IP range outright for this undocumented
+  endpoint, a common pattern against PaaS/cloud IPs, rather than a
+  transient rate limit this app tripped itself. Separately,
+  `yahoo_client._get_crumb()` had a real bug worth fixing regardless:
+  it only cached a crumb on success, so every equity ETF's own lookup
+  in the same check cycle (`stocks`/`international`/`sector`)
+  independently retried the full crumb handshake instead of sharing
+  one outcome — fixed by caching a failure too (`_crumb_failure`,
+  `_CRUMB_RETRY_COOLDOWN_SECONDS = 300`: a repeat lookup within 5
+  minutes of a failure re-raises the cached error immediately rather
+  than hitting the network again). That's good hygiene and quiets the
+  logs, but given the localhost-vs-Render evidence, it's not expected
+  to actually fix ETF P/E on Render — the block looks IP-level, outside
+  this app's control. ETF P/E is accepted as likely permanently "n/a"
+  on Render until/unless a different, non-blocked data source is
+  found; the growth/quality/market-cap/individual-stock P/E fields
+  (all Finnhub, not Yahoo) are unaffected.
 - `ticker_dashboard.build_ticker_cards()` fetches every ticker concurrently
   via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since
   maxing out Finnhub's free-tier rate limit risks trading slow-but-successful
