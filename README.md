@@ -171,10 +171,9 @@ news.
 - `src/web/ticker_dashboard.py` — reads the `ticker_config` Redis hash's
   groups, fetches quote/52-week-range/market-cap/P-E/PEG from Finnhub
   per ticker (concurrently, `ThreadPoolExecutor`), computes
-  percent-off-high, falls back to `src/web/yahoo_client.py`'s
-  aggregate-holdings P/E (an undocumented Yahoo endpoint, best-effort)
-  for the equity-ETF groups when Finnhub has none (no equivalent
-  fallback exists for PEG, so ETFs always show "n/a" there). Also
+  percent-off-high. Finnhub has no fund-level P/E/PEG/market cap, so
+  those are always "n/a" for an ETF group (a Yahoo-based P/E fallback
+  was tried and removed as unreliable). Also
   gathers a sector-peer P/E benchmark and growth/quality stats per
   individual-stock ticker, feeding `src/web/ticker_valuation.py`'s AI
   valuation section — one batched Gemini call per refresh (not one per

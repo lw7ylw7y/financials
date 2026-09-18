@@ -350,11 +350,8 @@ def _render_market_cap_cell(market_cap: float | None) -> str:
 
 def _render_pe_cell(pe_ratio: float | None) -> str:
     """Trailing P/E as a plain number -- "n/a" when there's nothing to
-    show, not an error: Finnhub has none (common for money-losing or
-    thinly-covered companies, see `finnhub_client.fetch_stock_metrics`)
-    and, for the equity-fund groups, Yahoo's aggregate-holdings fallback
-    also came up empty (`ticker_dashboard._EQUITY_ETF_GROUPS`,
-    `yahoo_client.fetch_etf_pe_ratio`).
+    show, not an error: Finnhub has none for a money-losing or
+    thinly-covered company (see `finnhub_client.fetch_stock_metrics`).
     """
     if pe_ratio is None:
         return '<td class="num muted">n/a</td>'
@@ -363,11 +360,8 @@ def _render_pe_cell(pe_ratio: float | None) -> str:
 
 def _render_peg_cell(peg_ratio: float | None) -> str:
     """PEG (P/E to growth) as a plain number -- "n/a" when Finnhub has
-    none (common for companies with no analyst growth estimate, or any
-    ETF, since Finnhub never computes fund-level fundamentals at all;
-    see `finnhub_client.fetch_stock_metrics`). Unlike `pe_ratio`, there
-    is no Yahoo fallback for this field -- its aggregate-holdings
-    module has no PEG equivalent for a fund.
+    none, common for a company with no analyst growth estimate (see
+    `finnhub_client.fetch_stock_metrics`).
     """
     if peg_ratio is None:
         return '<td class="num muted">n/a</td>'
@@ -391,11 +385,10 @@ def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
 
 _INDIVIDUAL_GROUP = "individual"  # the only group whose rows show Market
 # Cap/P/E/PEG -- Finnhub only computes those for individual companies,
-# never a fund (confirmed live across every ETF group), and the
-# equity-fund groups' own aggregate P/E fallback draws from an
-# unreliable Yahoo endpoint (see yahoo_client.py) on top of that, so
-# those three columns are dropped entirely for every group but this
-# one rather than showing mostly-"n/a" data.
+# never a fund (confirmed live across every ETF group, and there's no
+# fallback source for a fund's P/E/PEG/market cap), so those three
+# columns are dropped entirely for every group but this one rather
+# than showing all-"n/a" data.
 
 _TICKER_DATA_COLUMN_COUNT = 7  # Price, Change, 52-Week Range, % Off High, Market Cap, P/E, PEG
 _TICKER_DATA_COLUMN_COUNT_FUND = 4  # Price, Change, 52-Week Range, % Off High

@@ -49,7 +49,6 @@ Read via `os.environ.get(...)` everywhere (`fetch_fred.py`, `interpret.py`,
 `send_email.py`, `finnhub_client.py`) — no secrets-loading library is used,
 and nothing auto-loads `.env`; export the vars yourself (or `set -a &&
 source .env && set +a`) before running anything that needs them.
-`yahoo_client.py` needs no key at all — it's an unauthenticated public endpoint.
 
 | Var | Required for |
 |---|---|
@@ -141,15 +140,10 @@ src/
             `/stock/candle` and `/stock/price-target` outright, and NOT
             a fund-level P/E, PEG, or growth/quality stat either —
             Finnhub never populates any of those for an ETF, only for
-            individual companies),
-            yahoo_client.py (fetch_etf_pe_ratio: an ETF's aggregate
-            trailing P/E across its holdings, the one fund-level stat
-            Finnhub can't provide for free — via Yahoo's undocumented
-            `quoteSummary` endpoint, no API key or crumb/cookie
-            handshake needed (a plain GET works); raises YahooApiError
-            per-call, always caught by ticker_dashboard.py and
-            degraded to "n/a" rather than erroring a card, since this
-            endpoint is expected to be more fragile than Finnhub's own),
+            individual companies — no fallback source exists for a
+            fund's P/E/PEG/market cap either, so those are always
+            `None` for an ETF group; a Yahoo-based fallback was tried
+            and removed, see the Status section below),
             ticker_valuation.py (interpret_ticker_valuation: one batched
             Gemini call reasoning across the whole watchlist —
             discount/fair/overpriced per ETF group plus per individual
@@ -158,7 +152,8 @@ src/
             shared with the indicator digest's own calls; raises
             TickerValuationError per-call, always caught by
             ticker_dashboard.py and degraded to the last cached
-            valuation, same pattern as yahoo_client.py's fragility),
+            valuation, same silent-degrade pattern used throughout
+            this module for any per-call external-API failure),
             kv_store.py (Upstash Redis REST wrapper — get_json/set_json
             for a whole-blob key, hset_json/hget_json/hgetall_json/
             hdel_json for per-field hash operations, raises
@@ -253,7 +248,7 @@ import build_table`), matching the pattern already at the top of each
 `src/**/*.py` file. Follow that same `sys.path.insert` pattern for any new
 module or test file rather than introducing relative/package imports. No
 network calls in tests — `fetch_fred.requests.get`, `finnhub_client._session.get`,
-`yahoo_client._session.get`, `kv_store._session.get`/`.post` (all three share a
+`kv_store._session.get`/`.post` (both share a
 `requests.Session()` for connection reuse — see Story 12's Section 11.8/11.9 —
 so mocks target `_session.get`/`.post`, not the bare `requests.get`/`.post`
 they used to), the Gemini client, and `smtplib.SMTP` are all
@@ -285,21 +280,18 @@ work now rather than as a change-log entry.
 - The **Ticker Dashboard** (`/tickers`) is built end to end: the `ticker_config`
   Redis hash + `ticker_dashboard.load_ticker_config()` (open group map read in
   config order, malformed symbols skipped and logged), and `finnhub_client.py` +
-  `yahoo_client.py` + `ticker_dashboard.build_ticker_cards()` +
+  `ticker_dashboard.build_ticker_cards()` +
   `page_template.render_ticker_dashboard_page()` (per-ticker
-  price/52wk-range/market-cap/P-E from Finnhub, 20d/50d/200d SMA from
-  Yahoo daily closes, grouped under headers title-cased from the
-  config keys, one row's fetch failure — from either provider —
-  rendered as that row's own error state without affecting the rest of
-  the page).
-  **Data-source note:** Finnhub's free tier 403s `/stock/candle`
+  price/52wk-range/market-cap/P-E from Finnhub, grouped under headers
+  title-cased from the config keys, one row's fetch failure rendered
+  as that row's own error state without affecting the rest of the
+  page). **Data-source note:** Finnhub's free tier 403s `/stock/candle`
   unconditionally, so `/stock/metric` (`finnhub_client.fetch_stock_metrics`)
-  covers the 52-week range, market cap, and trailing P/E in one call, but
-  moving averages need daily closes from Yahoo Finance's public,
-  unauthenticated chart endpoint instead, via a plain `requests` call
-  (`yahoo_client.py`) rather than the `yfinance` library, to avoid its
-  much heavier dependency tree. stooq.io was tried and rejected — its
-  requests require solving a client-side JS proof-of-work challenge.
+  covers the 52-week range, market cap, and trailing P/E in one call
+  instead (moving averages, which once needed a second data source for
+  daily closes, were later dropped — see below). stooq.io was tried
+  and rejected — its requests require solving a client-side JS
+  proof-of-work challenge.
 - Rendering is one `<table>` per group (not per-ticker cards), with no
   per-ticker news column — both were tried and dropped as harder to scan /
   low-value. Don't re-add either without the user explicitly asking. Columns
@@ -425,7 +417,38 @@ work now rather than as a change-log entry.
   failure) in memory, and no longer retries on a 401 — `fetch_etf_pe_ratio`
   is now a single request. This resolves the Render-only "n/a" from the
   entry above, since the 429 it hit was specific to the now-removed
-  `getcrumb` endpoint, not to `quoteSummary` itself.
+  `getcrumb` endpoint, not to `quoteSummary` itself. **Superseded same
+  day, see below** — `quoteSummary` itself turned out to need the crumb
+  after all (a live `401 Unauthorized` on every call once it was
+  removed), and by that point the ETF P/E fallback's only remaining
+  consumers were already-hidden columns, so the whole thing was
+  removed rather than re-adding the handshake.
+- **`yahoo_client.py` removed entirely (2026-09-18):** the ETF
+  aggregate P/E fallback (`fetch_etf_pe_ratio`) it provided was calling
+  Yahoo on every background check for every ETF in `stocks`/
+  `international`/`sector`, purely to populate a `pe_ratio` field that
+  Market Cap/P/E/PEG's individual-group-only gating (see above,
+  2026-09-17) had already stopped rendering anywhere in the table for
+  those groups — live logs showed every one of these calls now failing
+  outright (`401 Unauthorized` on `quoteSummary`, once the crumb
+  handshake above was removed), so they were pure overhead: failed
+  network calls and log noise for a value nothing displayed. Removed
+  the whole module, its test file, the `fetch_etf_pe_fn` parameter
+  threaded through `_build_card`/`build_ticker_cards`/
+  `check_for_ticker_updates`, and `_fallback_etf_pe_ratio`.
+  `_EQUITY_ETF_GROUPS` stays (still used to build `_NON_COMPANY_GROUPS`
+  for `_sector_benchmark`'s gating); an ETF's `pe_ratio` is now simply
+  whatever Finnhub returns, which is always `None` for a fund. One
+  real side effect: `_sector_benchmark`'s peer-P/E lookup for an
+  individual stock reads a sector ETF's `pe_ratio` straight out of
+  `ticker_cache` — with nothing left to ever populate that field for
+  an ETF, `sector_pe_ratio` is now always `None` too (already the
+  observed behavior even before this cleanup, since the crumb-removal
+  regression above had already broken every such fetch). The lookup
+  itself was left in place rather than also removed, since it costs
+  only an already-necessary Finnhub industry call and a cache read —
+  it starts working again for free if a fund-level P/E source is ever
+  found.
 - **Gemini retries removed (2026-09-18) — they were silently burning the
   shared 20-requests/day quota:** `interpret.py`/`ticker_valuation.py`
   both set `MAX_ATTEMPTS = 4` (1 initial call + 3 retries via

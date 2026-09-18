@@ -24,13 +24,13 @@ range/market cap/P/E from Finnhub; a failure for one ticker
 caught locally and turned into that ticker's error state rather than
 aborting the rest of the dashboard -- same per-item isolation pattern
 as v1's `run_ingestion`. Finnhub never has a P/E for a fund (only for
-individual companies), so `_EQUITY_ETF_GROUPS` (`stocks`,
-`international`, `sector` -- the fund groups, as opposed to `bonds` or
-`individual`) additionally try `yahoo_client.fetch_etf_pe_ratio` as a
-fallback when Finnhub's own comes back empty; a fallback failure is
-just as harmless as a missing Finnhub value -- both mean the row shows
-"n/a", never an error, since Yahoo's endpoint is an undocumented,
-unofficial one Finnhub isn't (see yahoo_client.py's module docstring).
+individual companies), so an ETF group's `pe_ratio` is always `None`
+-- a Yahoo-based fallback (`yahoo_client.fetch_etf_pe_ratio`) was tried
+for `_EQUITY_ETF_GROUPS` but removed: those columns are hidden for
+every group but `individual` anyway (see `page_template._INDIVIDUAL_GROUP`),
+so fetching a value nothing displays was pure overhead, on top of an
+already-unreliable endpoint (401/429s confirmed live from both Render
+and local dev).
 
 Beyond price/range/P/E, each individual-company ticker (any group not
 in `_EQUITY_ETF_GROUPS` or `bonds` -- see `_NON_COMPANY_GROUPS`) also
@@ -42,12 +42,16 @@ P/E benchmark: `_sector_benchmark` looks up the ticker's industry
 (`finnhub_client.fetch_company_industry`, a new Finnhub call), maps it
 to one of the configured sector-ETF tickers via
 `_SECTOR_ETF_BY_INDUSTRY`, and reads that ETF's own already-cached
-`pe_ratio` straight out of `ticker_cache` -- no new Yahoo/Finnhub call
-for the benchmark value itself, since the sector groups already
-compute it. None of this feeds the rendered table (Section 11.13's
-"data only" scope) -- it exists so a future AI valuation feature has
-real comparison points (peer P/E, growth, quality, leverage) instead
-of judging a raw P/E number in isolation.
+`pe_ratio` straight out of `ticker_cache` -- no new call for the
+benchmark value itself. Since the Yahoo fallback above was removed, a
+sector ETF's own `pe_ratio` is always `None` (Finnhub has none for a
+fund either), so this benchmark is currently always `(None, None)` in
+practice; the lookup is left in place rather than removed; it starts
+working again for free if Finnhub or another source ever starts
+carrying a fund-level P/E. None of this feeds the rendered table
+(Section 11.13's "data only" scope) -- it exists so the AI valuation
+feature has real comparison points (peer P/E, growth, quality,
+leverage) instead of judging a raw P/E number in isolation.
 
 `get_initial_ticker_page_data`/`check_for_ticker_updates` mirror
 `live_pull.py`'s split for the Indicator Digest Page: the initial page
@@ -107,7 +111,6 @@ from finnhub_client import (
 )
 from kv_store import KvStoreError, get_json, hdel_json, hget_json, hgetall_json, hset_json, set_json
 from ticker_valuation import TickerValuationError, interpret_ticker_valuation
-from yahoo_client import YahooApiError, fetch_etf_pe_ratio
 
 _TICKER_RE = re.compile(r"^[A-Za-z0-9]+$")
 _SNAPSHOT_FIELDS = (
@@ -140,7 +143,9 @@ MIN_VALUATION_INTERVAL = timedelta(hours=6)
 # other group-name reference in this module (which just reads whatever
 # groups the config defines): this is a fact about which groups hold
 # equity funds, not a rendering detail, so a newly added fund group
-# needs adding here too.
+# needs adding here too. Only used to build `_NON_COMPANY_GROUPS` below
+# now -- it used to also gate a Yahoo-based ETF P/E fallback, removed
+# since it fed columns already hidden for every group but `individual`.
 _EQUITY_ETF_GROUPS = frozenset({"stocks", "international", "sector"})
 
 # Groups that aren't individual companies at all -- the fund groups
@@ -330,22 +335,6 @@ def _symbol_in_any_group(symbol: str, config: dict[str, list[str]]) -> bool:
     return any(symbol in symbols for symbols in config.values())
 
 
-def _fallback_etf_pe_ratio(symbol: str, group_name: str, fetch_etf_pe_fn) -> float | None:
-    """Best-effort only: Yahoo's undocumented quoteSummary endpoint can
-    fail or change shape at any time, and that must never take down a
-    card whose price/range already loaded fine from Finnhub -- so a
-    failure here just means the row keeps showing "n/a" for P/E, same
-    as if Finnhub itself had nothing.
-    """
-    if group_name not in _EQUITY_ETF_GROUPS:
-        return None
-    try:
-        return fetch_etf_pe_fn(symbol)
-    except YahooApiError as e:
-        logger.warning("ETF aggregate P/E fetch failed symbol=%s error=%s", symbol, e)
-        return None
-
-
 def _sector_benchmark(symbol: str, group_name: str, fetch_industry_fn) -> tuple[float | None, str | None]:
     """A peer-comparison P/E for `symbol`, if it's plausibly an
     individual company (`group_name` not in `_NON_COMPANY_GROUPS`) and
@@ -358,11 +347,13 @@ def _sector_benchmark(symbol: str, group_name: str, fetch_industry_fn) -> tuple[
     must never take down a card whose price/range already succeeded.
 
     Deliberately reads the sector ETF's `pe_ratio` straight out of
-    `ticker_cache` (whatever was last fetched for it, possibly stale)
-    rather than fetching it fresh here -- the sector groups already
-    compute this value on their own schedule, so re-fetching it again
-    per individual stock would be redundant work for no real freshness
-    gain, and would need its own Yahoo-fallback logic duplicated here.
+    `ticker_cache` rather than fetching it fresh here. In practice this
+    is currently always `None` -- Finnhub has no P/E for a fund, and
+    there's no longer a Yahoo-based fallback populating one (removed:
+    an unreliable, 401/429-prone endpoint, kept alive only to feed
+    columns already hidden for every group but `individual`) -- but the
+    lookup is left in place so this starts working again for free if a
+    fund-level P/E source ever becomes available.
     """
     if group_name in _NON_COMPANY_GROUPS:
         return None, None
@@ -384,7 +375,6 @@ def _build_card(
     group_name: str,
     fetch_quote_fn,
     fetch_metrics_fn,
-    fetch_etf_pe_fn,
     fetch_industry_fn,
 ) -> dict:
     with _fetch_concurrency_limit:
@@ -394,9 +384,6 @@ def _build_card(
             metrics = fetch_metrics_fn(symbol)
             week52_high = metrics["high"]
             pct_off_high = (week52_high - price) / week52_high * 100 if week52_high else None
-            pe_ratio = metrics.get("pe_ratio")
-            if pe_ratio is None:
-                pe_ratio = _fallback_etf_pe_ratio(symbol, group_name, fetch_etf_pe_fn)
             sector_pe_ratio, sector_symbol = _sector_benchmark(symbol, group_name, fetch_industry_fn)
             return {
                 "symbol": symbol,
@@ -408,7 +395,7 @@ def _build_card(
                 "week52_high": week52_high,
                 "pct_off_high": pct_off_high,
                 "market_cap": metrics.get("market_cap"),
-                "pe_ratio": pe_ratio,
+                "pe_ratio": metrics.get("pe_ratio"),
                 "peg_ratio": metrics.get("peg_ratio"),
                 "revenue_growth": metrics.get("revenue_growth"),
                 "eps_growth": metrics.get("eps_growth"),
@@ -452,7 +439,6 @@ def build_ticker_cards(
     config: dict[str, list[str]] | None = None,
     fetch_quote_fn=fetch_quote,
     fetch_metrics_fn=fetch_stock_metrics,
-    fetch_etf_pe_fn=fetch_etf_pe_ratio,
     fetch_industry_fn=fetch_company_industry,
     max_workers: int = 5,
 ) -> dict[str, list[dict]]:
@@ -477,15 +463,10 @@ def build_ticker_cards(
     error, pending}` -- `error` is `None` on success, or a message with
     every other field left as `None` if that ticker's fetch failed.
     `market_cap`/`pe_ratio`/`peg_ratio` can independently be `None`
-    even on an otherwise-successful card (Finnhub doesn't
-    always carry them -- see `finnhub_client.fetch_stock_metrics`, and
-    never carries any of the three for an ETF); for a ticker in
-    `_EQUITY_ETF_GROUPS`, a `None` Finnhub `pe_ratio` additionally tries
-    `fetch_etf_pe_fn` (Yahoo's aggregate holdings P/E) before settling
-    on `None` for real -- see `_fallback_etf_pe_ratio`. There is no
-    equivalent fallback for `peg_ratio`: Yahoo's own aggregate-holdings
-    module has no PEG field for a fund, only P/E, P/B, P/S, and P/CF,
-    so an ETF's PEG is always `None`.
+    even on an otherwise-successful card (Finnhub doesn't always carry
+    them -- see `finnhub_client.fetch_stock_metrics`) and are always
+    `None` for an ETF -- Finnhub has no fund-level P/E/PEG/market cap at
+    all, and there's no fallback source for any of the three anymore.
 
     `revenue_growth`/`eps_growth`/`roe`/`net_margin`/`debt_to_equity`/
     `dividend_yield` are the same growth/quality fields
@@ -522,7 +503,6 @@ def build_ticker_cards(
             task_group_names,
             [fetch_quote_fn] * n,
             [fetch_metrics_fn] * n,
-            [fetch_etf_pe_fn] * n,
             [fetch_industry_fn] * n,
         )
         for (group_name, _symbol), card in zip(tasks, cards):
@@ -654,7 +634,6 @@ def check_for_ticker_updates(
     config: dict[str, list[str]] | None = None,
     fetch_quote_fn=fetch_quote,
     fetch_metrics_fn=fetch_stock_metrics,
-    fetch_etf_pe_fn=fetch_etf_pe_ratio,
     fetch_industry_fn=fetch_company_industry,
     now: datetime | None = None,
 ) -> dict[str, list[dict]]:
@@ -684,7 +663,7 @@ def check_for_ticker_updates(
     now = now or datetime.now(timezone.utc)
     config = config if config is not None else load_ticker_config()
 
-    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn, fetch_etf_pe_fn, fetch_industry_fn)
+    live_cards = build_ticker_cards(config, fetch_quote_fn, fetch_metrics_fn, fetch_industry_fn)
 
     stored = None  # lazily loaded only if a fallback lookup is actually needed
     grouped_cards = {}
