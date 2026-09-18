@@ -24,7 +24,11 @@ from pydantic import BaseModel, ValidationError
 logger = logging.getLogger(__name__)
 
 MODEL = "gemini-3.8-flash"
-MAX_ATTEMPTS = 4  # 1 initial call + 3 retries, per HttpRetryOptions.attempts
+# No retries: the free tier's 20-requests/day cap counts every attempt,
+# including failed ones, so retrying against a sustained backend outage
+# (the observed real-world failure mode) burns through the day's whole
+# quota for zero successes rather than helping with a one-off blip.
+MAX_ATTEMPTS = 1
 
 _VERDICT_RANK = {"discount": 0, "fair": 1, "overpriced": 2}
 

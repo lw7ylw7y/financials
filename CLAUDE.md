@@ -426,6 +426,25 @@ work now rather than as a change-log entry.
   is now a single request. This resolves the Render-only "n/a" from the
   entry above, since the 429 it hit was specific to the now-removed
   `getcrumb` endpoint, not to `quoteSummary` itself.
+- **Gemini retries removed (2026-09-18) — they were silently burning the
+  shared 20-requests/day quota:** `interpret.py`/`ticker_valuation.py`
+  both set `MAX_ATTEMPTS = 4` (1 initial call + 3 retries via
+  `HttpRetryOptions.attempts`), which made sense against an occasional
+  blip, but a genuine live incident showed the real failure mode is a
+  sustained backend overload (`503 UNAVAILABLE` on every attempt for
+  hours, confirmed still succeeding over the same period via the
+  consumer Gemini app/site — a separate, apparently less-loaded serving
+  pool). The free tier's daily cap counts every HTTP attempt, including
+  failed ones, so each logical call that hit this retried its way
+  through up to 4 quota units for zero successes — observed live as
+  `503`s turning into a `429 RESOURCE_EXHAUSTED` with no successful
+  response ever having been returned that day. A day-scoped quota can't
+  be helped by a few seconds of retry backoff, so retrying here only
+  ever made an outage worse, never better. Both files now set
+  `MAX_ATTEMPTS = 1` (no retries) — deliberately Gemini-specific;
+  Finnhub/Yahoo/FRED/Redis calls elsewhere in the app aren't
+  quota-capped this way and keep whatever retry behavior they already
+  have.
 - `ticker_dashboard.build_ticker_cards()` fetches every ticker concurrently
   via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since
   maxing out Finnhub's free-tier rate limit risks trading slow-but-successful
