@@ -145,9 +145,8 @@ src/
             yahoo_client.py (fetch_etf_pe_ratio: an ETF's aggregate
             trailing P/E across its holdings, the one fund-level stat
             Finnhub can't provide for free — via Yahoo's undocumented
-            `quoteSummary` endpoint, which unlike a plain public
-            endpoint needs an unofficial cookie+crumb handshake this
-            module manages itself, no API key; raises YahooApiError
+            `quoteSummary` endpoint, no API key or crumb/cookie
+            handshake needed (a plain GET works); raises YahooApiError
             per-call, always caught by ticker_dashboard.py and
             degraded to "n/a" rather than erroring a card, since this
             endpoint is expected to be more fragile than Finnhub's own),
@@ -417,6 +416,16 @@ work now rather than as a change-log entry.
   on Render until/unless a different, non-blocked data source is
   found; the growth/quality/market-cap/individual-stock P/E fields
   (all Finnhub, not Yahoo) are unaffected.
+- **Crumb handshake removed entirely (2026-09-18), fixing ETF P/E on
+  Render:** the `/v1/test/getcrumb` gate the previous entry blamed for
+  Render's block turned out to be unnecessary, not just blocked — the
+  `quoteSummary` endpoint accepts a plain GET with no `crumb` param at
+  all, on both local dev and Render. `yahoo_client.py` no longer fetches
+  a crumb or a cookie, no longer caches a crumb (or a crumb-fetch
+  failure) in memory, and no longer retries on a 401 — `fetch_etf_pe_ratio`
+  is now a single request. This resolves the Render-only "n/a" from the
+  entry above, since the 429 it hit was specific to the now-removed
+  `getcrumb` endpoint, not to `quoteSummary` itself.
 - `ticker_dashboard.build_ticker_cards()` fetches every ticker concurrently
   via `ThreadPoolExecutor` (`max_workers=5` — deliberately modest, since
   maxing out Finnhub's free-tier rate limit risks trading slow-but-successful

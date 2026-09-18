@@ -331,11 +331,11 @@ def _symbol_in_any_group(symbol: str, config: dict[str, list[str]]) -> bool:
 
 
 def _fallback_etf_pe_ratio(symbol: str, group_name: str, fetch_etf_pe_fn) -> float | None:
-    """Best-effort only: Yahoo's undocumented crumb gate can fail or
-    change shape at any time, and that must never take down a card
-    whose price/range already loaded fine from Finnhub -- so a failure
-    here just means the row keeps showing "n/a" for P/E, same as if
-    Finnhub itself had nothing.
+    """Best-effort only: Yahoo's undocumented quoteSummary endpoint can
+    fail or change shape at any time, and that must never take down a
+    card whose price/range already loaded fine from Finnhub -- so a
+    failure here just means the row keeps showing "n/a" for P/E, same
+    as if Finnhub itself had nothing.
     """
     if group_name not in _EQUITY_ETF_GROUPS:
         return None
