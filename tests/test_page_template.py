@@ -238,7 +238,7 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn("480.00", html)
 
     def test_renders_column_headers(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS)
+        html = render_ticker_dashboard_page({"individual": [make_card(group="individual")]}, NO_NEWS)
 
         self.assertIn('<th class="sortable" data-sort-key="symbol">Ticker</th>', html)
         self.assertIn(">Change<", html)
@@ -249,34 +249,70 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn(">PEG<", html)
 
     def test_renders_market_cap_formatted_with_suffix(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(market_cap=3500000.0)]}, NO_NEWS)
+        html = render_ticker_dashboard_page(
+            {"individual": [make_card(group="individual", market_cap=3500000.0)]}, NO_NEWS
+        )
 
         self.assertIn("$3.50T", html)
 
     def test_missing_market_cap_renders_not_available(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(market_cap=None)]}, NO_NEWS)
+        html = render_ticker_dashboard_page(
+            {"individual": [make_card(group="individual", market_cap=None)]}, NO_NEWS
+        )
 
         self.assertIn("n/a", html)
 
     def test_renders_pe_ratio(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(pe_ratio=34.2)]}, NO_NEWS)
+        html = render_ticker_dashboard_page(
+            {"individual": [make_card(group="individual", pe_ratio=34.2)]}, NO_NEWS
+        )
 
         self.assertIn("34.2", html)
 
     def test_missing_pe_ratio_renders_not_available(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(pe_ratio=None)]}, NO_NEWS)
+        html = render_ticker_dashboard_page(
+            {"individual": [make_card(group="individual", pe_ratio=None)]}, NO_NEWS
+        )
 
         self.assertIn("n/a", html)
 
     def test_renders_peg_ratio(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(peg_ratio=2.1)]}, NO_NEWS)
+        html = render_ticker_dashboard_page(
+            {"individual": [make_card(group="individual", peg_ratio=2.1)]}, NO_NEWS
+        )
 
         self.assertIn("2.10", html)
 
     def test_missing_peg_ratio_renders_not_available(self):
-        html = render_ticker_dashboard_page({"stocks": [make_card(peg_ratio=None)]}, NO_NEWS)
+        html = render_ticker_dashboard_page(
+            {"individual": [make_card(group="individual", peg_ratio=None)]}, NO_NEWS
+        )
 
         self.assertIn("n/a", html)
+
+    def test_fund_group_omits_market_cap_pe_peg_columns_and_cells(self):
+        html = render_ticker_dashboard_page(
+            {"stocks": [make_card(group="stocks", market_cap=3500000.0, pe_ratio=34.2, peg_ratio=2.1)]}, NO_NEWS
+        )
+
+        self.assertNotIn("Market Cap", html)
+        self.assertNotIn(">P/E<", html)
+        self.assertNotIn(">PEG<", html)
+        self.assertNotIn("$3.50T", html)
+        self.assertNotIn("34.2", html)
+        self.assertNotIn("2.10", html)
+
+    def test_fund_group_pending_row_colspan_excludes_dropped_columns(self):
+        html = render_ticker_dashboard_page({"stocks": [make_pending_card(group="stocks")]}, NO_NEWS)
+
+        self.assertIn('colspan="4"', html)
+
+    def test_individual_group_pending_row_colspan_includes_company_columns(self):
+        html = render_ticker_dashboard_page(
+            {"individual": [make_pending_card(group="individual")]}, NO_NEWS
+        )
+
+        self.assertIn('colspan="7"', html)
 
     def test_remove_button_is_the_rows_trailing_cell(self):
         row = row_for(render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS), "SPY")

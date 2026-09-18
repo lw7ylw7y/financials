@@ -389,26 +389,37 @@ def _render_remove_ticker_button(symbol: str, group_name: str) -> str:
     )
 
 
+_INDIVIDUAL_GROUP = "individual"  # the only group whose rows show Market
+# Cap/P/E/PEG -- Finnhub only computes those for individual companies,
+# never a fund (confirmed live across every ETF group), and the
+# equity-fund groups' own aggregate P/E fallback draws from an
+# unreliable Yahoo endpoint (see yahoo_client.py) on top of that, so
+# those three columns are dropped entirely for every group but this
+# one rather than showing mostly-"n/a" data.
+
 _TICKER_DATA_COLUMN_COUNT = 7  # Price, Change, 52-Week Range, % Off High, Market Cap, P/E, PEG
+_TICKER_DATA_COLUMN_COUNT_FUND = 4  # Price, Change, 52-Week Range, % Off High
 
 
-def _render_ticker_row(card: dict) -> str:
+def _render_ticker_row(card: dict, show_company_columns: bool) -> str:
     """`data-symbol`/`data-pct-off-high` on the `<tr>` are read by the
     page's own client-side sort script (see render_ticker_dashboard_page)
     so a click on the Ticker/% Off High header can reorder rows without a
     server round trip; `data-pct-off-high` is left empty for a pending or
     errored card, which the sort script treats as sorting last rather than
-    as zero."""
+    as zero. `show_company_columns` mirrors whichever group's table this
+    row belongs to -- see _INDIVIDUAL_GROUP."""
     symbol_attr = escape(card["symbol"], quote=True)
     pct_off_high_attr = "" if card["pct_off_high"] is None else f"{card['pct_off_high']}"
     row_attrs = f' data-symbol="{symbol_attr}" data-pct-off-high="{pct_off_high_attr}"'
     remove_cell = f"<td>{_render_remove_ticker_button(card['symbol'], card['group'])}</td>"
+    column_count = _TICKER_DATA_COLUMN_COUNT if show_company_columns else _TICKER_DATA_COLUMN_COUNT_FUND
 
     if card["pending"]:
         return f"""
               <tr{row_attrs}>
                 <td>{escape(card['symbol'])}</td>
-                <td colspan="{_TICKER_DATA_COLUMN_COUNT}" class="muted">Loading&hellip;</td>
+                <td colspan="{column_count}" class="muted">Loading&hellip;</td>
                 {remove_cell}
               </tr>"""
 
@@ -416,10 +427,18 @@ def _render_ticker_row(card: dict) -> str:
         return f"""
               <tr{row_attrs}>
                 <td>{escape(card['symbol'])}</td>
-                <td colspan="{_TICKER_DATA_COLUMN_COUNT}" class="muted">Unable to load data.</td>
+                <td colspan="{column_count}" class="muted">Unable to load data.</td>
                 {remove_cell}
               </tr>"""
 
+    company_cells = (
+        f"""
+                {_render_market_cap_cell(card['market_cap'])}
+                {_render_pe_cell(card['pe_ratio'])}
+                {_render_peg_cell(card['peg_ratio'])}"""
+        if show_company_columns
+        else ""
+    )
     return f"""
               <tr{row_attrs}>
                 <td>{escape(card['symbol'])}</td>
@@ -427,9 +446,7 @@ def _render_ticker_row(card: dict) -> str:
                 {_render_change_cell(card['change'], card['change_percent'])}
                 <td class="range-bar-cell">{_render_range_bar(card['symbol'], card['week52_low'], card['week52_high'], card['price'])}</td>
                 {_render_pct_off_high_cell(card['pct_off_high'])}
-                {_render_market_cap_cell(card['market_cap'])}
-                {_render_pe_cell(card['pe_ratio'])}
-                {_render_peg_cell(card['peg_ratio'])}
+                {company_cells}
                 {remove_cell}
               </tr>"""
 
@@ -469,7 +486,16 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
     """
     sections = []
     for group_name, cards in grouped_cards.items():
-        row_html = "".join(_render_ticker_row(card) for card in cards)
+        show_company_columns = group_name == _INDIVIDUAL_GROUP
+        row_html = "".join(_render_ticker_row(card, show_company_columns) for card in cards)
+        company_headers = (
+            """
+                <th class="num">Market Cap</th>
+                <th class="num">P/E</th>
+                <th class="num">PEG</th>"""
+            if show_company_columns
+            else ""
+        )
         sections.append(f"""
         <div class="category-block" data-group="{escape(group_name, quote=True)}">
           <p class="category-label">{escape(_group_header(group_name))}</p>
@@ -481,9 +507,7 @@ def _render_ticker_groups(grouped_cards: dict) -> str:
                 <th class="num">Change</th>
                 <th>52-Week Range</th>
                 <th class="num sortable" data-sort-key="pctOffHigh">% Off High</th>
-                <th class="num">Market Cap</th>
-                <th class="num">P/E</th>
-                <th class="num">PEG</th>
+                {company_headers}
                 <th></th>
               </tr>
             </thead>
@@ -756,7 +780,7 @@ def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict, valuati
           var symbolCell = document.createElement('td');
           symbolCell.textContent = symbol;
           var loadingCell = document.createElement('td');
-          loadingCell.colSpan = {_TICKER_DATA_COLUMN_COUNT};
+          loadingCell.colSpan = block.querySelectorAll('thead th').length - 2;
           loadingCell.className = 'muted';
           loadingCell.textContent = 'Loading…';
           var removeCell = document.createElement('td');

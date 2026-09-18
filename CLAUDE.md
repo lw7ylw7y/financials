@@ -599,6 +599,20 @@ work now rather than as a change-log entry.
   "Market Cap") can wrap to two lines rather than forcing its narrow
   data column wide. `RANGE_BAR_WIDTH` (`page_template.py`) was also
   trimmed 100→90 to match.
+- **Market Cap/P/E/PEG columns are `individual`-group-only (2026-09-17):**
+  dropped from every other group's table (`stocks`/`bonds`/`international`/
+  `sector`) rather than showing mostly-"n/a"/AUM-as-market-cap data —
+  Finnhub only computes P/E and PEG for individual companies, never a
+  fund, and the equity-fund groups' own aggregate P/E fallback
+  (`yahoo_client.fetch_etf_pe_ratio`) is unreliable from Render (see the
+  ETF P/E entry above). `page_template._INDIVIDUAL_GROUP` gates both the
+  three `<th>`s and the three `<td>`s (`_render_ticker_groups`/
+  `_render_ticker_row`, the latter taking a new `show_company_columns`
+  param); a pending/errored row's `colspan` shrinks from 7 to 4 to
+  match. The add-ticker JS snippet's pending-row `colspan` no longer
+  hardcodes a column count — it reads the live `<thead>`'s actual `<th>`
+  count instead, so it stays correct for either table shape without
+  needing its own group-aware branch.
 - In-app ticker editing (Story 7): `ticker_dashboard.add_ticker_to_group`/
   `remove_ticker_from_group` read and write only their own group's field in
   the `ticker_config` Redis hash; `/api/tickers/add`/`/remove`
