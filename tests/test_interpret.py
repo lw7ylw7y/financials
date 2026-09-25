@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 import os
 import sys
 import unittest
@@ -18,7 +19,7 @@ for _p in (
 
 from google.genai import errors
 from gemini_models import DEFAULT_FALLBACK_MODELS
-from interpret import MODEL, InterpretationError, build_user_prompt, interpret
+from interpret import MAX_PROMPT_READINGS, MODEL, InterpretationError, build_user_prompt, interpret
 
 INDICATORS_CONTEXT = [
     {
@@ -56,6 +57,36 @@ def fake_client(text=None, side_effect=None):
 
 def make_api_error():
     return errors.ClientError(400, {"error": {"message": "bad request"}})
+
+
+def daily_context(days):
+    start = date(2025, 9, 25)
+    window = [
+        {"date": (start + timedelta(days=i)).isoformat(), "value": float(i)} for i in range(days)
+    ]
+    return [{"key": "yield_curve_spread", "name": "Spread", "category": "leading",
+             "history_window": window, "heuristic": None}]
+
+
+class TestPromptSampling(unittest.TestCase):
+    def test_short_series_are_sent_in_full(self):
+        prompt = build_user_prompt(daily_context(MAX_PROMPT_READINGS), [])
+
+        self.assertEqual(prompt.count("\n- "), MAX_PROMPT_READINGS)
+
+    def test_a_year_of_daily_readings_is_sampled_to_one_per_week(self):
+        prompt = build_user_prompt(daily_context(365), [])
+
+        readings = prompt.count("\n- ")
+        self.assertLessEqual(readings, 54)
+        self.assertGreaterEqual(readings, 52)
+
+    def test_sampling_keeps_the_latest_reading_and_the_order(self):
+        prompt = build_user_prompt(daily_context(365), [])
+
+        lines = [l for l in prompt.split("\n") if l.startswith("- ")]
+        self.assertTrue(lines[-1].endswith(": 364.0"))
+        self.assertEqual(lines, sorted(lines))
 
 
 class TestBuildUserPrompt(unittest.TestCase):

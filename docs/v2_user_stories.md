@@ -235,6 +235,18 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] A successful attempt clears the failure record; the current take is never regenerated, so a "nothing new, take current" check still costs a FRED call and no Gemini call
 - [x] A retry that fails again doesn't repaint the page; a successful one patches the AI section in place
 
+### Story 17 — A 12-Month History for Every Indicator, and a Same-Day Fed Funds Rate
+**As** the investor, **I want** every indicator's sparkline and AI context to span a full 12 months whether the series updates daily, weekly or monthly, and the Fed Funds Rate to reflect a rate change within a day, **so that** trends are comparable across indicators and a Fed decision doesn't stay invisible until the following month.
+
+**Why:** history was cut to the last 12 *readings*, which is a year for a monthly series but 12 weeks for jobless claims and about two weeks for the daily yield curve spread. Separately, the Fed Funds indicator tracked the monthly-average series (`FEDFUNDS`), which publishes once a month is over and blends a rate change with the days before it, so a September hike showed 3.63% until October.
+
+**Acceptance Criteria**
+- [x] Each indicator's table sparkline and AI context cover every stored reading, i.e. the rolling 12-month window, not the last 12 entries
+- [x] `backfill.py` seeds each indicator with every FRED observation from the start of that window (about 250 for a daily series, 52 weekly, 10–13 monthly), and stays safe to re-run (never overwrites or removes existing entries)
+- [x] The AI prompt receives at most about one reading per week for a daily series, so it stays short; shorter series are sent in full
+- [x] The Fed Funds Rate uses the daily effective rate (`DFF`), which reflects a change within about a day
+- [x] Switching an indicator's FRED series discards the old series' readings (a monthly average isn't comparable to a daily rate), both in the scheduled/live ingestion and in `backfill.py`
+
 ---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)
 - [x] Neither page requires user authentication

@@ -83,7 +83,7 @@ class TestUpdateReleaseCalendar(unittest.TestCase):
                 "fed_funds_rate": {
                     "name": "Fed Funds Rate",
                     "category": "lagging",
-                    "fred_series_id": "FEDFUNDS",
+                    "fred_series_id": "DFF",
                     "fred_release_id": "18",
                     "history": [],
                     "next_release_date": "2026-09-11",

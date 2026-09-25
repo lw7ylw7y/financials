@@ -317,3 +317,19 @@ Dependency-driven:
 - Staleness: current take, no take, a take predating `as_of`, a newer reading than the take, indicators without history
 - Retry: a stale take is retried with nothing new, not retried within the cooldown, retried after it; a failed retry is saved but reports no update; new data still updates when the AI fails
 
+
+### Story 17 — A 12-Month History for Every Indicator, and a Same-Day Fed Funds Rate
+
+| Task | Status |
+|---|---|
+| 17.1 `fetch_fred.fetch_recent_observations` — optional `start_date` (`observation_start`) fetches a time span instead of a count | done |
+| 17.2 `storage.history_start_date()`; `backfill.py` backfills from it for every indicator instead of `limit=12` | done |
+| 17.3 `build_digest_content.build_indicators_context` — `history_window` is every stored reading (the sparkline and prompt now span 12 months) | done |
+| 17.4 `interpret.py` — daily series sampled weekly in the prompt above `MAX_PROMPT_READINGS` (60); prompt wording says 12 months | done |
+| 17.5 `indicators_config.py` — Fed Funds Rate uses `DFF` instead of `FEDFUNDS` | done |
+| 17.6 `main.run_ingestion` and `backfill.py` — a changed `fred_series_id` discards the old series' history | done |
+| 17.7 Tests: `test_fetch_fred`, `test_storage`, `test_backfill`, `test_ingestion`, `test_interpret`, `test_build_digest_content` | done |
+| 17.8 Run `python3 src/backfill.py` against the live Redis after deploying | pending — manual |
+
+**Notes:** verified against live FRED with an in-memory state: 52 jobless-claims readings, ~250 yield-curve, ~365 fed-funds (daily incl. weekends), 10–11 for the monthly series. CPI and unemployment have only 10 because October 2025 has no reading (the federal shutdown), and a 12-month window that starts on the current day's date reaches only back to the following 1st. The Sahm Rule heuristic needs 12 monthly readings, so it stays unavailable for that reason, as it was before this change.
+

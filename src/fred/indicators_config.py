@@ -41,13 +41,15 @@ INDICATORS = {
     "fed_funds_rate": {
         "name": "Fed Funds Rate",
         "category": "lagging",
-        "fred_series_id": "FEDFUNDS",
-        # H.15 "Selected Interest Rates" (release 18) publishes on nearly
-        # every business day, since it bundles many rate series at
-        # different frequencies — it doesn't reflect FEDFUNDS's own
-        # monthly-average cadence, so a countdown against it is never
-        # meaningful. Treated like the yield curve spread: no release ID,
-        # no countdown.
+        # The daily effective rate (DFF), not the monthly average
+        # (FEDFUNDS): the monthly series only publishes once a month is
+        # over and blends a rate change with the days before it, so a
+        # change stayed invisible for weeks.
+        "fred_series_id": "DFF",
+        # No discrete release: a daily series, like the yield curve
+        # spread. (H.15 publishes on nearly every business day since it
+        # bundles many rate series, so a countdown against it is never
+        # meaningful.)
         "fred_release_id": None,
     },
     "cpi": {

@@ -4,7 +4,7 @@ Uses gemini-3.8-flash, a free-tier model (per ai.google.dev/gemini-api/docs/pric
 since this is a short, well-specified commentary task with low request
 volume — well within the free tier's daily/per-minute limits.
 
-One call per digest, reasoning across *all 8* indicators' 12-reading
+One call per digest, reasoning across *all 8* indicators' 12-month
 historical windows together (not one call per updated indicator) plus,
 where applicable, pre-computed named-heuristic values (heuristics.py),
 and returns a short plain-English summary plus one overall
@@ -16,6 +16,7 @@ earlier reads.
 import logging
 import os
 import sys
+from datetime import date
 from typing import Literal
 
 from google import genai
@@ -39,7 +40,8 @@ SYSTEM_PROMPT = """You are a macroeconomic commentator writing for a long-term, 
 buy-and-hold individual investor who is not a professional trader.
 
 You will be given all 8 tracked economic indicators (grouped as leading, \
-coincident, or lagging), each with its recent historical readings, which \
+coincident, or lagging), each with its readings over the last 12 months \
+(daily series are sampled weekly), which \
 one(s) published a new value this run, and sometimes a pre-computed \
 named-heuristic value (e.g. the Sahm Rule, or a yield curve inversion \
 streak) — use that computed value as given, don't recompute it yourself.
@@ -65,7 +67,22 @@ class InterpretationError(Exception):
     """Raised for any failure to obtain a usable AI interpretation."""
 
 
+# A daily series holds ~250 readings a year; past this many, the prompt
+# gets one reading per week instead, keeping it short without hiding the trend.
+MAX_PROMPT_READINGS = 60
+
+
+def _weekly_sample(history_window: list[dict]) -> list[dict]:
+    """The last reading of each ISO week, oldest to newest."""
+    by_week = {}
+    for entry in history_window:
+        by_week[date.fromisoformat(entry["date"]).isocalendar()[:2]] = entry
+    return list(by_week.values())
+
+
 def _format_history(history_window: list[dict]) -> str:
+    if len(history_window) > MAX_PROMPT_READINGS:
+        history_window = _weekly_sample(history_window)
     return "\n".join(f"- {entry['date']}: {entry['value']}" for entry in history_window)
 
 
@@ -89,7 +106,7 @@ def build_user_prompt(indicators_context: list[dict], updated_keys: list[str]) -
         marker = " — NEW VALUE THIS RUN" if ind["key"] in updated_keys else ""
         sections.append(
             f"### {ind['name']} ({ind['category']}){marker}\n"
-            f"Recent readings (oldest to newest, up to the last 12):\n"
+            f"Readings over the last 12 months (oldest to newest; one per week for daily series):\n"
             f"{_format_history(ind['history_window'])}\n"
             f"Computed heuristic values:\n"
             f"{_format_heuristic(ind['heuristic'])}"

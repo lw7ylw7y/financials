@@ -20,7 +20,6 @@ from interpret import interpret as default_interpret
 
 logger = logging.getLogger(__name__)
 
-HISTORY_WINDOW = 12
 # After a failed AI call, a retry that isn't triggered by genuinely new data
 # waits this long, so a page load or scheduled run during an outage doesn't
 # spend one request per model every time.
@@ -39,8 +38,9 @@ def _heuristic_for(key: str, history: list[dict]) -> dict | None:
 def build_indicators_context(state: dict) -> list[dict]:
     """One entry per indicator with any history, for the AI prompt and table.
 
-    Each entry: {"key", "name", "category", "history_window" (last 12
-    entries), "heuristic"}.
+    Each entry: {"key", "name", "category", "history_window" (every
+    stored reading, i.e. the last 12 months whatever the series'
+    frequency), "heuristic"}.
     """
     context = []
     for key, indicator in state.get("indicators", {}).items():
@@ -52,7 +52,7 @@ def build_indicators_context(state: dict) -> list[dict]:
                 "key": key,
                 "name": indicator["name"],
                 "category": indicator["category"],
-                "history_window": history[-HISTORY_WINDOW:],
+                "history_window": history,
                 "heuristic": _heuristic_for(key, history),
             }
         )

@@ -88,6 +88,26 @@ class TestFetchRecentObservations(unittest.TestCase):
         )
 
     @patch("fetch_fred.requests.get")
+    def test_start_date_requests_a_time_span_instead_of_a_count(self, mock_get):
+        mock_get.return_value = Mock(json=lambda: {"observations": []})
+
+        fetch_recent_observations("DFF", api_key="test-key", start_date="2025-09-25")
+
+        params = mock_get.call_args.kwargs["params"]
+        self.assertEqual(params["observation_start"], "2025-09-25")
+        self.assertNotIn("limit", params)
+
+    @patch("fetch_fred.requests.get")
+    def test_without_start_date_requests_a_count(self, mock_get):
+        mock_get.return_value = Mock(json=lambda: {"observations": []})
+
+        fetch_recent_observations("DFF", limit=5, api_key="test-key")
+
+        params = mock_get.call_args.kwargs["params"]
+        self.assertEqual(params["limit"], 5)
+        self.assertNotIn("observation_start", params)
+
+    @patch("fetch_fred.requests.get")
     def test_skips_missing_values(self, mock_get):
         mock_get.return_value = Mock(
             json=lambda: {

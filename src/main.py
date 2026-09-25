@@ -76,6 +76,15 @@ def run_ingestion(state: dict, fetch_fn=fetch_latest_observation) -> dict:
 
         stored = state["indicators"].get(key, {})
         history = stored.get("history", [])
+        if history and stored.get("fred_series_id") not in (None, config["fred_series_id"]):
+            # A different series' readings (e.g. a monthly average vs. a
+            # daily rate) aren't comparable, so they don't carry over.
+            logger.warning(
+                "series changed indicator=%s old=%s new=%s; discarding old history",
+                key, stored.get("fred_series_id"), config["fred_series_id"],
+            )
+            history = []
+            stored = {**stored, "next_release_date": None}
         last_entry = history[-1] if history else None
 
         # "New" means a strictly newer date than what's already stored —

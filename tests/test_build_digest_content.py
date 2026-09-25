@@ -13,7 +13,13 @@ for _p in (
 ):
     sys.path.insert(0, _p)
 
-from build_digest_content import AI_RETRY_COOLDOWN, ai_retry_keys, build_digest_content, stale_indicator_keys
+from build_digest_content import (
+    AI_RETRY_COOLDOWN,
+    ai_retry_keys,
+    build_digest_content,
+    build_indicators_context,
+    stale_indicator_keys,
+)
 from interpret import InterpretationError
 
 T0 = "2026-09-01T00:00:00+00:00"
@@ -117,6 +123,18 @@ class TestBuildDigestContent(unittest.TestCase):
 
 def current_ai(as_of):
     return {"summary": "s", "directional_read": "neutral", "generated_at": T0, "as_of": as_of}
+
+
+class TestHistoryWindow(unittest.TestCase):
+    def test_window_holds_every_stored_reading_not_just_the_last_twelve(self):
+        state = make_state()
+        state["indicators"]["cpi"]["history"] = [
+            {"date": f"2026-01-{d:02d}", "value": float(d), "fetched_at": T0} for d in range(1, 21)
+        ]
+
+        context = build_indicators_context(state)
+
+        self.assertEqual(len(context[0]["history_window"]), 20)
 
 
 class TestAiRetryKeys(unittest.TestCase):

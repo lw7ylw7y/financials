@@ -131,7 +131,7 @@ Notes:
 | Building permits | Leading | `PERMIT` |
 | Nonfarm payrolls | Coincident | `PAYEMS` |
 | Industrial production | Coincident | `INDPRO` |
-| Fed funds rate | Lagging | `FEDFUNDS` |
+| Fed funds rate | Lagging | `DFF` (daily effective rate; originally the monthly-average `FEDFUNDS`) |
 | CPI | Lagging | `CPIAUCSL` |
 | Unemployment rate | Lagging | `UNRATE` |
 
@@ -170,7 +170,7 @@ in real testing) are retried up to 3 times via the SDK's built-in
 `HttpRetryOptions` before giving up.
 
 **Input to the model, once per run (not once per indicator):**
-- For every one of the 8 indicators: name, category, and a **historical window** of its last 12 stored readings (not just the single prior value) — enough to distinguish a real multi-month trend from a one-off noisy blip
+- For every one of the 8 indicators: name, category, and a **historical window** of its readings over the last 12 months (originally its last 12 stored readings) (not just the single prior value) — enough to distinguish a real multi-month trend from a one-off noisy blip
 - Which indicator(s) are newly updated this run, so the model knows what triggered the email
 - For indicators with a well-known named heuristic, that heuristic's current computed state, passed in as data rather than left for the model to infer:
   - **Unemployment rate** → Sahm Rule value (3-month average unemployment rate minus its low point over the prior 12 months; a reading ≥0.5 is a widely-used recession signal)

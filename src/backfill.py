@@ -19,29 +19,31 @@ for _subdir in ("fred", "storage"):
 
 from fetch_fred import FredApiError, fetch_recent_observations
 from indicators_config import INDICATORS
-from storage import load_state, save_state, trim_history
+from storage import history_start_date, load_state, save_state, trim_history
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-BACKFILL_LIMIT = 12
-
-
 def backfill_history(
-    state: dict, fetch_fn=fetch_recent_observations, limit: int = BACKFILL_LIMIT
+    state: dict, fetch_fn=fetch_recent_observations, start_date: str | None = None
 ) -> dict:
-    """Seed missing history for every indicator from FRED's recent observations.
+    """Seed missing history for every indicator from FRED's observations.
 
-    For each indicator, fetches the last `limit` real observations and
-    adds any whose date isn't already in stored history — existing
-    entries (and their original fetched_at) are left untouched.
+    For each indicator, fetches every real observation from `start_date`
+    (default: the start of the stored-history window, 12 months back) —
+    so a daily series gets ~250 readings and a monthly one 12 — and adds
+    any whose date isn't already in stored history — existing entries
+    (and their original fetched_at) are left untouched. An indicator
+    whose stored history came from a different FRED series than the one
+    now configured starts over, since those readings aren't comparable.
     """
     state.setdefault("indicators", {})
+    start_date = start_date or history_start_date()
     results = {}
 
     for key, config in INDICATORS.items():
         try:
-            observations = fetch_fn(config["fred_series_id"], limit=limit)
+            observations = fetch_fn(config["fred_series_id"], start_date=start_date)
         except FredApiError as e:
             logger.error("backfill fetch failed indicator=%s error=%s", key, e)
             results[key] = {"status": "error", "error": str(e)}
@@ -58,6 +60,9 @@ def backfill_history(
                 "next_release_date": None,
             },
         )
+        if indicator["history"] and indicator.get("fred_series_id") not in (None, config["fred_series_id"]):
+            indicator["history"] = []
+            indicator["fred_series_id"] = config["fred_series_id"]
         existing_dates = {entry["date"] for entry in indicator["history"]}
         added = [
             {

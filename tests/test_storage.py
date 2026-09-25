@@ -16,7 +16,7 @@ for _p in (
     sys.path.insert(0, _p)
 
 from kv_store import KvStoreError
-from storage import load_state, query_history, save_state, trim_history
+from storage import history_start_date, load_state, query_history, save_state, trim_history
 
 
 def fake_redis():
@@ -152,6 +152,14 @@ class TestQueryHistory(unittest.TestCase):
     def test_unknown_indicator_returns_empty_list(self):
         result = query_history(self.state, "does_not_exist")
         self.assertEqual(result, [])
+
+
+class TestHistoryStartDate(unittest.TestCase):
+    def test_is_twelve_months_before_the_given_date(self):
+        self.assertEqual(history_start_date(date(2026, 9, 25)), "2025-09-25")
+
+    def test_clamps_to_the_end_of_a_shorter_month(self):
+        self.assertEqual(history_start_date(date(2028, 2, 29)), "2027-02-28")
 
 
 class TestTrimHistory(unittest.TestCase):

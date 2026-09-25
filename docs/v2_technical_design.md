@@ -504,3 +504,19 @@ Each model is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-tie
 
 **Tests:** see Story 16 in `docs/v2_task_breakdown.md`. Full suite (392 tests) passes.
 
+### 11.19 Uniform 12-month history, and the daily Fed Funds series — implemented
+
+**Problem:** `build_indicators_context` cut each indicator to its last 12 stored *readings*. That is a year for a monthly series, 12 weeks for weekly initial jobless claims, and about two weeks for the daily yield curve spread, so sparklines and the AI's trend context covered wildly different spans. Separately, the Fed Funds indicator tracked `FEDFUNDS`, the monthly average of the effective rate: FRED publishes it only after the month ends and it blends a change with the earlier days, so a rate change was invisible for weeks.
+
+**History window:** `history_window` is now every stored reading; `storage.trim_history` already bounds storage to a rolling 12 months, so the window is 12 months whatever the frequency. `backfill.py` seeds from `storage.history_start_date()` using FRED's `observation_start` (via `fetch_recent_observations(start_date=...)`), which yields ~250 daily, 52 weekly, 10–13 monthly readings. Ingestion still appends only the newest observation per run, which is enough for the 6-hourly scheduled run; a multi-day outage leaves a gap in a daily series that a re-run of `backfill.py` fills.
+
+**Prompt size:** above `MAX_PROMPT_READINGS` (60) readings a series is sampled to the last reading of each ISO week (~53 for a year of daily data), so the whole prompt stays around 5–6k characters. Sparklines (page and email) plot every stored reading. The Sahm Rule and yield curve inversion streak heuristics already read the full stored history; the streak now counts consecutive daily readings.
+
+**Fed Funds:** the indicator now uses `DFF`, the daily effective rate, published with about a day's lag. Checked live: `DFF` 3.88 (9/24) against `FEDFUNDS` 3.63 (August). The target-range series `DFEDTARU`/`DFEDTARL` (4.00/3.75) were considered and not adopted because they're a step function of two numbers rather than the effective rate.
+
+**Series changes:** `run_ingestion` and `backfill_history` drop an indicator's stored history when its `fred_series_id` differs from the configured one (a stored entry with no series id keeps its history), since a monthly average and a daily rate aren't comparable. After deploying, run `python3 src/backfill.py` once to fill the 12 months.
+
+**Known limitation:** CPI and unemployment have only 10 readings, because October 2025 has no observation, and the Sahm Rule (which needs 12 monthly readings) stays unavailable, as before.
+
+**Tests:** see Story 17 in `docs/v2_task_breakdown.md`. Full suite (404 tests) passes.
+

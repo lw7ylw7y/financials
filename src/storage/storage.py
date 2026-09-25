@@ -89,6 +89,11 @@ def _months_before(d: date, months: int) -> date:
     return date(year, month, day)
 
 
+def history_start_date(as_of: date | None = None) -> str:
+    """ISO date of the oldest reading `trim_history` keeps."""
+    return _months_before(as_of or date.today(), HISTORY_WINDOW_MONTHS).isoformat()
+
+
 def trim_history(
     history: list[dict],
     months: int = HISTORY_WINDOW_MONTHS,

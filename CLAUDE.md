@@ -181,7 +181,7 @@ src/
    reflect their own update cadence).
 3. `digest/build_digest_content.py:build_digest_content()` is the single
    entry point both surfaces call: builds `indicators_context` (each
-   indicator's 12-reading window + any precomputed heuristic), `table`
+   indicator's full 12-month history — every stored reading, whatever the series' frequency; `interpret.py` samples a daily series weekly for the prompt — + any precomputed heuristic), `table`
    (grouped `leading`/`coincident`/`lagging`, per `email_template.CATEGORY_ORDER`),
    `countdown`, and calls `interpret.interpret()` for the AI summary +
    directional read — persisting a successful result to

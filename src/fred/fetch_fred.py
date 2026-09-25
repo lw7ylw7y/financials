@@ -60,9 +60,16 @@ def fetch_latest_observation(series_id: str, api_key: str | None = None) -> dict
 
 
 def fetch_recent_observations(
-    series_id: str, limit: int = 12, api_key: str | None = None
+    series_id: str,
+    limit: int = 12,
+    api_key: str | None = None,
+    start_date: str | None = None,
 ) -> list[dict]:
-    """Fetch the most recent `limit` observations for a FRED series.
+    """Fetch the most recent `limit` observations for a FRED series, or,
+    if `start_date` (ISO "YYYY-MM-DD") is given, every observation from
+    that date on regardless of `limit` -- a fixed time span holds the
+    same number of readings for a daily, weekly or monthly series only
+    if the count is left to the series' own frequency.
 
     Returns a list of {"date": "YYYY-MM-DD", "value": float}, oldest to
     newest (matching how history is stored). Observations with no value
@@ -79,8 +86,11 @@ def fetch_recent_observations(
         "api_key": api_key,
         "file_type": "json",
         "sort_order": "desc",
-        "limit": limit,
     }
+    if start_date:
+        params["observation_start"] = start_date
+    else:
+        params["limit"] = limit
     try:
         response = requests.get(
             f"{FRED_BASE_URL}/series/observations", params=params, timeout=10

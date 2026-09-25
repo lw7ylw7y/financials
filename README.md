@@ -70,7 +70,7 @@ digest contains:
 - **Story 4 — AI summary:** one holistic Gemini call (`interpret.py`,
   `gemini-3.8-flash` — a free-tier model, chosen since this is a
   short, low-volume commentary task well within the free tier's limits)
-  reasoning across *all 8* indicators' 12-reading history windows
+  reasoning across *all 8* indicators' 12-month history windows (a daily series is sampled weekly in the prompt)
   together, not one call per updated indicator — so it can connect
   indicators to each other (e.g. "unemployment ticked up while CPI
   cooled") rather than commenting on each in isolation. Uses a

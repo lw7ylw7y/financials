@@ -22,7 +22,7 @@ FIXTURES = {
     "PERMIT": {"date": "2026-08-01", "value": 1400.0},
     "PAYEMS": {"date": "2026-08-01", "value": 158000.0},
     "INDPRO": {"date": "2026-08-01", "value": 103.2},
-    "FEDFUNDS": {"date": "2026-08-01", "value": 5.25},
+    "DFF": {"date": "2026-08-01", "value": 5.25},
     "CPIAUCSL": {"date": "2026-08-01", "value": 314.5},
     "UNRATE": {"date": "2026-08-01", "value": 4.1},
 }
@@ -39,6 +39,47 @@ def fake_fetch_factory(responses):
 
 
 class TestRunIngestion(unittest.TestCase):
+    def test_a_changed_series_discards_the_old_series_history(self):
+        state = {
+            "indicators": {
+                "fed_funds_rate": {
+                    "name": "Fed Funds Rate",
+                    "category": "lagging",
+                    "fred_series_id": "FEDFUNDS",
+                    "fred_release_id": None,
+                    "history": [{"date": "2026-08-01", "value": 3.63, "fetched_at": "t"}],
+                    "next_release_date": None,
+                }
+            }
+        }
+        responses = dict(FIXTURES)
+        responses["DFF"] = {"date": "2026-09-24", "value": 3.88}
+
+        run_ingestion(state, fetch_fn=fake_fetch_factory(responses))
+
+        entry = state["indicators"]["fed_funds_rate"]
+        self.assertEqual(entry["fred_series_id"], "DFF")
+        self.assertEqual([e["value"] for e in entry["history"]], [3.88])
+
+    def test_a_missing_stored_series_id_keeps_existing_history(self):
+        state = {
+            "indicators": {
+                "fed_funds_rate": {
+                    "name": "Fed Funds Rate",
+                    "category": "lagging",
+                    "history": [{"date": "2026-08-01", "value": 3.63, "fetched_at": "t"}],
+                    "next_release_date": None,
+                }
+            }
+        }
+        responses = dict(FIXTURES)
+        responses["DFF"] = {"date": "2026-09-24", "value": 3.88}
+
+        run_ingestion(state, fetch_fn=fake_fetch_factory(responses))
+
+        history = state["indicators"]["fed_funds_rate"]["history"]
+        self.assertEqual([e["value"] for e in history], [3.63, 3.88])
+
     def test_all_eight_indicators_processed_and_tagged(self):
         fetch_fn = fake_fetch_factory(FIXTURES)
         state = {"indicators": {}}

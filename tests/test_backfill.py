@@ -29,7 +29,7 @@ def fake_fetch_factory(responses):
     of interest to a given test.
     """
 
-    def fake_fetch(series_id, limit=12):
+    def fake_fetch(series_id, start_date=None):
         response = responses.get(series_id, [])
         if isinstance(response, Exception):
             raise response
@@ -54,6 +54,30 @@ def cpi_only_state(existing_history=None):
 
 
 class TestBackfillHistory(unittest.TestCase):
+    def test_requests_the_stored_history_window_not_a_fixed_count(self):
+        seen = []
+
+        def fake_fetch(series_id, start_date=None):
+            seen.append(start_date)
+            return []
+
+        backfill_history({"indicators": {}}, fetch_fn=fake_fetch, start_date="2025-09-25")
+
+        self.assertEqual(set(seen), {"2025-09-25"})
+
+    def test_a_different_configured_series_discards_the_old_history(self):
+        state = cpi_only_state(
+            existing_history=[{"date": "2026-08-01", "value": 999.0, "fetched_at": "2026-09-09T00:00:00+00:00"}]
+        )
+        state["indicators"]["cpi"]["fred_series_id"] = "SOMEOTHERSERIES"
+        fetch_fn = fake_fetch_factory({"CPIAUCSL": CPI_OBSERVATIONS})
+
+        backfill_history(state, fetch_fn=fetch_fn)
+
+        values = [e["value"] for e in state["indicators"]["cpi"]["history"]]
+        self.assertNotIn(999.0, values)
+        self.assertEqual(state["indicators"]["cpi"]["fred_series_id"], "CPIAUCSL")
+
     def test_adds_observations_not_already_in_history(self):
         state = cpi_only_state(
             existing_history=[
