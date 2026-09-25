@@ -73,15 +73,14 @@ digest contains:
   reasoning across *all 8* indicators' 12-reading history windows
   together, not one call per updated indicator — so it can connect
   indicators to each other (e.g. "unemployment ticked up while CPI
-  cooled") rather than commenting on each in isolation. If the Gemini
-  call fails, the same prompt is retried on a second Gemini model
-  (`GEMINI_FALLBACK_MODEL`), before the digest
-  falls back to no AI section. Uses a
+  cooled") rather than commenting on each in isolation. Uses a
   pre-computed heuristic where applicable — Sahm Rule for unemployment,
-  inversion streak for the yield curve spread (`heuristics.py`) — and
-  retries up to 3 times (via the SDK's built-in `HttpRetryOptions`) on
-  transient failures like a `503`. If the AI call still fails, the email
-  sends anyway without the AI section (and its disclaimer line).
+  inversion streak for the yield curve spread (`heuristics.py`). Each
+  call is attempted once, with no retries (the free tier's daily quota
+  counts failed attempts, so retrying against an outage only burns it);
+  on any failure the same prompt goes to a second Gemini model
+  (`GEMINI_FALLBACK_MODEL`). If that fails too, the email sends anyway
+  without the AI section (and its disclaimer line).
 - **Story 5 — table:** every indicator's latest/prior value and date,
   grouped by Leading/Coincident/Lagging (`post_release.build_table`),
   each row including a small trend sparkline (`sparkline.py`, rendered
