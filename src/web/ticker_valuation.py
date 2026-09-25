@@ -30,7 +30,7 @@ MODEL = "gemini-3.8-flash"
 # Free-tier quotas and serving capacity are tracked per model, so a
 # different model often still answers while `MODEL` is overloaded or
 # out of quota. Overridable via GEMINI_FALLBACK_MODEL.
-DEFAULT_FALLBACK_MODEL = "gemini-3.8-flash-lite"
+DEFAULT_FALLBACK_MODEL = "gemini-3.7-flash"
 # No retries: the free tier's 20-requests/day cap counts every attempt,
 # including failed ones, so retrying against a sustained backend outage
 # (the observed real-world failure mode) burns through the day's whole

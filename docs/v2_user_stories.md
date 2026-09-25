@@ -215,7 +215,7 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 **Why:** Gemini's free tier returned `503 UNAVAILABLE` almost continuously during a real incident, making both AI sections useless. Free-tier quota and serving capacity are tracked per model, and GitHub Models is a separate provider, so falling through a chain of independent sources makes a single-source outage survivable.
 
 **Acceptance Criteria**
-- [x] When the primary Gemini call fails for any reason (API error, quota `429`, overload `503`, missing key, empty or unparseable response), the same prompt is retried on a second Gemini model (`gemini-3.8-flash-lite` by default, `GEMINI_FALLBACK_MODEL` overrides it), using the same `GEMINI_API_KEY`
+- [x] When the primary Gemini call fails for any reason (API error, quota `429`, overload `503`, missing key, empty or unparseable response), the same prompt is retried on a second Gemini model (`gemini-3.7-flash` by default, `GEMINI_FALLBACK_MODEL` overrides it), using the same `GEMINI_API_KEY`
 - [x] If that also fails, the prompt is retried against GitHub Models (`openai/gpt-4.1-mini` by default, `GITHUB_MODELS_MODEL` overrides it), authenticated by `GITHUB_MODELS_TOKEN` (or `GITHUB_TOKEN`)
 - [x] The first source to return a valid response wins; a later source is never called once an earlier one succeeded
 - [x] If every source fails, behavior is unchanged from before: the digest omits the AI section and the ticker valuation degrades to the last cached valuation

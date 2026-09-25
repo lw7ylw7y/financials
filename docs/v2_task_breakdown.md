@@ -297,7 +297,7 @@ Dependency-driven:
 | 15.2 `interpret.py` / `ticker_valuation.py` — split the Gemini call into a per-model helper and add `_run_with_fallbacks`: Gemini → second Gemini model → GitHub Models; an injected `client` runs alone | done |
 | 15.3 `indicator-check.yml` — `permissions: models: read`, pass `GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}` | done |
 | 15.4 Tests: `tests/test_github_models_client.py` (new), plus fallback classes in `tests/test_interpret.py` and `tests/test_ticker_valuation.py` | done |
-| 15.5 Live verification of the GitHub Models step | **not done** — every request to `models.github.ai` returned a bare `HTTP 200 text/plain OK` (from both the dev sandbox and the user's own terminal), so the endpoint could not be exercised; the second-Gemini step and the code paths are covered by mocked tests only |
+| 15.5 Live verification of the GitHub Models step | **not done** — every request to `models.github.ai` returned a bare `HTTP 200 text/plain OK` (from both the dev sandbox and the user's own terminal), so the endpoint could not be exercised; the second-Gemini step (`gemini-3.7-flash`) was verified live; the GitHub Models step is covered by mocked tests only |
 
 **Tests**
 - `tests/test_github_models_client.py`: reply text returned, schema and bearer token sent, `GITHUB_TOKEN` fallback, missing token, request failure, unexpected response shape, empty content

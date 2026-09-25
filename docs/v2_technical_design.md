@@ -474,7 +474,7 @@ Verified directly against the real Upstash instance, not just reasoned about: co
 
 **Chain (`interpret.py`, `ticker_valuation.py`, each with its own `_run_with_fallbacks`):**
 1. `MODEL` (`gemini-3.8-flash`)
-2. `GEMINI_FALLBACK_MODEL` env var, defaulting to `DEFAULT_FALLBACK_MODEL` (`gemini-3.8-flash-lite`), same `GEMINI_API_KEY`
+2. `GEMINI_FALLBACK_MODEL` env var, defaulting to `DEFAULT_FALLBACK_MODEL` (`gemini-3.7-flash`), same `GEMINI_API_KEY`
 3. GitHub Models via `github_models_client.generate_json`
 
 Each source is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-tier daily cap counts failed attempts). Any failure of a source (the module's error type, whether from an API error, missing credentials, an empty body, or an unparseable/invalid response) moves to the next; the first valid response wins and later sources are never called. If all fail, the module's own error is raised with every source's message joined, and callers degrade exactly as before. An injected `client` (tests) is used alone, with no fallback.
@@ -483,6 +483,6 @@ Each source is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-ti
 
 **Auth by environment:** on Render/local, a fine-grained personal access token with the Models permission as `GITHUB_MODELS_TOKEN`; in the scheduled workflow, `secrets.GITHUB_TOKEN` with `permissions: models: read` (`contents: read` is kept explicitly since setting `permissions` drops the defaults).
 
-**Status of live verification:** the GitHub Models step was **not** confirmed live. Every request to `models.github.ai` (any path, with or without a token, from both the dev sandbox and the user's own terminal) returned a bare `HTTP 200`, `content-type: text/plain`, body `OK`, from a genuine GitHub IP and certificate, i.e. GitHub's edge answering with a health-check-style response instead of reaching the Models service. Cause unknown (a service incident or Models not being enabled for the account are the leading guesses). The client turns this into a `GithubModelsError`, so the chain degrades as designed. The second-Gemini model name is likewise unverified against the live model list.
+**Status of live verification:** the GitHub Models step was **not** confirmed live. Every request to `models.github.ai` (any path, with or without a token, from both the dev sandbox and the user's own terminal) returned a bare `HTTP 200`, `content-type: text/plain`, body `OK`, from a genuine GitHub IP and certificate, i.e. GitHub's edge answering with a health-check-style response instead of reaching the Models service. Cause unknown (a service incident or Models not being enabled for the account are the leading guesses). The client turns this into a `GithubModelsError`, so the chain degrades as designed. The second Gemini model (`gemini-3.7-flash`) was verified live against the account's model list and a real structured-output call; the originally chosen default, `gemini-3.8-flash-lite`, does not exist (a live `404 NOT_FOUND` on Render) and was replaced.
 
 **Tests:** see Story 15 in `docs/v2_task_breakdown.md`. Full suite (358 tests) passes.
