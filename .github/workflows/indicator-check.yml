@@ -8,6 +8,9 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      models: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,6 +27,7 @@ jobs:
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}

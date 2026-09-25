@@ -14,15 +14,25 @@ earlier reads.
 """
 
 import logging
+import os
+import sys
 from typing import Literal
 
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+
+import github_models_client
+
 logger = logging.getLogger(__name__)
 
 MODEL = "gemini-3.8-flash"
+# Free-tier quotas and serving capacity are tracked per model, so a
+# different model often still answers while `MODEL` is overloaded or
+# out of quota. Overridable via GEMINI_FALLBACK_MODEL.
+DEFAULT_FALLBACK_MODEL = "gemini-3.8-flash-lite"
 # No retries: the free tier's 20-requests/day cap counts every attempt,
 # including failed ones, so retrying against a sustained backend outage
 # (the observed real-world failure mode) burns through the day's whole
@@ -95,20 +105,17 @@ def build_user_prompt(indicators_context: list[dict], updated_keys: list[str]) -
     )
 
 
-def interpret(
-    indicators_context: list[dict],
-    updated_keys: list[str],
-    client: genai.Client | None = None,
-) -> dict:
-    """Return {"summary": str, "directional_read": "bullish"|"bearish"|"neutral"}.
+def _parse(text: str | None, source: str) -> dict:
+    if not text:
+        raise InterpretationError(f"{source} returned no text content")
+    try:
+        parsed = Interpretation.model_validate_json(text)
+    except ValidationError as e:
+        raise InterpretationError(f"could not parse {source} response: {e}") from e
+    return {"summary": parsed.summary, "directional_read": parsed.directional_read}
 
-    Raises InterpretationError on any API failure, missing credentials, or
-    unusable response, so the caller (post_release.py) can degrade
-    gracefully to a table-and-countdown-only digest rather than blocking
-    on a broken AI call.
-    """
-    prompt = build_user_prompt(indicators_context, updated_keys)
 
+def _interpret_with_gemini(prompt: str, client: genai.Client | None, model: str = MODEL) -> dict:
     try:
         client = client or genai.Client(
             http_options=types.HttpOptions(
@@ -116,7 +123,7 @@ def interpret(
             )
         )
         response = client.models.generate_content(
-            model=MODEL,
+            model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
@@ -131,13 +138,54 @@ def interpret(
         # API key is configured — still a "the AI call is unusable" case
         # that must degrade gracefully, not crash the run.
         raise InterpretationError(f"Gemini client not configured: {e}") from e
+    return _parse(response.text, "Gemini")
 
-    if not response.text:
-        raise InterpretationError("Gemini returned no text content")
 
+def _interpret_with_github_models(prompt: str) -> dict:
     try:
-        parsed = Interpretation.model_validate_json(response.text)
-    except ValidationError as e:
-        raise InterpretationError(f"could not parse AI response: {e}") from e
+        text = github_models_client.generate_json(SYSTEM_PROMPT, prompt, Interpretation)
+    except github_models_client.GithubModelsError as e:
+        raise InterpretationError(str(e)) from e
+    return _parse(text, "GitHub Models")
 
-    return {"summary": parsed.summary, "directional_read": parsed.directional_read}
+
+def _run_with_fallbacks(prompt: str, client: genai.Client | None) -> dict:
+    """Gemini, then a second Gemini model, then GitHub Models; the first
+    usable result wins. An explicitly injected `client` is used alone."""
+    fallback_model = os.environ.get("GEMINI_FALLBACK_MODEL") or DEFAULT_FALLBACK_MODEL
+    sources = [("Gemini", lambda: _interpret_with_gemini(prompt, client))]
+    if client is None:
+        sources += [
+            (f"Gemini {fallback_model}", lambda: _interpret_with_gemini(prompt, None, fallback_model)),
+            ("GitHub Models", lambda: _interpret_with_github_models(prompt)),
+        ]
+
+    failures = []
+    for name, attempt in sources:
+        try:
+            return attempt()
+        except InterpretationError as e:
+            logger.warning("%s interpretation failed: %s", name, e)
+            failures.append(str(e))
+    raise InterpretationError("; ".join(failures))
+
+
+def interpret(
+    indicators_context: list[dict],
+    updated_keys: list[str],
+    client: genai.Client | None = None,
+) -> dict:
+    """Return {"summary": str, "directional_read": "bullish"|"bearish"|"neutral"}.
+
+    Tries Gemini first, then a second Gemini model, then GitHub Models
+    if each fails for any reason (the free tier's sustained 503s are
+    the usual cause). An explicitly injected `client` is used alone,
+    with no fallback.
+
+    Raises InterpretationError when every source fails, so the caller
+    (post_release.py) can degrade gracefully to a table-and-countdown-only
+    digest rather than blocking on a broken AI call.
+    """
+    prompt = build_user_prompt(indicators_context, updated_keys)
+
+    return _run_with_fallbacks(prompt, client)

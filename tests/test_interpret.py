@@ -16,7 +16,7 @@ for _p in (
     sys.path.insert(0, _p)
 
 from google.genai import errors
-from interpret import InterpretationError, build_user_prompt, interpret
+from interpret import DEFAULT_FALLBACK_MODEL, MODEL, InterpretationError, build_user_prompt, interpret
 
 INDICATORS_CONTEXT = [
     {
@@ -123,9 +123,49 @@ class TestInterpret(unittest.TestCase):
         with patch(
             "interpret.genai.Client",
             side_effect=ValueError("No API key was provided."),
-        ):
+        ), patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(InterpretationError):
                 interpret(INDICATORS_CONTEXT, UPDATED_KEYS, client=None)
+
+
+class TestGithubModelsFallback(unittest.TestCase):
+    GOOD = json.dumps({"summary": "ok", "directional_read": "neutral"})
+
+    @patch("interpret.github_models_client.generate_json")
+    def test_falls_back_when_gemini_fails(self, mock_fallback):
+        mock_fallback.return_value = self.GOOD
+        gemini = fake_client(side_effect=make_api_error())
+        with patch("interpret.genai.Client", return_value=gemini):
+            result = interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
+        self.assertEqual(result["directional_read"], "neutral")
+        mock_fallback.assert_called_once()
+
+    @patch("interpret.github_models_client.generate_json")
+    def test_second_gemini_model_is_tried_before_github_models(self, mock_github):
+        client = Mock()
+        client.models.generate_content.side_effect = [
+            make_api_error(),
+            SimpleNamespace(text=json.dumps({"summary": "ok", "directional_read": "bullish"})),
+        ]
+        with patch("interpret.genai.Client", return_value=client):
+            interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
+        models = [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
+        self.assertEqual(models, [MODEL, DEFAULT_FALLBACK_MODEL])
+        mock_github.assert_not_called()
+
+    @patch("interpret.github_models_client.generate_json")
+    def test_injected_client_never_falls_back(self, mock_fallback):
+        with self.assertRaises(InterpretationError):
+            interpret(INDICATORS_CONTEXT, UPDATED_KEYS, client=fake_client(side_effect=make_api_error()))
+        mock_fallback.assert_not_called()
+
+    @patch("interpret.github_models_client.generate_json")
+    def test_raises_when_both_fail(self, mock_fallback):
+        mock_fallback.return_value = "not json"
+        gemini = fake_client(side_effect=make_api_error())
+        with patch("interpret.genai.Client", return_value=gemini):
+            with self.assertRaises(InterpretationError):
+                interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
 
 
 if __name__ == "__main__":

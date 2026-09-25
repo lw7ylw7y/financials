@@ -15,15 +15,22 @@ contract) but lives under src/web/ since it's Ticker-Dashboard-specific
 """
 
 import logging
+import os
 from typing import Literal
 
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
+import github_models_client
+
 logger = logging.getLogger(__name__)
 
 MODEL = "gemini-3.8-flash"
+# Free-tier quotas and serving capacity are tracked per model, so a
+# different model often still answers while `MODEL` is overloaded or
+# out of quota. Overridable via GEMINI_FALLBACK_MODEL.
+DEFAULT_FALLBACK_MODEL = "gemini-3.8-flash-lite"
 # No retries: the free tier's 20-requests/day cap counts every attempt,
 # including failed ones, so retrying against a sustained backend outage
 # (the observed real-world failure mode) burns through the day's whole
@@ -159,26 +166,16 @@ def _group_individual_by_verdict(
     return buckets
 
 
-def interpret_ticker_valuation(cards_by_group: dict[str, list[dict]], client: genai.Client | None = None) -> dict:
-    """Return {"overview": str, "groups": [{"group", "verdict",
-    "reasoning"}, ...], "individual_by_verdict": {"discount": [...],
-    "fair": [...], "overpriced": [...]}} -- `groups` sorted
-    discount-first/overpriced-last regardless of the order Gemini
-    returned them in, since "sort by discount level" is a rendering
-    guarantee this function makes, not something worth trusting an LLM
-    to do consistently call to call. Each `individual_by_verdict` entry
-    is `{"symbol", "reasoning"}`.
+def _parse(text: str | None, source: str) -> ValuationResponse:
+    if not text:
+        raise TickerValuationError(f"{source} returned no text content")
+    try:
+        return ValuationResponse.model_validate_json(text)
+    except ValidationError as e:
+        raise TickerValuationError(f"could not parse {source} response: {e}") from e
 
-    Raises TickerValuationError on any API failure (including a
-    quota/rate-limit 429 -- the free tier's real failure mode in
-    practice), missing credentials, an unusable response, or no data
-    to reason about at all (every group empty).
-    """
-    if not any(cards_by_group.values()):
-        raise TickerValuationError("no ticker data available to evaluate")
 
-    prompt = build_user_prompt(cards_by_group)
-
+def _valuation_with_gemini(prompt: str, client: genai.Client | None, model: str = MODEL) -> ValuationResponse:
     try:
         client = client or genai.Client(
             http_options=types.HttpOptions(
@@ -186,7 +183,7 @@ def interpret_ticker_valuation(cards_by_group: dict[str, list[dict]], client: ge
             )
         )
         response = client.models.generate_content(
-            model=MODEL,
+            model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
@@ -200,14 +197,63 @@ def interpret_ticker_valuation(cards_by_group: dict[str, list[dict]], client: ge
         # genai.Client() raises a bare ValueError (not an APIError) when no
         # API key is configured -- still a "the AI call is unusable" case.
         raise TickerValuationError(f"Gemini client not configured: {e}") from e
+    return _parse(response.text, "Gemini")
 
-    if not response.text:
-        raise TickerValuationError("Gemini returned no text content")
 
+def _valuation_with_github_models(prompt: str) -> ValuationResponse:
     try:
-        parsed = ValuationResponse.model_validate_json(response.text)
-    except ValidationError as e:
-        raise TickerValuationError(f"could not parse AI response: {e}") from e
+        text = github_models_client.generate_json(SYSTEM_PROMPT, prompt, ValuationResponse)
+    except github_models_client.GithubModelsError as e:
+        raise TickerValuationError(str(e)) from e
+    return _parse(text, "GitHub Models")
+
+
+def _run_with_fallbacks(prompt: str, client: genai.Client | None) -> ValuationResponse:
+    """Gemini, then a second Gemini model, then GitHub Models; the first
+    usable result wins. An explicitly injected `client` is used alone."""
+    fallback_model = os.environ.get("GEMINI_FALLBACK_MODEL") or DEFAULT_FALLBACK_MODEL
+    sources = [("Gemini", lambda: _valuation_with_gemini(prompt, client))]
+    if client is None:
+        sources += [
+            (f"Gemini {fallback_model}", lambda: _valuation_with_gemini(prompt, None, fallback_model)),
+            ("GitHub Models", lambda: _valuation_with_github_models(prompt)),
+        ]
+
+    failures = []
+    for name, attempt in sources:
+        try:
+            return attempt()
+        except TickerValuationError as e:
+            logger.warning("%s valuation failed: %s", name, e)
+            failures.append(str(e))
+    raise TickerValuationError("; ".join(failures))
+
+
+def interpret_ticker_valuation(cards_by_group: dict[str, list[dict]], client: genai.Client | None = None) -> dict:
+    """Return {"overview": str, "groups": [{"group", "verdict",
+    "reasoning"}, ...], "individual_by_verdict": {"discount": [...],
+    "fair": [...], "overpriced": [...]}} -- `groups` sorted
+    discount-first/overpriced-last regardless of the order Gemini
+    returned them in, since "sort by discount level" is a rendering
+    guarantee this function makes, not something worth trusting an LLM
+    to do consistently call to call. Each `individual_by_verdict` entry
+    is `{"symbol", "reasoning"}`.
+
+    Tries Gemini first, then a second Gemini model, then GitHub Models
+    if each fails for any reason. An explicitly injected `client` is
+    used alone, with no fallback.
+
+    Raises TickerValuationError when every source fails (an API
+    failure, including a quota/rate-limit 429, missing credentials, or
+    an unusable response), or when there is no data to reason about at
+    all (every group empty).
+    """
+    if not any(cards_by_group.values()):
+        raise TickerValuationError("no ticker data available to evaluate")
+
+    prompt = build_user_prompt(cards_by_group)
+
+    parsed = _run_with_fallbacks(prompt, client)
 
     groups = sorted(
         [g.model_dump() for g in parsed.groups],
