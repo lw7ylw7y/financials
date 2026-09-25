@@ -73,7 +73,10 @@ digest contains:
   reasoning across *all 8* indicators' 12-reading history windows
   together, not one call per updated indicator — so it can connect
   indicators to each other (e.g. "unemployment ticked up while CPI
-  cooled") rather than commenting on each in isolation. Uses a
+  cooled") rather than commenting on each in isolation. If the Gemini
+  call fails, the same prompt is retried on a second Gemini model
+  (`GEMINI_FALLBACK_MODEL`), then on GitHub Models, before the digest
+  falls back to no AI section. Uses a
   pre-computed heuristic where applicable — Sahm Rule for unemployment,
   inversion streak for the yield curve spread (`heuristics.py`) — and
   retries up to 3 times (via the SDK's built-in `HttpRetryOptions`) on
@@ -105,6 +108,7 @@ plain-text fallback. Requires `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`,
 pip install -r requirements.txt
 export FRED_API_KEY=your_key_here          # https://fred.stlouisfed.org/docs/api/api_key.html
 export GEMINI_API_KEY=your_key_here        # https://ai.google.dev/gemini-api/docs/api-key (free tier)
+export GITHUB_MODELS_TOKEN=your_token      # optional AI fallback; fine-grained PAT with the "Models" permission
 export GMAIL_ADDRESS=you@gmail.com         # for the digest email
 export GMAIL_APP_PASSWORD=your_app_password
 export RECIPIENT_EMAIL=you@gmail.com

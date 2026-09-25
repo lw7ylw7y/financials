@@ -466,3 +466,23 @@ Verified directly against the real Upstash instance, not just reasoned about: co
 **Effect on `_sector_benchmark`:** this function reads a sector ETF's `pe_ratio` straight out of `ticker_cache` (Section 11.13) rather than fetching it itself. With no fallback left to ever populate that field for an ETF, and Finnhub never providing one either, `sector_pe_ratio` is now always `None` for every individual stock — already the de facto behavior once the crumb removal broke every fallback call, so this is not a new regression from this change specifically. `_sector_benchmark` itself was left in place rather than also removed: its own cost is one already-necessary Finnhub industry lookup plus a cache read, and it starts producing real values again for free if a fund-level P/E source is ever found.
 
 **Tests:** `tests/test_ticker_dashboard.py`'s four ETF-fallback-specific tests (`test_falls_back_to_etf_pe_for_equity_fund_groups`, `test_no_yahoo_fallback_exists_for_peg_ratio`, `test_does_not_fall_back_to_etf_pe_for_bonds_or_individual`, `test_does_not_fall_back_when_finnhub_already_has_a_pe_ratio`, `test_etf_pe_fallback_failure_degrades_to_none_without_erroring_the_card`) were replaced with one (`test_etf_group_pe_ratio_stays_none_when_finnhub_has_none`) asserting the new, simpler behavior; every other test's now-nonexistent `fetch_etf_pe_fn=lambda s: None` no-op argument was removed. Full suite (350 tests) passes.
+
+
+### 11.17 AI fallback chain: second Gemini model, then GitHub Models — implemented
+
+**Why:** a live incident had Gemini's free tier returning `503 UNAVAILABLE` on nearly every call, leaving both AI sections empty. Quota and capacity are per model on Gemini's side, and GitHub Models is an independent provider, so a chain of sources survives a single-source outage.
+
+**Chain (`interpret.py`, `ticker_valuation.py`, each with its own `_run_with_fallbacks`):**
+1. `MODEL` (`gemini-3.8-flash`)
+2. `GEMINI_FALLBACK_MODEL` env var, defaulting to `DEFAULT_FALLBACK_MODEL` (`gemini-3.8-flash-lite`), same `GEMINI_API_KEY`
+3. GitHub Models via `github_models_client.generate_json`
+
+Each source is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-tier daily cap counts failed attempts). Any failure of a source (the module's error type, whether from an API error, missing credentials, an empty body, or an unparseable/invalid response) moves to the next; the first valid response wins and later sources are never called. If all fail, the module's own error is raised with every source's message joined, and callers degrade exactly as before. An injected `client` (tests) is used alone, with no fallback.
+
+**`src/web/github_models_client.py`:** POSTs to `https://models.github.ai/inference/chat/completions` with `Authorization: Bearer <token>` and the `X-GitHub-Api-Version` header. The token is `GITHUB_MODELS_TOKEN`, else `GITHUB_TOKEN`; the model is `GITHUB_MODELS_MODEL`, else `openai/gpt-4.1-mini`. Uses `response_format: {"type": "json_object"}` with the pydantic schema embedded in the system prompt, rather than a structured-output parameter that not every hosted model supports; the caller validates the reply with its own pydantic model, exactly as for a Gemini response. Any request error, non-JSON body, or unexpected shape raises `GithubModelsError`. `json()` decode errors are caught before the generic request-error branch, since `requests`' `JSONDecodeError` subclasses both.
+
+**Auth by environment:** on Render/local, a fine-grained personal access token with the Models permission as `GITHUB_MODELS_TOKEN`; in the scheduled workflow, `secrets.GITHUB_TOKEN` with `permissions: models: read` (`contents: read` is kept explicitly since setting `permissions` drops the defaults).
+
+**Status of live verification:** the GitHub Models step was **not** confirmed live. Every request to `models.github.ai` (any path, with or without a token, from both the dev sandbox and the user's own terminal) returned a bare `HTTP 200`, `content-type: text/plain`, body `OK`, from a genuine GitHub IP and certificate, i.e. GitHub's edge answering with a health-check-style response instead of reaching the Models service. Cause unknown (a service incident or Models not being enabled for the account are the leading guesses). The client turns this into a `GithubModelsError`, so the chain degrades as designed. The second-Gemini model name is likewise unverified against the live model list.
+
+**Tests:** see Story 15 in `docs/v2_task_breakdown.md`. Full suite (358 tests) passes.
