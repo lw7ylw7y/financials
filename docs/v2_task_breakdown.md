@@ -302,3 +302,18 @@ Dependency-driven:
 **Tests**
 - Chain order (each fallback tried in order until one succeeds, later ones never called after a success), an injected client never falls back, every model failing raises an error naming each model, `GEMINI_FALLBACK_MODELS` overrides the list, blank/unset uses the defaults
 - Cooldown: a total failure blocks further AI calls for 15 minutes (returning the cached valuation, or the pending placeholder if none), the AI is tried again afterward, and a success clears it
+
+
+### Story 16 — A Failed AI Call Is Retried, Not Left Stale
+
+| Task | Status |
+|---|---|
+| 16.1 `build_digest_content.py` — `last_ai_response` gains `as_of`; `stale_indicator_keys`, `ai_retry_keys`, `AI_RETRY_COOLDOWN`; a failure records `ai_last_failed_at`, a success clears it | done |
+| 16.2 `post_release.refresh_ai_response_if_updated` — merge `ai_retry_keys` into the run's updated keys | done |
+| 16.3 `live_pull.check_for_updates` — same merge; skip the calendar refresh unless data updated; a retry that fails again is saved but reports `data_updated: False` | done |
+| 16.4 Tests in `tests/test_build_digest_content.py`, `tests/test_post_release.py`, `tests/test_live_pull.py` | done |
+
+**Tests**
+- Staleness: current take, no take, a take predating `as_of`, a newer reading than the take, indicators without history
+- Retry: a stale take is retried with nothing new, not retried within the cooldown, retried after it; a failed retry is saved but reports no update; new data still updates when the AI fails
+

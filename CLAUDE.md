@@ -188,8 +188,11 @@ src/
    `state["last_ai_response"]`, so the web page's initial render has
    something to show without making a live call.
 4. Email path: `main.py` calls `post_release.refresh_ai_response_if_updated()`
-   every scheduled run that found new data — this is what actually calls
-   step 3 for the scheduled workflow, no throttle (Story 11). Separately,
+   every scheduled run that found new data, or whose stored AI take is stale
+   and past its retry cooldown (`build_digest_content.ai_retry_keys`) — this
+   is what actually calls step 3 for the scheduled workflow, no throttle
+   (Story 11). A run where every Gemini model failed leaves the take stale,
+   so a later run retries it instead of waiting for the next release. Separately,
    `post_release.maybe_send_digest_email()` decides whether to send —
    gated on a content fingerprint (every indicator's latest value/date +
    the AI's `directional_read`, hashed) differing from what was last
@@ -201,8 +204,11 @@ src/
    (stored-only, no network — instant render) and `check_for_updates()` (the
    real live pull via `main.run_ingestion`, gated: skips the calendar
    refresh/AI call/`save_state()` entirely unless at least one indicator's
-   status is `"updated"` — so the common "nothing new" case costs a FRED call
-   but never a Gemini call). The page's own inline `<script>` calls
+   status is `"updated"` or the stored AI take is stale and past its 15-minute
+   retry cooldown (`ai_retry_keys`) — so the common "nothing new, take
+   current" case costs a FRED call but never a Gemini call; a retry that
+   fails again is saved but reported as no update, so the page isn't
+   repainted). The page's own inline `<script>` calls
    `/api/check` right after load and patches `#table-section`/
    `#countdown-section`/`#ai-section` in place only if `data_updated` is true.
    This path's own `interpret()` call is deliberately left as-is (Story 11)
@@ -235,7 +241,7 @@ Four Redis keys, no local files at all — **Redis is required unconditionally, 
 - **`indicator_state`** (whole-blob key, `get_json`/`set_json`) — the historical record, and the shared state both the scheduled GitHub Actions workflow and any hosted web app read/write directly, rather than two independent copies drifting apart. Shape:
   `{"indicators": {key: {name, category, fred_series_id, fred_release_id,
   history: [{date, value, fetched_at}], next_release_date}}, "last_digest_sent_at",
-  "last_digest_content_fingerprint", "last_ai_response": {summary, directional_read, generated_at}}`.
+  "last_digest_content_fingerprint", "last_ai_response": {summary, directional_read, generated_at, as_of: {indicator key: latest date the take covered}}, "ai_last_failed_at"}`. `as_of` and `ai_last_failed_at` drive the AI retry (Data flow 4/5): a take is stale when any indicator's latest date differs from `as_of` (or `as_of` is absent, e.g. an older take), and `ai_last_failed_at` (cleared on success) holds off another attempt for 15 minutes.
   A Redis failure loading/saving this one propagates rather than degrading, unlike the two caches below — it's core data, not a mere cache. A wiped/fresh key comes back as an empty `{"indicators": {}}`; there is no automatic reseed, by design (see above) — run `python3 src/backfill.py` to repopulate recent history from FRED.
 - **`ticker_config`** (Redis **hash**, one field per group, each `{"symbols": [...], "order": i}`) — the watchlist. `add_ticker_to_group`/`remove_ticker_from_group` (`ticker_dashboard.py`) read and write only their own group's field (`hget_json`/`hset_json`), so two edits to different groups (or the same group from two tabs) can't clobber each other's data. Because Redis hash fields don't preserve insertion order on read (confirmed live — `HGETALL` came back alphabetized, not in config order), each field's `order` index is what `load_ticker_config` sorts by to restore a stable display order. A wiped/fresh key comes back as an empty watchlist; there is no automatic reseed — re-add tickers through the in-app editor.
 - **`ticker_cache`** (Redis **hash**, one field per symbol) — one snapshot per ticker: `{symbol: {price, change, change_percent, week52_low, week52_high, pct_off_high, ma20, ma50, ma200, fetched_at}}`. `ticker_dashboard.save_ticker_snapshot`/`delete_ticker_snapshot` (`kv_store.hset_json`/`hdel_json`) are atomic per-symbol operations, never a whole-blob read-modify-write, so concurrent groups (or concurrent users, on a hosted deployment) writing different symbols can never clobber each other's data — no lock needed anywhere. `remove_ticker_from_group` deletes a symbol's cache entry once it's confirmed unused by every remaining group. Losing the whole key is harmless (everything just shows as pending again until the next live fetch).

@@ -489,3 +489,18 @@ Each model is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-tie
 **Providers tried and dropped:** GitHub Models (every request to `models.github.ai`, any path, with or without a token, from the dev sandbox, a local terminal, and Render, returned a bare `HTTP 200`, `content-type: text/plain`, body `OK` from a genuine GitHub IP and certificate) and Claude via the Anthropic Messages API (works with an `ANTHROPIC_API_KEY`, but is billed per use through the Console, separately from a claude.ai subscription, which doesn't include API access). Neither is in the code.
 
 **Tests:** see Story 15 in `docs/v2_task_breakdown.md`. Full suite (377 tests) passes.
+
+### 11.18 Retrying a failed AI take for the indicator digest — implemented
+
+**Why:** the AI call ran only in the same cycle that found new data (`updated_keys` non-empty). If every Gemini model failed then, the new values were saved while the old take stayed, and no later check had a trigger to try again, so the take could stay stale until the next release.
+
+**State:** `last_ai_response` gains `as_of` (`{indicator key: latest reading date}` at generation); `state["ai_last_failed_at"]` records the last total failure and is cleared on success. Both live in the same Redis-backed `indicator_state` the scheduled workflow and the web app share.
+
+**Staleness (`build_digest_content.stale_indicator_keys`):** an indicator is stale when its latest date differs from `as_of`, or every indicator is when there's no take or it predates `as_of` (older takes get regenerated once). A date comparison rather than `generated_at` vs `fetched_at`, because those timestamps come from different clock reads in the same run and would be falsely out of order.
+
+**Retry (`ai_retry_keys`):** the stale keys, unless the last attempt failed within `AI_RETRY_COOLDOWN` (15 minutes). `post_release.refresh_ai_response_if_updated` (scheduled path) and `live_pull.check_for_updates` (page background check) both take the union of genuinely-new keys and retry keys; genuinely new data always triggers an attempt regardless of the cooldown. The retry keys are passed as the run's "new" indicators so the prompt marks them. `check_for_updates` skips the release-calendar refresh unless data actually updated, and a retry that fails again is saved (to record the attempt) but reported as `data_updated: False` so the page isn't repainted.
+
+**Cost:** a current take never triggers a call, so a "nothing new" check is unchanged (one FRED pass, no Gemini). During an outage, at most one attempt chain (up to five requests) per 15 minutes across the scheduled workflow and all page visits.
+
+**Tests:** see Story 16 in `docs/v2_task_breakdown.md`. Full suite (392 tests) passes.
+

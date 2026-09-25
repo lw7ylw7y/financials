@@ -260,11 +260,37 @@ class TestRefreshAiResponseIfUpdated(unittest.TestCase):
 
     def test_returns_none_and_leaves_state_untouched_when_nothing_updated(self):
         state = make_state()
+        state["last_ai_response"] = {
+            "summary": "s",
+            "directional_read": "neutral",
+            "generated_at": T0,
+            "as_of": {"nonfarm_payrolls": "2026-08-01", "cpi": "2026-08-01", "yield_curve_spread": "2026-09-10"},
+        }
+        before = dict(state)
 
         content = refresh_ai_response_if_updated(state, [], interpret_fn=fake_interpret_factory())
 
         self.assertIsNone(content)
-        self.assertNotIn("last_ai_response", state)
+        self.assertEqual(state, before)
+
+    def test_retries_a_stale_take_even_when_nothing_updated_this_run(self):
+        state = make_state()  # no AI take on file, e.g. every model failed earlier
+
+        content = refresh_ai_response_if_updated(state, [], interpret_fn=fake_interpret_factory())
+
+        self.assertIsNotNone(content)
+        self.assertEqual(state["last_ai_response"]["directional_read"], "neutral")
+
+    def test_does_not_retry_within_the_cooldown_after_a_failure(self):
+        state = make_state()
+        now = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
+        state["ai_last_failed_at"] = (now - timedelta(minutes=5)).isoformat()
+
+        content = refresh_ai_response_if_updated(
+            state, [], interpret_fn=fake_interpret_factory(), now=now
+        )
+
+        self.assertIsNone(content)
 
     def test_persists_ai_response_when_something_updated(self):
         state = make_state()

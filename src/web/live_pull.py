@@ -25,7 +25,13 @@ for _subdir in ("fred", "storage", "digest", "mailer"):
     sys.path.insert(0, os.path.join(_SRC_DIR, _subdir))
 sys.path.insert(0, _SRC_DIR)
 
-from build_digest_content import build_digest_content, build_indicators_context, build_table, build_countdown
+from build_digest_content import (
+    ai_retry_keys,
+    build_countdown,
+    build_digest_content,
+    build_indicators_context,
+    build_table,
+)
 from main import run_ingestion, update_release_calendar
 from storage import load_state, save_state
 
@@ -73,15 +79,18 @@ def get_initial_page_data() -> dict:
 
 
 def check_for_updates(now: datetime | None = None) -> dict:
-    """Attempt a live pull; only treat it as an update — and only spend
-    an AI call — if at least one indicator has a genuinely new value.
+    """Attempt a live pull; only spend an AI call if at least one
+    indicator has a genuinely new value, or an earlier AI attempt failed
+    and its retry is due (`ai_retry_keys`) -- so a Gemini outage when
+    data arrived doesn't leave the AI take stale until the next release.
 
     Returns {"data_updated": False} (nothing for the caller to render)
-    when there's nothing new, the live pull couldn't get anything
-    usable (e.g. every indicator's fetch failed), or an unexpected
-    error occurred. Returns {"data_updated": True, "content": {...},
-    "checked_at": now} when build_digest_content has fresh content to
-    show — `content` is that function's own return shape.
+    when there's nothing new and no AI take was produced, the live pull
+    couldn't get anything usable (e.g. every indicator's fetch failed),
+    or an unexpected error occurred. Returns {"data_updated": True,
+    "content": {...}, "checked_at": now} when build_digest_content has
+    fresh content to show -- `content` is that function's own return
+    shape.
     """
     now = now or datetime.now(timezone.utc)
 
@@ -91,13 +100,19 @@ def check_for_updates(now: datetime | None = None) -> dict:
         updated_keys = [
             key for key, r in ingestion_results.items() if r["status"] == "updated"
         ]
-        if not updated_keys:
+        keys = sorted(set(updated_keys) | set(ai_retry_keys(state, now)))
+        if not keys:
             return {"data_updated": False}
 
-        update_release_calendar(state)
-        content = build_digest_content(state, updated_keys, now=now)
+        if updated_keys:
+            update_release_calendar(state)
+        content = build_digest_content(state, keys, now=now)
         save_state(state)
 
+        if not updated_keys and content["ai_result"] is None:
+            # A retry that failed again: state records the attempt, but
+            # there's nothing new for the page to repaint.
+            return {"data_updated": False}
         return {"data_updated": True, "content": content, "checked_at": now}
 
     except Exception as e:

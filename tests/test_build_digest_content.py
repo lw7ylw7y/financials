@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 for _p in (
@@ -13,7 +13,7 @@ for _p in (
 ):
     sys.path.insert(0, _p)
 
-from build_digest_content import build_digest_content
+from build_digest_content import AI_RETRY_COOLDOWN, ai_retry_keys, build_digest_content, stale_indicator_keys
 from interpret import InterpretationError
 
 T0 = "2026-09-01T00:00:00+00:00"
@@ -69,6 +69,7 @@ class TestBuildDigestContent(unittest.TestCase):
                 "summary": "CPI cooled slightly.",
                 "directional_read": "neutral",
                 "generated_at": NOW.isoformat(),
+                "as_of": {"cpi": "2026-08-01"},
             },
         )
 
@@ -95,6 +96,66 @@ class TestBuildDigestContent(unittest.TestCase):
         )
 
         self.assertNotIn("last_ai_response", state)
+
+    def test_failed_ai_call_records_when_it_failed(self):
+        state = make_state()
+
+        build_digest_content(
+            state, ["cpi"], interpret_fn=fake_interpret_factory(succeed=False), now=NOW
+        )
+
+        self.assertEqual(state["ai_last_failed_at"], NOW.isoformat())
+
+    def test_successful_ai_call_clears_the_failure_record(self):
+        state = make_state()
+        state["ai_last_failed_at"] = T0
+
+        build_digest_content(state, ["cpi"], interpret_fn=fake_interpret_factory(), now=NOW)
+
+        self.assertNotIn("ai_last_failed_at", state)
+
+
+def current_ai(as_of):
+    return {"summary": "s", "directional_read": "neutral", "generated_at": T0, "as_of": as_of}
+
+
+class TestAiRetryKeys(unittest.TestCase):
+    def test_current_take_has_nothing_stale(self):
+        state = make_state(last_ai_response=current_ai({"cpi": "2026-08-01"}))
+
+        self.assertEqual(stale_indicator_keys(state), [])
+        self.assertEqual(ai_retry_keys(state, NOW), [])
+
+    def test_no_take_at_all_marks_every_indicator_stale(self):
+        self.assertEqual(stale_indicator_keys(make_state()), ["cpi"])
+
+    def test_take_predating_as_of_marks_every_indicator_stale(self):
+        legacy = {"summary": "s", "directional_read": "neutral", "generated_at": T0}
+
+        self.assertEqual(stale_indicator_keys(make_state(last_ai_response=legacy)), ["cpi"])
+
+    def test_indicator_with_a_newer_reading_than_the_take_is_stale(self):
+        state = make_state(last_ai_response=current_ai({"cpi": "2026-07-01"}))
+
+        self.assertEqual(ai_retry_keys(state, NOW), ["cpi"])
+
+    def test_retry_waits_out_the_cooldown_after_a_failure(self):
+        state = make_state(last_ai_response=current_ai({"cpi": "2026-07-01"}))
+        state["ai_last_failed_at"] = (NOW - AI_RETRY_COOLDOWN + timedelta(minutes=1)).isoformat()
+
+        self.assertEqual(ai_retry_keys(state, NOW), [])
+
+    def test_retry_is_due_once_the_cooldown_has_passed(self):
+        state = make_state(last_ai_response=current_ai({"cpi": "2026-07-01"}))
+        state["ai_last_failed_at"] = (NOW - AI_RETRY_COOLDOWN - timedelta(minutes=1)).isoformat()
+
+        self.assertEqual(ai_retry_keys(state, NOW), ["cpi"])
+
+    def test_indicators_without_history_are_ignored(self):
+        state = make_state(last_ai_response=current_ai({"cpi": "2026-08-01"}))
+        state["indicators"]["empty"] = {"name": "E", "category": "leading", "history": []}
+
+        self.assertEqual(stale_indicator_keys(state), [])
 
 
 if __name__ == "__main__":

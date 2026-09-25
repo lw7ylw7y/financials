@@ -11,7 +11,7 @@ later fallback (the page's Saved state) has something to show.
 """
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from email_template import CATEGORY_ORDER
 from heuristics import sahm_rule_value, yield_curve_inversion_streak
@@ -21,6 +21,10 @@ from interpret import interpret as default_interpret
 logger = logging.getLogger(__name__)
 
 HISTORY_WINDOW = 12
+# After a failed AI call, a retry that isn't triggered by genuinely new data
+# waits this long, so a page load or scheduled run during an outage doesn't
+# spend one request per model every time.
+AI_RETRY_COOLDOWN = timedelta(minutes=15)
 
 
 def _heuristic_for(key: str, history: list[dict]) -> dict | None:
@@ -111,6 +115,38 @@ def build_countdown(state: dict, today: date | None = None) -> dict:
     return {"entries": entries, "soonest": entries[0] if entries else None}
 
 
+def _latest_dates(state: dict) -> dict[str, str]:
+    return {
+        key: indicator["history"][-1]["date"]
+        for key, indicator in state.get("indicators", {}).items()
+        if indicator.get("history")
+    }
+
+
+def stale_indicator_keys(state: dict) -> list[str]:
+    """Indicators whose latest reading the stored AI take doesn't cover yet.
+
+    `last_ai_response["as_of"]` records each indicator's latest date at
+    the time the take was generated. Anything differing from what's
+    stored now (or everything, if there's no take or it predates
+    `as_of`) is data the AI hasn't seen -- e.g. because every model
+    failed when it arrived.
+    """
+    as_of = (state.get("last_ai_response") or {}).get("as_of") or {}
+    return [key for key, latest in _latest_dates(state).items() if as_of.get(key) != latest]
+
+
+def ai_retry_keys(state: dict, now: datetime) -> list[str]:
+    """Stale indicator keys worth another AI attempt right now: none if
+    the take is current, or if the last attempt failed within
+    `AI_RETRY_COOLDOWN`."""
+    keys = stale_indicator_keys(state)
+    failed_at = state.get("ai_last_failed_at")
+    if keys and failed_at and now - datetime.fromisoformat(failed_at) < AI_RETRY_COOLDOWN:
+        return []
+    return keys
+
+
 def build_digest_content(
     state: dict,
     updated_keys: list[str],
@@ -120,11 +156,12 @@ def build_digest_content(
     """Assemble {"indicators_context", "table", "countdown", "ai_result"}.
 
     On a successful AI call, persists it to `state["last_ai_response"]`
-    as `{"summary", "directional_read", "generated_at"}`, overwriting any
-    previous one. On failure, leaves `last_ai_response` untouched and
-    returns `ai_result=None` — the caller decides how to degrade (the
-    email drops the AI section; the page falls back to the untouched
-    `last_ai_response`).
+    as `{"summary", "directional_read", "generated_at", "as_of"}`,
+    overwriting any previous one. On failure, leaves `last_ai_response`
+    untouched, records `state["ai_last_failed_at"]`, and returns
+    `ai_result=None` — the caller decides how to degrade (the email drops
+    the AI section; the page falls back to the untouched
+    `last_ai_response`). `ai_retry_keys` uses both to retry later.
     """
     now = now or datetime.now(timezone.utc)
     indicators_context = build_indicators_context(state)
@@ -136,13 +173,16 @@ def build_digest_content(
         ai_result = interpret_fn(indicators_context, updated_keys)
     except InterpretationError as e:
         logger.warning("AI interpretation failed error=%s", e)
+        state["ai_last_failed_at"] = now.isoformat()
 
     if ai_result is not None:
         state["last_ai_response"] = {
             "summary": ai_result["summary"],
             "directional_read": ai_result["directional_read"],
             "generated_at": now.isoformat(),
+            "as_of": _latest_dates(state),
         }
+        state.pop("ai_last_failed_at", None)
 
     return {
         "indicators_context": indicators_context,

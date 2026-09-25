@@ -35,6 +35,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from build_digest_content import (
+    ai_retry_keys,
     build_countdown,
     build_digest_content,
     build_indicators_context,
@@ -113,21 +114,23 @@ def refresh_ai_response_if_updated(
 ) -> dict | None:
     """Regenerate and persist a fresh AI take whenever `updated_keys`
     (this run's genuinely-new indicators, from `main.run_ingestion`'s
-    own result — *not* "since the last email") is non-empty.
+    own result — *not* "since the last email") is non-empty, or when an
+    earlier attempt failed and its retry is due (`ai_retry_keys`).
 
     Decoupled from the email's weekly throttle: the stored AI response
     stays as fresh as the data itself, every ingestion cycle, rather
     than only refreshing when an email also happens to be due. Returns
     the built content dict (see
-    `build_digest_content`), or `None` if there was nothing new this
+    `build_digest_content`), or `None` if there was nothing to do this
     run — the caller passes that content straight to whatever else
     needs it this cycle (e.g. the web page's live-check response)
     without a second Gemini call.
     """
-    if not updated_keys:
-        return None
     now = now or datetime.now(timezone.utc)
-    return build_digest_content(state, updated_keys, interpret_fn=interpret_fn, now=now)
+    keys = sorted(set(updated_keys) | set(ai_retry_keys(state, now)))
+    if not keys:
+        return None
+    return build_digest_content(state, keys, interpret_fn=interpret_fn, now=now)
 
 
 def _digest_fingerprint(state: dict) -> str:

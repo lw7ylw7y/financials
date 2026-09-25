@@ -223,6 +223,18 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] Each model is called at most once per request (no retries)
 - [x] After every model has failed, the ticker valuation's AI call isn't retried for 15 minutes (`VALUATION_FAILURE_COOLDOWN`), so a page load during an outage doesn't spend one request per model on the shared quota
 
+### Story 16 — A Failed AI Call Is Retried, Not Left Stale
+**As** the investor, **I want** the indicator digest's AI take to be regenerated after a failed attempt, **so that** a Gemini outage at the moment new data arrived doesn't leave an outdated take on the page until the next release, weeks later.
+
+**Why:** the AI call used to happen only in the same run that found new data. If every model failed then, the new values were saved, the old take stayed, and no later check had a reason to try again.
+
+**Acceptance Criteria**
+- [x] Each saved AI take records which reading of each indicator it covers (`as_of`); a take is stale when any indicator's latest date differs from it, or when it's missing or predates `as_of`
+- [x] A stale take is retried by the next scheduled run and by the next page's background check, even if no indicator has a new value
+- [x] After a failed attempt, no further attempt is made for 15 minutes (`AI_RETRY_COOLDOWN`), unless a genuinely new value arrives, so an outage doesn't cost one request per model on every page load
+- [x] A successful attempt clears the failure record; the current take is never regenerated, so a "nothing new, take current" check still costs a FRED call and no Gemini call
+- [x] A retry that fails again doesn't repaint the page; a successful one patches the AI section in place
+
 ---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)
 - [x] Neither page requires user authentication
