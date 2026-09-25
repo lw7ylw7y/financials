@@ -520,3 +520,21 @@ Each model is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-tie
 
 **Tests:** see Story 17 in `docs/v2_task_breakdown.md`. Full suite (404 tests) passes.
 
+### 11.20 Valuation verdicts for every ticker, and macro context — implemented
+
+**Change to the Section 11.14 design:** the AI returns a verdict and one-sentence reasoning for every ticker in every group (`ValuationResponse.tickers`), not just the `individual` group; the per-group verdicts (`groups`) are unchanged. `ticker_valuation._group_by_verdict` buckets them into `tickers_by_verdict` (`{"discount"|"fair"|"overpriced": [{"symbol", "group", "reasoning"}]}`), in watchlist order (group by group) within each bucket rather than the AI's order. This replaces the `individual_by_verdict` key. `page_template._render_valuation_ticker_column` shows each entry with a muted `(Group)` tag, and falls back to `individual_by_verdict` so a valuation cached under the old key still renders.
+
+**Cache migration:** `check_for_ticker_valuation` treats a cache without `tickers_by_verdict` as stale, so the first check after deploying regenerates instead of waiting out the 6-hour throttle; if that regeneration fails, the old cache is still returned.
+
+**Prompt:** the system prompt asks for a verdict per ticker across all groups and, for an ETF (which never has a P/E, see 11.11/11.16), to judge by distance below the 52-week high and relative to its group and the market, and to say plainly when that is all it has.
+
+**Macro context:** `ticker_dashboard._load_macro_context()` reads the indicator digest's saved take (`summary`, `directional_read`, `generated_at`) from `indicator_state` and passes it to `interpret_ticker_valuation(macro_context=...)`, which prepends it as a "Macro backdrop" section. The prompt tells the model to use it as context but let each ticker's numbers decide and not to restate it. A missing take or a Redis failure (`KvStoreError`) yields no context and the valuation proceeds. `ticker_dashboard` now imports `storage.load_state`.
+
+**Price returns:** with no P/E for funds, ETF verdicts were effectively bins of distance from the 52-week high. `fetch_stock_metrics` now also returns `return_13w`, `return_26w` and `return_ytd` (Finnhub's `13WeekPriceReturnDaily`, `26WeekPriceReturnDaily`, `yearToDatePriceReturnDaily`, from the same `/stock/metric` call, populated for funds and companies), stored in each `ticker_cache` snapshot (`_SNAPSHOT_FIELDS`), and printed for every ticker in the valuation prompt. The prompt asks the model to use them to tell a stretched fund (high after a long steep run) from one at its high after a flat stretch, and a weak fund from one resting after a gain, while saying returns describe the past and price position alone isn't a valuation. They're data for the AI only, not new table columns.
+
+**Rollout guard:** snapshots cached before the returns existed lack the `return_ytd` key, and the valuation check runs concurrently with the per-group price checks that refresh them. `_returns_are_cached` (present even when `None` counts) holds the AI call until at least half the cached snapshots have it, returning the cached or pending valuation without setting the failure cooldown, so a full valuation isn't cached for 6 hours built without them.
+
+**Live result:** the model cited the returns (FTEC "overheated 33.47% YTD", FHLC "10.70% surge over 13 weeks") and separated a fund that is off its high because it's weak (FDIS) from one that is resting. Verdicts stayed uneven: bonds and utilities that had fallen were still called "discount" on the fall alone, while FDIS, also falling, was called "overpriced". The verdict is only loosely tied to the returns.
+
+**Tests:** see Story 18 in `docs/v2_task_breakdown.md`. Full suite (421 tests) passes.
+

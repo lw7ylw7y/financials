@@ -524,13 +524,18 @@ def _render_valuation_group_badge(group_verdict: dict) -> str:
     )
 
 
+def _valuation_group_tag(ticker: dict) -> str:
+    group = ticker.get("group")
+    return f' <span class="muted">({escape(_group_header(group))})</span>' if group else ""
+
+
 def _render_valuation_ticker_column(verdict: str, tickers: list[dict]) -> str:
     style = VALUATION_STYLE[verdict]
     if not tickers:
         items = '<p class="muted">None.</p>'
     else:
         items = "<ul>" + "".join(
-            f'<li><strong>{escape(t["symbol"])}</strong> &mdash; {escape(t["reasoning"])}</li>'
+            f'<li><strong>{escape(t["symbol"])}</strong>{_valuation_group_tag(t)} &mdash; {escape(t["reasoning"])}</li>'
             for t in tickers
         ) + "</ul>"
     return f"""
@@ -559,7 +564,8 @@ def _render_ticker_valuation(valuation: dict) -> str:
           <p class="muted">AI valuation not yet available.</p>
         </section>"""
 
-    by_verdict = valuation["individual_by_verdict"]
+    # A valuation cached before every group got verdicts has the older key.
+    by_verdict = valuation.get("tickers_by_verdict") or valuation.get("individual_by_verdict", {})
     columns = "".join(
         _render_valuation_ticker_column(verdict, by_verdict.get(verdict, []))
         for verdict in ("discount", "fair", "overpriced")
@@ -608,7 +614,7 @@ def _render_market_news(market_news: dict) -> str:
         </section>"""
 
 
-_PENDING_VALUATION = {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}
+_PENDING_VALUATION = {"overview": None, "groups": [], "tickers_by_verdict": {}, "pending": True}
 
 
 def render_ticker_dashboard_page(grouped_cards: dict, market_news: dict, valuation: dict | None = None) -> str:

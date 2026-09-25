@@ -333,3 +333,20 @@ Dependency-driven:
 
 **Notes:** verified against live FRED with an in-memory state: 52 jobless-claims readings, ~250 yield-curve, ~365 fed-funds (daily incl. weekends), 10–11 for the monthly series. CPI and unemployment have only 10 because October 2025 has no reading (the federal shutdown), and a 12-month window that starts on the current day's date reaches only back to the following 1st. The Sahm Rule heuristic needs 12 monthly readings, so it stays unavailable for that reason, as it was before this change.
 
+
+### Story 18 — Ticker Valuation Covers Every Ticker and Knows the Macro Backdrop
+
+| Task | Status |
+|---|---|
+| 18.1 `ticker_valuation.py` — response schema `individual_tickers` → `tickers` covering every group; `_group_by_verdict` buckets every card and tags each entry with its group; result key `individual_by_verdict` → `tickers_by_verdict`; system prompt rewritten for ETFs | done |
+| 18.2 `ticker_valuation.py` — `macro_context` parameter, prepended to the prompt as a "Macro backdrop" section | done |
+| 18.3 `ticker_dashboard.py` — `_load_macro_context()` from `state["last_ai_response"]` (absent or a Redis failure means none); a cache without `tickers_by_verdict` is treated as stale | done |
+| 18.4 `page_template.py` — columns render every ticker with a `(Group)` tag; an older cache with `individual_by_verdict` still renders | done |
+| 18.5 Tests in `test_ticker_valuation.py`, `test_ticker_dashboard.py`, `test_page_template.py`, `test_app.py` | done |
+
+**Verified live** (read-only, nothing saved): with the saved indicator take as backdrop, the model returned verdicts for all 31 cached tickers (8 discount, 15 fair, 8 overpriced), via the third model in the chain after `gemini-3.8-flash` and `gemini-3.7-flash` returned `503`. ETF verdicts came out as bins of distance from the 52-week high (e.g. SPY and FTEC "overpriced" at ~1% and ~0.3% off their highs, FUTY "discount" at 16.8% off), which is a price-position read, not a valuation.
+| 18.6 `finnhub_client.fetch_stock_metrics` — `return_13w`/`return_26w`/`return_ytd` (`13WeekPriceReturnDaily`, `26WeekPriceReturnDaily`, `yearToDatePriceReturnDaily`); carried through `_SNAPSHOT_FIELDS` and the cards, shown in the valuation prompt | done |
+| 18.7 `ticker_dashboard._returns_are_cached` — hold the AI call (no failure cooldown) until at least half the cached snapshots have the return fields | done |
+
+**Return figures, live check:** with returns in the prompt, the model cited them (FTEC "overheated 33.47% YTD", FHLC "10.70% surge over 13 weeks") and separated a sector that is off its high because it is weak (FDIS) from one merely resting. Judgement stayed uneven: bonds and utilities that had fallen were still called "discount" on the fall alone, while FDIS, also falling, was called "overpriced", so the verdict is only loosely tied to the returns.
+

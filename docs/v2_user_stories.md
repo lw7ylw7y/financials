@@ -247,6 +247,19 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] The Fed Funds Rate uses the daily effective rate (`DFF`), which reflects a change within about a day
 - [x] Switching an indicator's FRED series discards the old series' readings (a monthly average isn't comparable to a daily rate), both in the scheduled/live ingestion and in `backfill.py`
 
+### Story 18 — Ticker Valuation Covers Every Ticker and Knows the Macro Backdrop
+**As** the investor, **I want** the discount/fair/overpriced columns to list ETFs as well as individual stocks, and the AI to weigh the economic backdrop, **so that** I can see both where to put money in general (the group cards) and which specific tickers, ETFs included, to put it in.
+
+**Acceptance Criteria**
+- [x] The per-group cards (bonds, stocks, international, sector, individual) are unchanged
+- [x] The Discount/Fair/Overpriced columns list every ticker in every group, ETFs and individual stocks, each with a one-sentence reasoning and a small tag naming its group, in watchlist order within each column
+- [x] An ETF's verdict is based on how far it sits below its 52-week high, its recent price returns (13-week, 26-week, year-to-date) and its peers (funds have no P/E), and the reasoning says so plainly rather than inventing a P/E-based read
+- [x] Each ticker's cached snapshot carries those three returns (from the same Finnhub call already made), shown to the AI for ETFs and individual stocks alike but not as new table columns
+- [x] The valuation isn't generated until at least half the cached snapshots carry the returns, so the first check after they were introduced doesn't cache a valuation built without them
+- [x] The valuation call is given the indicator digest's saved summary and direction as background; the model is told to let each ticker's own numbers decide, and a missing or unreadable digest take doesn't stop the valuation
+- [x] A valuation cached before this change is regenerated on the next check instead of being served for up to 6 hours, and still renders (individual stocks only) if the regeneration fails
+- [x] A ticker the AI leaves out is simply absent from the columns, not an error
+
 ---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)
 - [x] Neither page requires user authentication

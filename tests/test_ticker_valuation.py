@@ -64,7 +64,7 @@ def make_quota_error():
     )
 
 
-def valuation_response_json(groups=None, individual_tickers=None):
+def valuation_response_json(groups=None, tickers=None):
     return json.dumps(
         {
             "overview": "Bonds look cheapest, stocks priciest.",
@@ -74,9 +74,11 @@ def valuation_response_json(groups=None, individual_tickers=None):
                 {"group": "stocks", "verdict": "overpriced", "reasoning": "near highs"},
                 {"group": "bonds", "verdict": "discount", "reasoning": "off highs"},
             ],
-            "individual_tickers": individual_tickers
-            if individual_tickers is not None
+            "tickers": tickers
+            if tickers is not None
             else [
+                {"symbol": "SPY", "verdict": "fair", "reasoning": "close to its high"},
+                {"symbol": "VGIT", "verdict": "discount", "reasoning": "off its high"},
                 {"symbol": "AMD", "verdict": "overpriced", "reasoning": "P/E far above sector"},
                 {"symbol": "RELY", "verdict": "discount", "reasoning": "P/E below sector, strong growth"},
             ],
@@ -99,19 +101,66 @@ class TestBuildUserPrompt(unittest.TestCase):
         self.assertIn("sector_pe_ratio=32.15 (benchmark: FTEC)", prompt)
 
 
+class TestPriceReturnsInPrompt(unittest.TestCase):
+    def test_returns_are_shown_for_etfs_and_individual_stocks(self):
+        cards = {
+            "sector": [{"symbol": "FTEC", "price": 301.2, "pct_off_high": 0.31,
+                        "return_13w": 8.2, "return_26w": 39.4, "return_ytd": 33.5}],
+            "individual": [{"symbol": "AMD", "price": 545.0, "pct_off_high": 6.8,
+                            "return_13w": -3.0, "return_26w": 10.0, "return_ytd": 20.0}],
+        }
+
+        prompt = build_user_prompt(cards)
+
+        self.assertIn("FTEC: price=$301.2, pct_off_52wk_high=0.31%, return_13w=8.2%, return_26w=39.4%, return_ytd=33.5%", prompt)
+        self.assertIn("return_13w=-3.0%, return_26w=10.0%, return_ytd=20.0%", prompt)
+
+    def test_missing_returns_show_as_n_a(self):
+        prompt = build_user_prompt(CARDS_BY_GROUP)
+
+        self.assertIn("return_13w=n/a, return_26w=n/a, return_ytd=n/a", prompt)
+
+
+class TestMacroContext(unittest.TestCase):
+    MACRO = {"summary": "Growth is steady and inflation is cooling.", "directional_read": "neutral"}
+
+    def test_macro_backdrop_is_prepended_when_given(self):
+        prompt = build_user_prompt(CARDS_BY_GROUP, self.MACRO)
+
+        self.assertTrue(prompt.startswith("### Macro backdrop"))
+        self.assertIn("Direction: neutral", prompt)
+        self.assertIn("Growth is steady and inflation is cooling.", prompt)
+        self.assertLess(prompt.index("Macro backdrop"), prompt.index("### Group: stocks"))
+
+    def test_no_macro_section_without_context(self):
+        self.assertNotIn("Macro backdrop", build_user_prompt(CARDS_BY_GROUP))
+        self.assertNotIn("Macro backdrop", build_user_prompt(CARDS_BY_GROUP, {"summary": None}))
+
+    def test_interpret_passes_the_context_into_the_prompt(self):
+        client = fake_client(text=valuation_response_json())
+
+        interpret_ticker_valuation(CARDS_BY_GROUP, client=client, macro_context=self.MACRO)
+
+        contents = client.models.generate_content.call_args.kwargs["contents"]
+        self.assertIn("Growth is steady", contents)
+
+
 class TestInterpretTickerValuation(unittest.TestCase):
-    def test_parses_overview_groups_and_individual_buckets(self):
+    def test_parses_overview_groups_and_ticker_buckets_across_every_group(self):
         client = fake_client(text=valuation_response_json())
 
         result = interpret_ticker_valuation(CARDS_BY_GROUP, client=client)
 
         self.assertEqual(result["overview"], "Bonds look cheapest, stocks priciest.")
         self.assertEqual(
-            result["individual_by_verdict"],
+            result["tickers_by_verdict"],
             {
-                "discount": [{"symbol": "RELY", "reasoning": "P/E below sector, strong growth"}],
-                "fair": [],
-                "overpriced": [{"symbol": "AMD", "reasoning": "P/E far above sector"}],
+                "discount": [
+                    {"symbol": "VGIT", "group": "bonds", "reasoning": "off its high"},
+                    {"symbol": "RELY", "group": "individual", "reasoning": "P/E below sector, strong growth"},
+                ],
+                "fair": [{"symbol": "SPY", "group": "stocks", "reasoning": "close to its high"}],
+                "overpriced": [{"symbol": "AMD", "group": "individual", "reasoning": "P/E far above sector"}],
             },
         )
 
@@ -133,14 +182,16 @@ class TestInterpretTickerValuation(unittest.TestCase):
         self.assertEqual([g["group"] for g in result["groups"]], ["bonds", "sector", "stocks"])
 
     def test_preserves_original_watchlist_order_within_each_bucket(self):
-        # Both AMD and RELY come back "discount" -- the bucket order must
-        # follow CARDS_BY_GROUP["individual"]'s order (AMD, RELY), not
-        # whatever order the AI happened to list them in.
+        # SPY, VGIT, AMD and RELY all come back "discount" -- the bucket
+        # order must follow CARDS_BY_GROUP (stocks, bonds, individual: AMD,
+        # RELY), not whatever order the AI happened to list them in.
         client = fake_client(
             text=valuation_response_json(
-                individual_tickers=[
+                tickers=[
                     {"symbol": "RELY", "verdict": "discount", "reasoning": "cheap"},
                     {"symbol": "AMD", "verdict": "discount", "reasoning": "also cheap"},
+                    {"symbol": "VGIT", "verdict": "discount", "reasoning": "cheap too"},
+                    {"symbol": "SPY", "verdict": "discount", "reasoning": "cheap as well"},
                 ]
             )
         )
@@ -148,23 +199,37 @@ class TestInterpretTickerValuation(unittest.TestCase):
         result = interpret_ticker_valuation(CARDS_BY_GROUP, client=client)
 
         self.assertEqual(
-            [t["symbol"] for t in result["individual_by_verdict"]["discount"]], ["AMD", "RELY"]
+            [t["symbol"] for t in result["tickers_by_verdict"]["discount"]],
+            ["SPY", "VGIT", "AMD", "RELY"],
         )
 
     def test_ticker_omitted_by_ai_is_simply_absent_not_fatal(self):
         client = fake_client(
             text=valuation_response_json(
-                individual_tickers=[
+                tickers=[
                     {"symbol": "AMD", "verdict": "overpriced", "reasoning": "expensive"},
-                    # RELY omitted despite the system prompt's instruction not to.
+                    # every other ticker omitted despite the system prompt's instruction not to.
                 ]
             )
         )
 
         result = interpret_ticker_valuation(CARDS_BY_GROUP, client=client)
 
-        all_symbols = sum((v for v in result["individual_by_verdict"].values()), [])
+        all_symbols = sum((v for v in result["tickers_by_verdict"].values()), [])
         self.assertEqual([t["symbol"] for t in all_symbols], ["AMD"])
+
+    def test_etfs_are_included_with_their_group(self):
+        client = fake_client(text=valuation_response_json())
+
+        result = interpret_ticker_valuation(CARDS_BY_GROUP, client=client)
+
+        by_symbol = {
+            t["symbol"]: (verdict, t["group"])
+            for verdict, tickers in result["tickers_by_verdict"].items()
+            for t in tickers
+        }
+        self.assertEqual(by_symbol["VGIT"], ("discount", "bonds"))
+        self.assertEqual(by_symbol["SPY"], ("fair", "stocks"))
 
     def test_raises_on_no_data_at_all(self):
         empty = {"stocks": [], "bonds": [], "individual": []}

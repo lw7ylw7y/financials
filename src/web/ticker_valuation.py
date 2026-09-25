@@ -1,7 +1,7 @@
 """Gemini API call for the Ticker Dashboard's AI valuation section: one
 batched call reasoning across the whole watchlist at once -- a
-discount/fair/overpriced read for each ETF group plus one for every
-individual stock -- rather than one call per ticker. Deliberate,
+discount/fair/overpriced read for each group plus one for every ticker
+(ETFs and individual stocks) -- rather than one call per ticker. Deliberate,
 given the free tier's confirmed 20-requests/day quota for
 gemini-3.8-flash (a single wide watchlist could otherwise burn through
 that from ticker valuation alone, before the indicator digest's own
@@ -52,17 +52,30 @@ primarily by where price sits in its 52-week range and say so explicitly \
 rather than inventing a P/E-based read. Then write ONE short paragraph \
 ranking the groups from most attractively priced to least, explaining why.
 
-Then, for EVERY SINGLE ticker listed under the "individual" group below -- \
-all of them, with no exceptions or omissions -- give a one-word verdict of \
-exactly "discount", "fair", or "overpriced", plus a one-sentence \
-justification citing the SPECIFIC numbers you were given: its P/E versus \
-its sector-peer benchmark P/E (if given), its PEG, and its growth/margin/debt \
-figures. A low P/E paired with shrinking revenue, negative EPS growth, or \
-high debt is a value trap, not a discount -- call that out explicitly \
-rather than defaulting to "discount" whenever P/E is low. The \
-individual_tickers list in your response MUST have exactly one entry per \
-ticker shown in the individual group -- never leave it empty and never \
-skip a ticker.
+Then, for EVERY SINGLE ticker listed in ANY group below -- ETFs and \
+individual stocks alike, all of them, with no exceptions or omissions -- give \
+a one-word verdict of exactly "discount", "fair", or "overpriced", plus a \
+one-sentence justification citing the SPECIFIC numbers you were given. For an \
+individual stock, use its P/E versus its sector-peer benchmark P/E (if \
+given), its PEG, and its growth/margin/debt figures; a low P/E paired with \
+shrinking revenue, negative EPS growth, or high debt is a value trap, not a \
+discount -- call that out explicitly rather than defaulting to "discount" \
+whenever P/E is low. For an ETF there is usually no P/E, so judge it by how \
+far it sits below its 52-week high together with its recent price returns \
+(13-week, 26-week and year-to-date, in percent), relative to the other funds \
+in its own group and to the market as a whole. Use the returns to tell apart \
+a fund sitting at its high after a long, steep run (stretched) from one at its \
+high after a flat stretch, and a fund that has fallen because it is weak from \
+one that is merely resting after a big gain. Returns describe what has \
+already happened, not what will happen, and price position alone is not a \
+valuation -- say plainly when that is all you have. The tickers list in your response MUST have exactly one entry per \
+ticker shown anywhere below -- never leave it empty and never skip a ticker.
+
+You may also be given a macro backdrop: the investor's separately generated \
+read of the economy. Use it as context (for example, whether stretched \
+prices are at odds with a weakening economy, or cheap ones with a stable \
+one), but let each ticker's own numbers decide its verdict, and don't just \
+restate the backdrop.
 
 Be concrete and numeric, not vague.
 """
@@ -83,7 +96,7 @@ class TickerVerdict(BaseModel):
 class ValuationResponse(BaseModel):
     overview: str
     groups: list[GroupVerdict]
-    individual_tickers: list[TickerVerdict]
+    tickers: list[TickerVerdict]
 
 
 class TickerValuationError(Exception):
@@ -95,12 +108,21 @@ def _fmt(card: dict, key: str, suffix: str = "") -> str:
     return "n/a" if value is None else f"{value}{suffix}"
 
 
+def _fmt_returns(card: dict) -> str:
+    return (
+        f"return_13w={_fmt(card, 'return_13w', '%')}, "
+        f"return_26w={_fmt(card, 'return_26w', '%')}, "
+        f"return_ytd={_fmt(card, 'return_ytd', '%')}"
+    )
+
+
 def _format_group_section(group_name: str, cards: list[dict]) -> str:
     lines = [f"### Group: {group_name}"]
     for c in cards:
         lines.append(
             f"- {c['symbol']}: price=${_fmt(c, 'price')}, "
             f"pct_off_52wk_high={_fmt(c, 'pct_off_high', '%')}, "
+            f"{_fmt_returns(c)}, "
             f"pe_ratio={_fmt(c, 'pe_ratio')}"
         )
     return "\n".join(lines)
@@ -112,6 +134,7 @@ def _format_individual_section(cards: list[dict]) -> str:
         lines.append(
             f"- {c['symbol']}: price=${_fmt(c, 'price')}, "
             f"pct_off_52wk_high={_fmt(c, 'pct_off_high', '%')}, "
+            f"{_fmt_returns(c)}, "
             f"pe_ratio={_fmt(c, 'pe_ratio')}, peg_ratio={_fmt(c, 'peg_ratio')}, "
             f"revenue_growth={_fmt(c, 'revenue_growth', '%')}, "
             f"eps_growth={_fmt(c, 'eps_growth', '%')}, roe={_fmt(c, 'roe', '%')}, "
@@ -123,16 +146,30 @@ def _format_individual_section(cards: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_user_prompt(cards_by_group: dict[str, list[dict]]) -> str:
+def _format_macro_context(macro_context: dict) -> str:
+    return (
+        "### Macro backdrop (the investor's own economic read)\n"
+        f"Direction: {macro_context.get('directional_read')}\n"
+        f"Summary: {macro_context.get('summary')}"
+    )
+
+
+def build_user_prompt(
+    cards_by_group: dict[str, list[dict]], macro_context: dict | None = None
+) -> str:
     """`cards_by_group`: `{group_name: [card, ...]}`, each card at least
     `{"symbol", "price", "pct_off_high", "pe_ratio"}`, plus (for
     "individual") the growth/quality/sector-benchmark fields
     `ticker_dashboard._build_card` also attaches. A symbol with no
     cached data yet is expected to already be filtered out by the
     caller (`ticker_dashboard._build_valuation_cards`), not included
-    here as a placeholder.
+    here as a placeholder. `macro_context`, if given, is the saved
+    indicator-digest take (`{"summary", "directional_read"}`),
+    prepended as background.
     """
     sections = []
+    if macro_context and macro_context.get("summary"):
+        sections.append(_format_macro_context(macro_context))
     for group_name, cards in cards_by_group.items():
         if group_name == "individual":
             sections.append(_format_individual_section(cards))
@@ -141,25 +178,30 @@ def build_user_prompt(cards_by_group: dict[str, list[dict]]) -> str:
     return "\n\n".join(sections)
 
 
-def _group_individual_by_verdict(
-    individual_cards: list[dict], ticker_verdicts: list[TickerVerdict]
+def _group_by_verdict(
+    cards_by_group: dict[str, list[dict]], ticker_verdicts: list[TickerVerdict]
 ) -> dict[str, list[dict]]:
     """Buckets `ticker_verdicts` under "discount"/"fair"/"overpriced"
-    headings, in `individual_cards`' own order within each bucket --
-    not whatever order the AI happened to return them in, so the
-    rendered page doesn't reshuffle from one refresh to the next for
-    reasons unrelated to an actual verdict change. A ticker the AI
-    omitted despite the system prompt's instruction not to is logged
-    and simply absent from every bucket, not treated as a fatal error.
+    headings, in `cards_by_group`' own order (group by group, then
+    ticker by ticker) within each bucket -- not whatever order the AI
+    happened to return them in, so the rendered page doesn't reshuffle
+    from one refresh to the next for reasons unrelated to an actual
+    verdict change. Each entry is `{"symbol", "group", "reasoning"}`. A
+    ticker the AI omitted despite the system prompt's instruction not
+    to is logged and simply absent from every bucket, not treated as a
+    fatal error.
     """
     verdict_by_symbol = {tv.symbol: tv for tv in ticker_verdicts}
     buckets: dict[str, list[dict]] = {"discount": [], "fair": [], "overpriced": []}
-    for card in individual_cards:
-        verdict = verdict_by_symbol.get(card["symbol"])
-        if verdict is None:
-            logger.warning("AI valuation omitted ticker symbol=%s", card["symbol"])
-            continue
-        buckets[verdict.verdict].append({"symbol": verdict.symbol, "reasoning": verdict.reasoning})
+    for group_name, cards in cards_by_group.items():
+        for card in cards:
+            verdict = verdict_by_symbol.get(card["symbol"])
+            if verdict is None:
+                logger.warning("AI valuation omitted ticker symbol=%s", card["symbol"])
+                continue
+            buckets[verdict.verdict].append(
+                {"symbol": verdict.symbol, "group": group_name, "reasoning": verdict.reasoning}
+            )
     return buckets
 
 
@@ -217,15 +259,21 @@ def _run_with_fallbacks(prompt: str, client: genai.Client | None) -> ValuationRe
     raise TickerValuationError("; ".join(failures))
 
 
-def interpret_ticker_valuation(cards_by_group: dict[str, list[dict]], client: genai.Client | None = None) -> dict:
+def interpret_ticker_valuation(
+    cards_by_group: dict[str, list[dict]],
+    client: genai.Client | None = None,
+    macro_context: dict | None = None,
+) -> dict:
     """Return {"overview": str, "groups": [{"group", "verdict",
-    "reasoning"}, ...], "individual_by_verdict": {"discount": [...],
+    "reasoning"}, ...], "tickers_by_verdict": {"discount": [...],
     "fair": [...], "overpriced": [...]}} -- `groups` sorted
     discount-first/overpriced-last regardless of the order Gemini
     returned them in, since "sort by discount level" is a rendering
     guarantee this function makes, not something worth trusting an LLM
-    to do consistently call to call. Each `individual_by_verdict` entry
-    is `{"symbol", "reasoning"}`.
+    to do consistently call to call. `tickers_by_verdict` covers every
+    ticker in every group (ETFs and individual stocks); each entry is
+    `{"symbol", "group", "reasoning"}`. `macro_context` is the saved
+    indicator-digest take, given to the model as background.
 
     Tries Gemini first, then each fallback Gemini model in turn
     if each fails for any reason. An explicitly injected `client` is
@@ -239,7 +287,7 @@ def interpret_ticker_valuation(cards_by_group: dict[str, list[dict]], client: ge
     if not any(cards_by_group.values()):
         raise TickerValuationError("no ticker data available to evaluate")
 
-    prompt = build_user_prompt(cards_by_group)
+    prompt = build_user_prompt(cards_by_group, macro_context)
 
     parsed = _run_with_fallbacks(prompt, client)
 
@@ -251,7 +299,5 @@ def interpret_ticker_valuation(cards_by_group: dict[str, list[dict]], client: ge
     return {
         "overview": parsed.overview,
         "groups": groups,
-        "individual_by_verdict": _group_individual_by_verdict(
-            cards_by_group.get("individual", []), parsed.individual_tickers
-        ),
+        "tickers_by_verdict": _group_by_verdict(cards_by_group, parsed.tickers),
     }

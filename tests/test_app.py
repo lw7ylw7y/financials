@@ -38,7 +38,7 @@ class TestDashboardAuth(unittest.TestCase):
             ("app.get_initial_page_data", {"table": {}, "countdown": {"entries": []}, "ai_result": None}),
             ("app.get_initial_ticker_page_data", {}),
             ("app.get_initial_market_news", {"headlines": [], "pending": False}),
-            ("app.get_initial_ticker_valuation", {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}),
+            ("app.get_initial_ticker_valuation", {"overview": None, "groups": [], "tickers_by_verdict": {}, "pending": True}),
         ):
             patcher = mock.patch(target, return_value=value)
             patcher.start()
@@ -241,7 +241,7 @@ class TestApiCheckTickerValuation(unittest.TestCase):
         self.addCleanup(self.env_patcher.stop)
 
     def test_returns_valuation_html(self):
-        valuation = {"overview": "Test.", "groups": [], "individual_by_verdict": {}, "pending": False}
+        valuation = {"overview": "Test.", "groups": [], "tickers_by_verdict": {}, "pending": False}
         with mock.patch("app.check_for_ticker_valuation", return_value=valuation):
             response = self.client.get("/api/tickers/valuation/check")
 

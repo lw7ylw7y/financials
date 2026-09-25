@@ -591,9 +591,22 @@ work now rather than as a change-log entry.
   discount/fair/overpriced badge per ETF group (sorted discount-first,
   overpriced-last, regardless of the order Gemini returns them in —
   sorting is done in code, not trusted to the AI), then the
-  `individual` group's own tickers listed under three "Discount"/
-  "Fair"/"Overpriced" column headings (not one flat list) with a
-  one-sentence reasoning each. One batched Gemini call reasons across
+  every ticker (ETFs and individual stocks, each tagged with its
+  group) listed under three "Discount"/"Fair"/"Overpriced" column
+  headings (not one flat list) with a one-sentence reasoning each. An
+  ETF has no P/E, so its verdict rests on distance from its 52-week
+  high plus its 13-week/26-week/year-to-date price returns (Finnhub's
+  `/stock/metric`, same call as everything else, cached in
+  `ticker_cache` as `return_13w`/`return_26w`/`return_ytd`) and its
+  peers, and the prompt tells the model to say so; the valuation call
+  waits (returns the cached/pending valuation, no failure cooldown)
+  until at least half the cached snapshots carry those fields, so the
+  first check after they were added doesn't cache a valuation built
+  without them; the
+  call is also given the indicator digest's saved take as a macro
+  backdrop (`ticker_dashboard._load_macro_context`), and a cache from
+  before verdicts covered every group (no `tickers_by_verdict`) is
+  regenerated rather than served as fresh. One batched Gemini call reasons across
   the *entire* watchlist at once (`ticker_valuation.py`,
   `interpret_ticker_valuation`) rather than one call per ticker —
   confirmed live that gemini-3.8-flash's free tier caps at 20
@@ -608,7 +621,7 @@ work now rather than as a change-log entry.
 
   **Caching and throttling (`ticker_dashboard.py`):** `ticker_valuation_cache`
   (a new whole-blob Redis key) stores `{overview, groups,
-  individual_by_verdict, generated_at}`. Unlike every other background
+  tickers_by_verdict, generated_at}`. Unlike every other background
   check on this page, `check_for_ticker_valuation()` is throttled by
   *time* (`MIN_VALUATION_INTERVAL`, 6 hours), not just "does cached
   data exist yet" — refreshing on every page load/background check the

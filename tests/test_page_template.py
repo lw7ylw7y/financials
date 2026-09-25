@@ -191,17 +191,23 @@ def make_pending_card(**overrides):
     )
 
 
-PENDING_VALUATION = {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}
+PENDING_VALUATION = {"overview": None, "groups": [], "tickers_by_verdict": {}, "pending": True}
 SAMPLE_VALUATION = {
     "overview": "Bonds look cheapest, stocks priciest.",
     "groups": [
         {"group": "bonds", "verdict": "discount", "reasoning": "well off highs"},
         {"group": "stocks", "verdict": "overpriced", "reasoning": "near highs"},
     ],
-    "individual_by_verdict": {
-        "discount": [{"symbol": "NVDA", "reasoning": "cheap vs FTEC sector benchmark"}],
-        "fair": [{"symbol": "MSFT", "reasoning": "in line with sector"}],
-        "overpriced": [{"symbol": "TSLA", "reasoning": "far above sector, negative EPS growth"}],
+    "tickers_by_verdict": {
+        "discount": [
+            {"symbol": "NVDA", "group": "individual", "reasoning": "cheap vs FTEC sector benchmark"},
+            {"symbol": "VGIT", "group": "bonds", "reasoning": "far off its high"},
+        ],
+        "fair": [{"symbol": "MSFT", "group": "individual", "reasoning": "in line with sector"}],
+        "overpriced": [
+            {"symbol": "TSLA", "group": "individual", "reasoning": "far above sector, negative EPS growth"},
+            {"symbol": "FTEC", "group": "sector", "reasoning": "near its high after a big run"},
+        ],
     },
     "pending": False,
 }
@@ -571,6 +577,27 @@ class TestRenderTickerDashboardPage(unittest.TestCase):
         self.assertIn("MSFT", html)
         self.assertIn("TSLA", html)
         self.assertIn("far above sector, negative EPS growth", html)
+
+    def test_etfs_appear_in_the_verdict_columns_tagged_with_their_group(self):
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS, SAMPLE_VALUATION)
+
+        self.assertIn("VGIT", html)
+        self.assertIn("(Bonds)", html)
+        self.assertIn("FTEC", html)
+        self.assertIn("(Sector)", html)
+        self.assertIn("near its high after a big run", html)
+
+    def test_a_valuation_cached_under_the_older_key_still_renders(self):
+        legacy = {
+            "overview": "Old.",
+            "groups": [],
+            "individual_by_verdict": {"discount": [{"symbol": "AMD", "reasoning": "cheap"}], "fair": [], "overpriced": []},
+            "pending": False,
+        }
+        html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS, legacy)
+
+        self.assertIn("AMD", html)
+        self.assertNotIn("<span class=\"muted\">(", html.split('id="ticker-valuation"')[1].split("</section>")[0])
 
     def test_valuation_section_appears_above_market_news_and_ticker_groups(self):
         html = render_ticker_dashboard_page({"stocks": [make_card()]}, NO_NEWS, SAMPLE_VALUATION)

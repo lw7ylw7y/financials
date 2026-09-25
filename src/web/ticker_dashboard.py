@@ -110,6 +110,7 @@ from finnhub_client import (
     fetch_stock_metrics,
 )
 from kv_store import KvStoreError, get_json, hdel_json, hget_json, hgetall_json, hset_json, set_json
+from storage import load_state
 from ticker_valuation import TickerValuationError, interpret_ticker_valuation
 
 _TICKER_RE = re.compile(r"^[A-Za-z0-9]+$")
@@ -117,7 +118,8 @@ _SNAPSHOT_FIELDS = (
     "price", "change", "change_percent", "week52_low", "week52_high",
     "pct_off_high", "market_cap", "pe_ratio", "peg_ratio",
     "revenue_growth", "eps_growth", "roe", "net_margin", "debt_to_equity",
-    "dividend_yield", "sector_pe_ratio", "sector_symbol",
+    "dividend_yield", "return_13w", "return_26w", "return_ytd",
+    "sector_pe_ratio", "sector_symbol",
 )
 
 _TICKER_CONFIG_KEY = "ticker_config"
@@ -408,6 +410,9 @@ def _build_card(
                 "net_margin": metrics.get("net_margin"),
                 "debt_to_equity": metrics.get("debt_to_equity"),
                 "dividend_yield": metrics.get("dividend_yield"),
+                "return_13w": metrics.get("return_13w"),
+                "return_26w": metrics.get("return_26w"),
+                "return_ytd": metrics.get("return_ytd"),
                 "sector_pe_ratio": sector_pe_ratio,
                 "sector_symbol": sector_symbol,
                 "error": None,
@@ -433,6 +438,9 @@ def _build_card(
                 "net_margin": None,
                 "debt_to_equity": None,
                 "dividend_yield": None,
+                "return_13w": None,
+                "return_26w": None,
+                "return_ytd": None,
                 "sector_pe_ratio": None,
                 "sector_symbol": None,
                 "error": str(e),
@@ -752,7 +760,7 @@ def check_for_market_news(fetch_news_fn=fetch_market_news, now: datetime | None 
 
 def load_ticker_valuation() -> dict | None:
     """The cached AI valuation: `{"overview", "groups",
-    "individual_by_verdict", "generated_at"}`, or `None` if nothing's
+    "tickers_by_verdict", "generated_at"}`, or `None` if nothing's
     ever been generated, or Redis itself is unreachable -- degrades
     the same way `load_market_news_state` does, since losing this just
     means the section shows as pending again, not an error.
@@ -786,6 +794,30 @@ def _build_valuation_cards(config: dict[str, list[str]], stored: dict[str, dict]
     }
 
 
+def _returns_are_cached(cards_by_group: dict[str, list[dict]]) -> bool:
+    """Whether at least half the cached snapshots carry the price-return
+    fields (present, even if `None`, once a snapshot was fetched with
+    them). The valuation prompt leans on those returns, so it waits for
+    the background price checks to refresh the cache rather than caching
+    a full valuation built without them."""
+    cards = [card for group_cards in cards_by_group.values() for card in group_cards]
+    return bool(cards) and sum("return_ytd" in card for card in cards) * 2 >= len(cards)
+
+
+def _load_macro_context() -> dict | None:
+    """The indicator digest's saved AI take, as background for the
+    valuation. Absent (or unreadable) is fine: the valuation just runs
+    without it."""
+    try:
+        last = load_state().get("last_ai_response")
+    except KvStoreError as e:
+        logger.error("macro context read failed, valuing without it: %s", e)
+        return None
+    if not last:
+        return None
+    return {key: last.get(key) for key in ("summary", "directional_read", "generated_at")}
+
+
 def get_initial_ticker_valuation() -> dict:
     """What "/tickers" renders for the AI valuation section --
     instantly, from the cache only, no network or Gemini call. Returns
@@ -794,7 +826,7 @@ def get_initial_ticker_valuation() -> dict:
     """
     stored = load_ticker_valuation()
     if stored is None:
-        return {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}
+        return {"overview": None, "groups": [], "tickers_by_verdict": {}, "pending": True}
     return {**stored, "pending": False}
 
 
@@ -829,7 +861,10 @@ def check_for_ticker_valuation(
     now = now or datetime.now(timezone.utc)
     cached = load_ticker_valuation()
 
-    if cached is not None:
+    # A cache from before ticker verdicts covered every group lacks
+    # `tickers_by_verdict`; it's still shown if the AI fails, but doesn't
+    # count as fresh.
+    if cached is not None and "tickers_by_verdict" in cached:
         generated_at = datetime.fromisoformat(cached["generated_at"])
         if now - generated_at < MIN_VALUATION_INTERVAL:
             return {**cached, "pending": False}
@@ -840,7 +875,9 @@ def check_for_ticker_valuation(
     try:
         config = config if config is not None else load_ticker_config()
         cards_by_group = _build_valuation_cards(config, load_ticker_state())
-        result = interpret_fn(cards_by_group)
+        if not _returns_are_cached(cards_by_group) and any(cards_by_group.values()):
+            return _cached_or_pending(cached)
+        result = interpret_fn(cards_by_group, macro_context=_load_macro_context())
         result["generated_at"] = now.isoformat()
         save_ticker_valuation(result)
         _valuation_failed_at = None
@@ -854,4 +891,4 @@ def check_for_ticker_valuation(
 def _cached_or_pending(cached: dict | None) -> dict:
     if cached is not None:
         return {**cached, "pending": False}
-    return {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}
+    return {"overview": None, "groups": [], "tickers_by_verdict": {}, "pending": True}

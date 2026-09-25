@@ -107,10 +107,14 @@ def fetch_stock_metrics(symbol: str, api_key: str | None = None) -> dict:
     "pe_ratio": float | None, "peg_ratio": float | None,
     "revenue_growth": float | None, "eps_growth": float | None, "roe":
     float | None, "net_margin": float | None, "debt_to_equity": float |
-    None, "dividend_yield": float | None}. The growth/margin/yield
-    fields are plain percentages as Finnhub returns them (e.g. `14.24`
-    means 14.24%, not `0.1424`); `debt_to_equity` is a plain ratio, not
-    a percentage.
+    None, "dividend_yield": float | None, "return_13w": float | None,
+    "return_26w": float | None, "return_ytd": float | None}. The
+    growth/margin/yield/return fields are plain percentages as Finnhub
+    returns them (e.g. `14.24` means 14.24%, not `0.1424`);
+    `debt_to_equity` is a plain ratio, not a percentage. The returns
+    (`13WeekPriceReturnDaily`, `26WeekPriceReturnDaily`,
+    `yearToDatePriceReturnDaily`) are price changes over those periods,
+    populated for funds as well as companies.
 
     52-week low/high are required -- a response missing either raises.
     Every other field degrades to `None` (not a raised error) when
@@ -166,6 +170,9 @@ def fetch_stock_metrics(symbol: str, api_key: str | None = None) -> dict:
     net_margin = metric.get("netProfitMarginTTM")
     debt_to_equity = metric.get("totalDebt/totalEquityAnnual")
     dividend_yield = metric.get("dividendYieldIndicatedAnnual")
+    return_13w = metric.get("13WeekPriceReturnDaily")
+    return_26w = metric.get("26WeekPriceReturnDaily")
+    return_ytd = metric.get("yearToDatePriceReturnDaily")
 
     return {
         "low": float(low),
@@ -179,6 +186,9 @@ def fetch_stock_metrics(symbol: str, api_key: str | None = None) -> dict:
         "net_margin": float(net_margin) if net_margin is not None else None,
         "debt_to_equity": float(debt_to_equity) if debt_to_equity is not None else None,
         "dividend_yield": float(dividend_yield) if dividend_yield is not None else None,
+        "return_13w": float(return_13w) if return_13w is not None else None,
+        "return_26w": float(return_26w) if return_26w is not None else None,
+        "return_ytd": float(return_ytd) if return_ytd is not None else None,
     }
 
 

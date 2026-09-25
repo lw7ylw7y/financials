@@ -81,8 +81,29 @@ class TestFetchStockMetrics(unittest.TestCase):
                 "pe_ratio": 34.2, "peg_ratio": 2.1,
                 "revenue_growth": None, "eps_growth": None, "roe": None,
                 "net_margin": None, "debt_to_equity": None, "dividend_yield": None,
+                "return_13w": None, "return_26w": None, "return_ytd": None,
             },
         )
+
+    @patch("finnhub_client._session.get")
+    def test_parses_price_returns(self, mock_get):
+        mock_get.return_value = Mock(
+            json=lambda: {
+                "metric": {
+                    "52WeekLow": 1.0,
+                    "52WeekHigh": 2.0,
+                    "13WeekPriceReturnDaily": 8.2446,
+                    "26WeekPriceReturnDaily": 39.3513,
+                    "yearToDatePriceReturnDaily": 33.4713,
+                }
+            }
+        )
+
+        result = fetch_stock_metrics("FTEC", api_key="test-key")
+
+        self.assertEqual(result["return_13w"], 8.2446)
+        self.assertEqual(result["return_26w"], 39.3513)
+        self.assertEqual(result["return_ytd"], 33.4713)
 
     @patch("finnhub_client._session.get")
     def test_parses_growth_and_quality_fields(self, mock_get):
