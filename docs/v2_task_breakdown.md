@@ -289,16 +289,17 @@ Dependency-driven:
 - `tests/test_ticker_dashboard.py`: config load/add/remove restore group order via the embedded `order` index even from a deliberately-scrambled mocked hash; add/remove read and write only their own group's field; a malformed/non-string symbol is skipped with a warning; ticker cache round-trips via `hset_json`/`hgetall_json`, degrades to `{}`/`None` on a simulated Redis outage rather than raising; market-news cache same pattern via `get_json`/`set_json` — done
 - Manual: none needed beyond the live verification already performed in Story 12's own work (the real Upstash instance round-trips for `ticker_config`/`ticker_cache` were confirmed live before this story; this story is a pure code-path deletion on top of that, verified by the full test suite passing unmodified in behavior, not a new live-data change)
 
-### Story 15 — AI Calls Fall Back to Other Free Models
+### Story 15 — AI Calls Fall Back to Other Models
 
 | Task | Status |
 |---|---|
-| 15.1 `src/web/github_models_client.py` — `generate_json(system_prompt, user_prompt, schema)` against GitHub Models' OpenAI-compatible chat-completions endpoint; schema spelled out in the system prompt; raises `GithubModelsError` per call | done |
-| 15.2 `interpret.py` / `ticker_valuation.py` — split the Gemini call into a per-model helper and add `_run_with_fallbacks`: Gemini → second Gemini model → GitHub Models; an injected `client` runs alone | done |
-| 15.3 `indicator-check.yml` — `permissions: models: read`, pass `GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}` | done |
-| 15.4 Tests: `tests/test_github_models_client.py` (new), plus fallback classes in `tests/test_interpret.py` and `tests/test_ticker_valuation.py` | done |
-| 15.5 Live verification of the GitHub Models step | **not done** — every request to `models.github.ai` returned a bare `HTTP 200 text/plain OK` (from both the dev sandbox and the user's own terminal), so the endpoint could not be exercised; the second-Gemini step (`gemini-3.7-flash`) was verified live; the GitHub Models step is covered by mocked tests only |
+| 15.1 `src/web/claude_client.py` — `generate_json(system_prompt, user_prompt, schema)` against the Anthropic Messages API (`requests`, no SDK); schema spelled out in the system prompt, JSON object cut out of the reply; raises `ClaudeApiError` per call | done |
+| 15.2 `interpret.py` / `ticker_valuation.py` — split the Gemini call into a per-model helper and add `_run_with_fallbacks`: Gemini → second Gemini model → Claude; an injected `client` runs alone | done |
+| 15.3 `indicator-check.yml` — pass `ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}` (new GitHub Actions secret) | done — secret itself must be added by hand |
+| 15.4 Tests: `tests/test_claude_client.py` (new), plus fallback classes in `tests/test_interpret.py` and `tests/test_ticker_valuation.py` | done |
+| 15.5 Live verification of the Claude step | **not done** — needs an `ANTHROPIC_API_KEY` |
+| 15.6 Replace a first-attempt GitHub Models fallback | done — every request to `models.github.ai` returned a bare `HTTP 200 text/plain OK` (from the dev sandbox, the user's own terminal, and Render), so that step was removed |
 
 **Tests**
-- `tests/test_github_models_client.py`: reply text returned, schema and bearer token sent, `GITHUB_TOKEN` fallback, missing token, request failure, unexpected response shape, empty content
-- Fallback classes: second Gemini model is tried before GitHub Models (and GitHub Models isn't called when it succeeds), GitHub Models used when both Gemini calls fail, an injected client never falls back, both-fail raises the module's error
+- `tests/test_claude_client.py`: JSON returned with the key, schema and prompt sent, model override, code-fence stripping, missing key, request failure, unexpected response shape, reply with no JSON
+- Fallback classes: second Gemini model is tried before Claude (and Claude isn't called when it succeeds), Claude used when both Gemini calls fail, an injected client never falls back, both-fail raises the module's error
