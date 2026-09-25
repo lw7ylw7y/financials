@@ -202,7 +202,7 @@ Dependency-driven:
 | Task | Estimate | Status |
 |---|---|---|
 | H.1 Add `gunicorn` to `requirements.txt`; confirm it can import `app.py` given the project's `sys.path.insert` convention (add a thin entry-point shim if not) | 1h | done — no shim needed, `gunicorn --chdir src/web app:app` (Section 11.5) |
-| H.2 `app.py` — Basic Auth `before_request` hook gated on `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` being set | 1h | done |
+| H.2 `app.py` — auth `before_request` hook gated on `GOOGLE_CLIENT_ID` being set (originally HTTP Basic Auth on `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD`, replaced by Google sign-in: `google_auth.py` + `/login`, `/auth/callback`, `/logout`) | 1h | done |
 | H.3 `src/web/kv_store.py` — Upstash REST wrapper (`get_json`/`set_json`) | 1h | done — wire format confirmed live against a real Upstash instance |
 | H.4 `ticker_dashboard.py` — branch config/cache load+save through `kv_store.py` when `UPSTASH_REDIS_REST_URL` is set, else local files (unchanged path) | 2h | done |
 | H.5 Seed-on-first-read: Redis-backed `load_ticker_config()` initializes from the repo's `config/tickers.json` when the Redis key is empty | 1h | done |
@@ -216,7 +216,7 @@ Dependency-driven:
 | **Subtotal** | **17.5h** | |
 
 **Tests**
-- Auth: a request with no/invalid credentials gets 401 when `DASHBOARD_USERNAME`/`PASSWORD` are set; unauthenticated access works when they're unset (local-dev default) — done, `tests/test_app.py`
+- Auth: signed-out page requests redirect to `/login` and signed-out `/api/*` requests get 401 when `GOOGLE_CLIENT_ID` is set; the callback rejects a forged/missing/replayed `state`, a missing code, an unverified email, and any email other than `ALLOWED_EMAIL`; a partial configuration returns 503; unauthenticated access works with `GOOGLE_CLIENT_ID` unset (`tests/test_app.py`, `tests/test_google_auth.py`)
 - `kv_store`: mocked Upstash REST responses → `get_json`/`set_json` round-trip correctly; a non-200 response is surfaced as an error, not silently swallowed — done, `tests/test_kv_store.py`
 - `ticker_dashboard`: with a mocked Redis backend configured, config load/save and cache read/write go through `kv_store` instead of the filesystem — done, `TestRedisBackedTickerConfig`/`TestRedisBackedTickerCache`/`TestRedisBackedMarketNewsCache`
 - `ticker_dashboard`: with no Redis env vars set, behavior is identical to the existing local-file tests (regression) — done, the full pre-existing suite (252 tests) passes unmodified

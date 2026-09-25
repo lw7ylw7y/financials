@@ -198,9 +198,10 @@ news.
   whole page waiting on one combined request. Every one of these
   returns an HTML fragment as JSON. Bound explicitly
   to `127.0.0.1` (never `0.0.0.0`) for local dev. Every route (including
-  the `/api/*` ones) sits behind an HTTP Basic Auth gate when
-  `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` are both set (for a hosted
-  deployment); with neither set, as in local dev, auth is a no-op.
+  the `/api/*` ones) sits behind Google sign-in when `GOOGLE_CLIENT_ID`
+  (plus `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL`, `SECRET_KEY`) is set, for a
+  hosted deployment; only the one allowed Google account gets in. With
+  `GOOGLE_CLIENT_ID` unset, as in local dev, auth is a no-op.
 
 ### Run it
 

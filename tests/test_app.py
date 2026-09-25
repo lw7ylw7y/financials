@@ -1,4 +1,3 @@
-import base64
 import os
 import sys
 import unittest
@@ -16,19 +15,21 @@ for _p in (
     sys.path.insert(0, _p)
 
 import app as app_module
+import google_auth
 
-NO_AUTH_ENV = {"DASHBOARD_USERNAME": "", "DASHBOARD_PASSWORD": ""}
-
-
-def basic_auth_header(username: str, password: str) -> dict:
-    token = base64.b64encode(f"{username}:{password}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
+NO_AUTH_ENV = {"GOOGLE_CLIENT_ID": ""}
+AUTH_ENV = {
+    "GOOGLE_CLIENT_ID": "client-id",
+    "GOOGLE_CLIENT_SECRET": "client-secret",
+    "ALLOWED_EMAIL": "Me@Example.com",
+    "SECRET_KEY": "test-secret-key",
+}
 
 
 class TestDashboardAuth(unittest.TestCase):
-    """Story 8: HTTP Basic Auth gate in front of every route, on only
-    when both DASHBOARD_USERNAME/PASSWORD are set. Data/network calls
-    are mocked out -- this is testing the auth gate, not page content.
+    """Google sign-in gate in front of every route, on only when
+    GOOGLE_CLIENT_ID is set. Data/network calls are mocked out -- this
+    is testing the auth gate, not page content.
     """
 
     def setUp(self):
@@ -43,54 +44,139 @@ class TestDashboardAuth(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def test_no_env_vars_allows_request_without_credentials(self):
+    def sign_in(self, email="me@example.com"):
+        with self.client.session_transaction() as sess:
+            sess["email"] = email
+
+    def test_no_client_id_allows_request_without_signing_in(self):
         with mock.patch.dict(os.environ, NO_AUTH_ENV):
             response = self.client.get("/")
 
         self.assertEqual(response.status_code, 200)
 
-    def test_only_username_set_is_still_a_no_op(self):
-        with mock.patch.dict(os.environ, {**NO_AUTH_ENV, "DASHBOARD_USERNAME": "alice"}):
+    def test_page_redirects_to_login_when_signed_out(self):
+        with mock.patch.dict(os.environ, AUTH_ENV):
+            response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/login"))
+
+    def test_api_routes_return_401_not_a_redirect_when_signed_out(self):
+        with mock.patch.dict(os.environ, AUTH_ENV):
+            for path in (
+                "/api/check",
+                "/api/tickers/groups/stocks/check",
+                "/api/market-news/check",
+                "/api/tickers/valuation/check",
+            ):
+                self.assertEqual(self.client.get(path).status_code, 401, path)
+            self.assertEqual(self.client.post("/api/tickers/add", json={}).status_code, 401)
+            self.assertEqual(self.client.post("/api/tickers/remove", json={}).status_code, 401)
+
+    def test_signed_in_allowed_email_can_view_the_page(self):
+        self.sign_in("me@example.com")
+        with mock.patch.dict(os.environ, AUTH_ENV):
             response = self.client.get("/")
 
         self.assertEqual(response.status_code, 200)
 
-    def test_missing_credentials_rejected_when_configured(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "alice", "DASHBOARD_PASSWORD": "secret"}):
+    def test_session_for_a_different_email_is_rejected(self):
+        self.sign_in("someone-else@example.com")
+        with mock.patch.dict(os.environ, AUTH_ENV):
             response = self.client.get("/")
 
-        self.assertEqual(response.status_code, 401)
-        self.assertIn("Basic", response.headers.get("WWW-Authenticate", ""))
+        self.assertEqual(response.status_code, 302)
 
-    def test_wrong_credentials_rejected(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "alice", "DASHBOARD_PASSWORD": "secret"}):
-            response = self.client.get("/", headers=basic_auth_header("alice", "wrong"))
+    def test_partial_config_fails_closed_instead_of_opening_the_dashboard(self):
+        with mock.patch.dict(os.environ, {"GOOGLE_CLIENT_ID": "client-id", "GOOGLE_CLIENT_SECRET": "",
+                                          "ALLOWED_EMAIL": "", "SECRET_KEY": ""}):
+            response = self.client.get("/")
 
-        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("ALLOWED_EMAIL", response.get_data(as_text=True))
 
-    def test_correct_credentials_allowed(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "alice", "DASHBOARD_PASSWORD": "secret"}):
-            response = self.client.get("/", headers=basic_auth_header("alice", "secret"))
+    def test_login_redirects_to_google_and_remembers_state(self):
+        with mock.patch.dict(os.environ, AUTH_ENV):
+            response = self.client.get("/login")
+            with self.client.session_transaction() as sess:
+                state = sess["oauth_state"]
 
-        self.assertEqual(response.status_code, 200)
+        location = response.headers["Location"]
+        self.assertTrue(location.startswith("https://accounts.google.com/"))
+        self.assertIn(f"state={state}", location)
+        self.assertIn("client_id=client-id", location)
+        self.assertIn("auth%2Fcallback", location)
 
-    def test_api_routes_require_auth_too(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "alice", "DASHBOARD_PASSWORD": "secret"}):
-            response = self.client.get("/api/check")
+    def callback(self, email, state="abc", session_state="abc", code="the-code", error=None):
+        with self.client.session_transaction() as sess:
+            if session_state is not None:
+                sess["oauth_state"] = session_state
+        with mock.patch.dict(os.environ, AUTH_ENV), mock.patch(
+            "app.google_auth.fetch_verified_email", return_value=email, side_effect=error
+        ) as fetch:
+            query = f"?state={state}" + (f"&code={code}" if code else "")
+            return self.client.get("/auth/callback" + query), fetch
 
-        self.assertEqual(response.status_code, 401)
+    def test_callback_signs_in_the_allowed_email(self):
+        response, _ = self.callback("me@example.com")
 
-    def test_ticker_group_check_route_requires_auth_too(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "alice", "DASHBOARD_PASSWORD": "secret"}):
-            response = self.client.get("/api/tickers/groups/stocks/check")
+        self.assertEqual(response.status_code, 302)
+        with self.client.session_transaction() as sess:
+            self.assertEqual(sess["email"], "me@example.com")
+        with mock.patch.dict(os.environ, AUTH_ENV):
+            self.assertEqual(self.client.get("/").status_code, 200)
 
-        self.assertEqual(response.status_code, 401)
+    def test_callback_rejects_a_different_google_account(self):
+        response, _ = self.callback("stranger@example.com")
 
-    def test_ticker_valuation_check_route_requires_auth_too(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "alice", "DASHBOARD_PASSWORD": "secret"}):
-            response = self.client.get("/api/tickers/valuation/check")
+        self.assertEqual(response.status_code, 403)
+        with self.client.session_transaction() as sess:
+            self.assertNotIn("email", sess)
 
-        self.assertEqual(response.status_code, 401)
+    def test_callback_rejects_an_unverified_email(self):
+        response, _ = self.callback(None)
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_callback_rejects_a_state_mismatch_without_calling_google(self):
+        response, fetch = self.callback("me@example.com", state="forged", session_state="abc")
+
+        self.assertEqual(response.status_code, 400)
+        fetch.assert_not_called()
+
+    def test_callback_rejects_a_missing_session_state(self):
+        response, fetch = self.callback("me@example.com", session_state=None)
+
+        self.assertEqual(response.status_code, 400)
+        fetch.assert_not_called()
+
+    def test_callback_rejects_a_missing_code(self):
+        response, fetch = self.callback("me@example.com", code=None)
+
+        self.assertEqual(response.status_code, 400)
+        fetch.assert_not_called()
+
+    def test_callback_reports_a_google_failure(self):
+        response, _ = self.callback("me@example.com", error=google_auth.GoogleAuthError("down"))
+
+        self.assertEqual(response.status_code, 502)
+
+    def test_state_cannot_be_replayed(self):
+        self.callback("me@example.com")
+        with self.client.session_transaction() as sess:
+            sess.pop("email")
+        with mock.patch.dict(os.environ, AUTH_ENV):
+            response = self.client.get("/auth/callback?state=abc&code=the-code")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_logout_ends_the_session(self):
+        self.sign_in()
+        with mock.patch.dict(os.environ, AUTH_ENV):
+            self.client.get("/logout")
+            response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 302)
 
 
 class TestApiCheckTickerGroup(unittest.TestCase):

@@ -10,15 +10,15 @@ to loopback only (127.0.0.1), never 0.0.0.0, so it is unreachable from
 anything but the machine it's running on, per the local-only hosting
 decision in Section 4.1 of investment_dashboard_requirements.md.
 
-`_require_auth` gates every route behind HTTP Basic Auth when both
-`DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` are set (the hosted
-deployment) -- it's a no-op when either is unset, which is local
-development's default.
+`_require_auth` gates every route behind Google sign-in when
+`GOOGLE_CLIENT_ID` is set (the hosted deployment) -- it's a no-op when
+unset, which is local development's default.
 """
 
 import os
 import secrets
 import sys
+from datetime import timedelta
 
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.dirname(_WEB_DIR)
@@ -27,7 +27,10 @@ for _subdir in ("fred", "storage", "digest", "mailer"):
 sys.path.insert(0, _SRC_DIR)
 sys.path.insert(0, _WEB_DIR)
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, redirect, request, session, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+import google_auth
 
 from live_pull import check_for_updates, get_initial_page_data
 from page_template import (
@@ -52,34 +55,90 @@ from ticker_dashboard import (
 )
 
 app = Flask(__name__)
+# Render terminates TLS in front of the app; without this, the redirect URI
+# built for Google would be http:// and never match the registered one.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+app.config.update(
+    SECRET_KEY=os.environ.get("SECRET_KEY") or secrets.token_hex(32),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=google_auth.is_enabled(),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+)
+
+_AUTH_ENDPOINTS = {"login", "auth_callback", "logout"}
+
+
+def _page(message: str, status: int) -> Response:
+    return Response(message, status, {"Content-Type": "text/plain; charset=utf-8"})
 
 
 @app.before_request
 def _require_auth():
-    """HTTP Basic Auth in front of every route. Both `DASHBOARD_USERNAME`
-    and `DASHBOARD_PASSWORD` must be set to turn this on -- e.g. the
-    hosted deployment's env vars -- otherwise it's a no-op, which is
-    local development's default. `secrets.compare_digest` avoids
-    leaking credential length/prefix through timing.
+    """Google sign-in in front of every route. Turned on by setting
+    `GOOGLE_CLIENT_ID` (the hosted deployment); otherwise a no-op, which
+    is local development's default. Once on, a missing companion setting
+    fails closed with a 503 instead of leaving the dashboard open. Only
+    the session's own signed email counts, and it must match
+    `ALLOWED_EMAIL`; an unauthenticated `/api/*` call gets a 401 rather
+    than a redirect its fetch() couldn't follow usefully.
     """
-    username = os.environ.get("DASHBOARD_USERNAME")
-    password = os.environ.get("DASHBOARD_PASSWORD")
-    if not username or not password:
+    if not google_auth.is_enabled():
         return None
 
-    auth = request.authorization
-    if (
-        auth
-        and secrets.compare_digest(auth.username or "", username)
-        and secrets.compare_digest(auth.password or "", password)
-    ):
+    missing = google_auth.missing_config()
+    if missing:
+        return _page(f"Sign-in is misconfigured; missing: {', '.join(missing)}", 503)
+
+    if request.endpoint in _AUTH_ENDPOINTS:
         return None
 
-    return Response(
-        "Authentication required.",
-        401,
-        {"WWW-Authenticate": 'Basic realm="Investment Dashboard"'},
-    )
+    email = session.get("email")
+    if email and secrets.compare_digest(email, google_auth.allowed_email()):
+        return None
+
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "authentication required"}), 401
+    return redirect(url_for("login"))
+
+
+@app.route("/login")
+def login():
+    if not google_auth.is_enabled():
+        return redirect(url_for("indicator_digest_page"))
+    state = secrets.token_urlsafe(32)
+    session["oauth_state"] = state
+    redirect_uri = url_for("auth_callback", _external=True)
+    return redirect(google_auth.build_authorize_url(redirect_uri, state))
+
+
+@app.route("/auth/callback")
+def auth_callback():
+    expected_state = session.pop("oauth_state", None)
+    state = request.args.get("state", "")
+    code = request.args.get("code")
+    if not expected_state or not secrets.compare_digest(state, expected_state) or not code:
+        return _page("Sign-in failed: invalid or expired request. Go to /login to try again.", 400)
+
+    try:
+        email = google_auth.fetch_verified_email(code, url_for("auth_callback", _external=True))
+    except google_auth.GoogleAuthError:
+        return _page("Sign-in failed: could not verify your Google account. Go to /login to try again.", 502)
+
+    if not email or not secrets.compare_digest(email, google_auth.allowed_email()):
+        session.clear()
+        return _page("This Google account is not allowed to view this dashboard.", 403)
+
+    session.clear()
+    session["email"] = email
+    session.permanent = True
+    return redirect(url_for("indicator_digest_page"))
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return _page("Signed out.", 200)
 
 
 @app.route("/")

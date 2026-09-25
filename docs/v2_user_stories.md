@@ -115,15 +115,17 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 
 ## Epic: Hosted Live Dashboard (v2.1)
 
-### Story 8 — Password-Protected Public Hosting
-**As** the investor, **I want** both dashboard pages reachable from anywhere behind a password, **so that** I can check them without needing my own laptop running, while keeping them private to me.
+### Story 8 — Google Sign-In-Protected Public Hosting
+**As** the investor, **I want** both dashboard pages reachable from anywhere behind my Google account, **so that** I can check them without needing my own laptop running, while keeping them private to me.
 
 **Acceptance Criteria**
-- [ ] Both pages are served from a single hosted web service reachable over the public internet — no VPN, tunnel, or laptop required (pending Render deployment, task H.6)
-- [x] Every route requires a username + password before rendering any content; there is no page reachable without authenticating
-- [x] Credentials are configured via environment variables on the host, never hardcoded or committed to the repo
-- [ ] Traffic is served over HTTPS (provided by the host), so credentials are never sent in plaintext (pending Render deployment, task H.6)
-- [x] Local development is unaffected — running `src/web/app.py` locally with no auth env vars set behaves exactly as it does today, with no password prompt
+- [x] Both pages are served from a single hosted web service reachable over the public internet — no VPN, tunnel, or laptop required
+- [x] Every route requires signing in with Google before rendering any content; there is no page reachable without authenticating. A logged-out page visit redirects to Google's sign-in; a logged-out `/api/*` call gets a 401
+- [x] Only the one Google account named by `ALLOWED_EMAIL` (with a verified email) is let in; any other Google account gets a 403
+- [x] Credentials (`GOOGLE_CLIENT_ID`/`SECRET`, `ALLOWED_EMAIL`, `SECRET_KEY`) are configured via environment variables on the host, never hardcoded or committed to the repo
+- [x] The sign-in flow guards against forged callbacks (a per-request `state` value, single-use) and, once enabled, fails closed (503) if any required setting is missing
+- [x] Traffic is served over HTTPS (provided by the host)
+- [x] Local development is unaffected — running `src/web/app.py` locally with `GOOGLE_CLIENT_ID` unset behaves exactly as it does today, with no sign-in
 
 ---
 

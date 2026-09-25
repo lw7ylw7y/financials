@@ -56,7 +56,7 @@ source .env && set +a`) before running anything that needs them.
 | `GEMINI_API_KEY` | AI interpretation — optional; every call tries `gemini-3.8-flash`, then a second model (`gemini-3.7-flash` by default, override with `GEMINI_FALLBACK_MODEL`), before degrading; the email, the Indicator Digest Page, and the Ticker Dashboard's AI valuation section all degrade gracefully (no AI section, or the last cached valuation) without it or on any API failure. Shared across a single `gemini-3.8-flash` free-tier quota (20 requests/day total, confirmed live) — the indicator digest's calls and the ticker valuation's calls draw from the same pool |
 | `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL` | sending the digest email |
 | `FINNHUB_API_KEY` | the Ticker Dashboard's per-ticker quote/52wk-range/market-cap/P-E fetch and the market-news feed — without it, the background check's live fetch fails for every ticker and for market news, each falling back to its own cached Redis data (`ticker_cache`/`market_news_cache`) where a cache entry exists, or an error/unavailable state where none does; Story 2's config loading needs no API key |
-| `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` | HTTP Basic Auth in front of every `src/web/app.py` route (Story 8) — set on a hosted deployment; both unset (the local-dev default) leaves auth off entirely, unchanged from before Story 8 |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL`, `SECRET_KEY` | Google sign-in in front of every `src/web/app.py` route (Story 8) — set all four on a hosted deployment (OAuth web client from the Google Auth Platform console, redirect URI `https://<host>/auth/callback`; `SECRET_KEY` signs the session cookie, e.g. `python3 -c "import secrets; print(secrets.token_hex(32))"`). `GOOGLE_CLIENT_ID` alone turns auth on; if any of the other three is then missing, every route returns a 503 naming what's missing rather than opening the dashboard. Unset `GOOGLE_CLIENT_ID` (the local-dev default) leaves auth off entirely. Add `http://127.0.0.1:5000/auth/callback` as a redirect URI to test sign-in locally |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | **Required everywhere this app runs** — the ticker watchlist (`ticker_config`), both ticker/news caches (`ticker_cache`, `market_news_cache`), and indicator state (`indicator_state`) all live in Redis only; there is no local-file fallback (a deliberate simplification, since local dev and Render always share the same live Redis in practice anyway). Missing either var raises a clear `KvStoreError` rather than silently falling back to something else. Needed in **two separate places**: wherever `src/web/app.py` runs (Render's env vars, or your own local `.env`) and GitHub Actions' repo secrets (the scheduled workflow, `python3 src/main.py`) |
 
 ## Architecture
@@ -95,8 +95,9 @@ src/
             GET "/api/tickers/groups/<name>/check", GET "/api/market-news/check",
             GET "/api/tickers/valuation/check",
             POST "/api/tickers/add", POST "/api/tickers/remove";
-            _require_auth() before_request hook gates every route behind HTTP Basic Auth when
-            DASHBOARD_USERNAME/PASSWORD are both set, no-op otherwise
+            _require_auth() before_request hook gates every route behind Google
+            sign-in (google_auth.py; /login, /auth/callback, /logout) when
+            GOOGLE_CLIENT_ID is set, no-op otherwise
             — Story 8), live_pull.py (stored-only render +
             gated background live-check for the Indicator Digest Page),
             page_template.py (HTML string rendering for both pages,
@@ -708,17 +709,22 @@ work now rather than as a change-log entry.
   always replaced wholesale (`{"headlines": [...], "fetched_at": ...}`),
   never read-modify-written, so there's no per-item structure to shard
   by and a plain string blob is already the right tool for it.
-- Auth gate (Story 8, app-code half only — see `docs/v2_technical_design.md`
-  Section 11.2): `app.py`'s `_require_auth` `before_request` hook requires
-  HTTP Basic Auth matching `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` on
-  every route, including the `/api/*` ones, using `secrets.compare_digest`
-  for a timing-safe comparison. It's a no-op unless *both* env vars are
-  set, so local dev (where neither is set) is unaffected — this is the
-  intentional interpretation of "if set" in Story 8's AC for the
-  partially-configured case (only one of the two set), to avoid an
-  accidental lockout from a typo'd env var name. Covered by
-  `tests/test_app.py`. Deployed and confirmed live on Render: the
-  password prompt appears over HTTPS before any content renders.
+- Auth gate (Story 8, see `docs/v2_technical_design.md` Section 11.2):
+  `app.py`'s `_require_auth` `before_request` hook requires a Google
+  sign-in on every route when `GOOGLE_CLIENT_ID` is set. `/login`
+  redirects to Google (OAuth 2.0 authorization-code flow, `openid email`
+  scopes, a random `state` kept in the signed session cookie);
+  `/auth/callback` checks the state, exchanges the code for the user's
+  email via `google_auth.fetch_verified_email` (Google's userinfo
+  endpoint, called server-to-server, so no local JWT verification), and
+  only accepts a *verified* email equal to `ALLOWED_EMAIL`. Unauthenticated
+  `/api/*` calls get a 401 JSON error, pages get a redirect to `/login`.
+  No OAuth library: plain `requests`, like the other clients. `ProxyFix`
+  makes the redirect URI `https://` behind Render's TLS proxy. Auth is off
+  when `GOOGLE_CLIENT_ID` is unset (local dev) but fails closed (503) once
+  it's set with any companion setting missing. A previous HTTP Basic Auth
+  gate (`DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD`) was removed. Covered by
+  `tests/test_app.py` and `tests/test_google_auth.py`.
 - Redis-backed persistence (Story 9, `docs/v2_technical_design.md`
   Section 11.3/11.4 — **the local-file/`is_configured()` branching and the
   seed-from-local-file step described below were removed entirely on
@@ -784,8 +790,7 @@ work now rather than as a change-log entry.
 - A local `.env` value containing an unescaped shell-special character
   (e.g. `|`) silently truncates at that character under `source .env`
   — bash executes each line as a command, not a proper `.env` parser.
-  Quote such values (`KEY='value'`) to fix; confirmed this cost a
-  working `DASHBOARD_PASSWORD` locally until caught and fixed.
+  Quote such values (`KEY='value'`) to fix.
 - Indicator state moves to Redis too (Story 11, `docs/v2_technical_design.md`
   Section 11.7 — **the local-file fallback and the seed-on-first-read step
   described below were both removed on 2026-09-16; `load_state`/`save_state`
