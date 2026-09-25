@@ -211,16 +211,17 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] Any AI failure, including a quota/rate-limit error, falls back to the last successfully cached valuation shown as-is, never an error state — confirmed live against a real `429 RESOURCE_EXHAUSTED` response. With nothing ever cached, degrades to a muted "not yet available" placeholder instead
 - [x] Has its own background-check route (`/api/tickers/valuation/check`), checked independently of any ticker group's or market news' own check, folded into the same "Checking for updates..." indicator
 
-### Story 15 — AI Calls Fall Back to a Second Gemini Model
+### Story 15 — AI Calls Fall Back Through Other Gemini Models
 **As** the investor, **I want** the AI sections to keep working when the primary Gemini model is overloaded or out of quota, **so that** a single-model outage doesn't leave the digest and valuation sections empty.
 
-**Why:** Gemini's free tier returned `503 UNAVAILABLE` almost continuously during a real incident, making both AI sections useless. Free-tier quota and serving capacity are tracked per model, so a second model often still answers.
+**Why:** Gemini's free tier returned `503 UNAVAILABLE` almost continuously during a real incident, making both AI sections useless. Free-tier quota and serving capacity are tracked per model, and which models are overloaded shifts through the day (a newer model can be down while an older one answers), so a longer chain survives more spells.
 
 **Acceptance Criteria**
-- [x] When the primary Gemini call fails for any reason (API error, quota `429`, overload `503`, missing key, empty or unparseable response), the same prompt is retried on a second Gemini model (`gemini-3.7-flash` by default, `GEMINI_FALLBACK_MODEL` overrides it), using the same `GEMINI_API_KEY`
-- [x] The second model is never called when the first succeeded
-- [x] If both fail, behavior is unchanged from before: the digest omits the AI section and the ticker valuation degrades to the last cached valuation
-- [x] Each model is called at most once per request (no retries), so failures don't burn quota
+- [x] When the primary Gemini call fails for any reason (API error, quota `429`, overload `503`, missing key, empty or unparseable response), the same prompt is retried on each fallback model in turn (`gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.5-flash` by default; `GEMINI_FALLBACK_MODELS`, a comma-separated list, overrides it), using the same `GEMINI_API_KEY`
+- [x] The first model to return a valid response wins; later models are never called
+- [x] If every model fails, behavior is unchanged from before: the digest omits the AI section and the ticker valuation degrades to the last cached valuation. The error names each model and its failure
+- [x] Each model is called at most once per request (no retries)
+- [x] After every model has failed, the ticker valuation's AI call isn't retried for 15 minutes (`VALUATION_FAILURE_COOLDOWN`), so a page load during an outage doesn't spend one request per model on the shared quota
 
 ---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)

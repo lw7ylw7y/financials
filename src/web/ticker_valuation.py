@@ -22,14 +22,12 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
+from gemini_models import fallback_models
+
 
 logger = logging.getLogger(__name__)
 
 MODEL = "gemini-3.8-flash"
-# Free-tier quotas and serving capacity are tracked per model, so a
-# different model often still answers while `MODEL` is overloaded or
-# out of quota. Overridable via GEMINI_FALLBACK_MODEL.
-DEFAULT_FALLBACK_MODEL = "gemini-3.7-flash"
 # No retries: the free tier's 20-requests/day cap counts every attempt,
 # including failed ones, so retrying against a sustained backend outage
 # (the observed real-world failure mode) burns through the day's whole
@@ -200,14 +198,14 @@ def _valuation_with_gemini(prompt: str, client: genai.Client | None, model: str 
 
 
 def _run_with_fallbacks(prompt: str, client: genai.Client | None) -> ValuationResponse:
-    """Gemini, then a second Gemini model; the first
+    """Gemini, then each fallback Gemini model in turn; the first
     usable result wins. An explicitly injected `client` is used alone."""
-    fallback_model = os.environ.get("GEMINI_FALLBACK_MODEL") or DEFAULT_FALLBACK_MODEL
-    sources = [("Gemini", lambda: _valuation_with_gemini(prompt, client))]
+    sources = [(MODEL, lambda: _valuation_with_gemini(prompt, client))]
     if client is None:
-        sources.append(
-            (f"Gemini {fallback_model}", lambda: _valuation_with_gemini(prompt, None, fallback_model))
-        )
+        sources += [
+            (model, lambda model=model: _valuation_with_gemini(prompt, None, model))
+            for model in fallback_models()
+        ]
 
     failures = []
     for name, attempt in sources:
@@ -215,7 +213,7 @@ def _run_with_fallbacks(prompt: str, client: genai.Client | None) -> ValuationRe
             return attempt()
         except TickerValuationError as e:
             logger.warning("%s valuation failed: %s", name, e)
-            failures.append(str(e))
+            failures.append(f"{name}: {e}")
     raise TickerValuationError("; ".join(failures))
 
 
@@ -229,7 +227,7 @@ def interpret_ticker_valuation(cards_by_group: dict[str, list[dict]], client: ge
     to do consistently call to call. Each `individual_by_verdict` entry
     is `{"symbol", "reasoning"}`.
 
-    Tries Gemini first, then a second Gemini model
+    Tries Gemini first, then each fallback Gemini model in turn
     if each fails for any reason. An explicitly injected `client` is
     used alone, with no fallback.
 

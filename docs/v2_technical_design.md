@@ -472,18 +472,20 @@ Verified directly against the real Upstash instance, not just reasoned about: co
 **Tests:** `tests/test_ticker_dashboard.py`'s four ETF-fallback-specific tests (`test_falls_back_to_etf_pe_for_equity_fund_groups`, `test_no_yahoo_fallback_exists_for_peg_ratio`, `test_does_not_fall_back_to_etf_pe_for_bonds_or_individual`, `test_does_not_fall_back_when_finnhub_already_has_a_pe_ratio`, `test_etf_pe_fallback_failure_degrades_to_none_without_erroring_the_card`) were replaced with one (`test_etf_group_pe_ratio_stays_none_when_finnhub_has_none`) asserting the new, simpler behavior; every other test's now-nonexistent `fetch_etf_pe_fn=lambda s: None` no-op argument was removed. Full suite (350 tests) passes.
 
 
-### 11.17 AI fallback: a second Gemini model — implemented
+### 11.17 AI fallback: a chain of Gemini models — implemented
 
-**Why:** a live incident had Gemini's free tier returning `503 UNAVAILABLE` on nearly every call, leaving both AI sections empty. Quota and capacity are per model on Gemini's side, so a second model often still answers.
+**Why:** a live incident had Gemini's free tier returning `503 UNAVAILABLE` on nearly every call, leaving both AI sections empty. Quota and capacity are per model on Gemini's side, and which models are overloaded shifts through the day, so a chain of models often still finds one that answers.
 
 **Chain (`interpret.py`, `ticker_valuation.py`, each with its own `_run_with_fallbacks`):**
 1. `MODEL` (`gemini-3.8-flash`)
-2. `GEMINI_FALLBACK_MODEL` env var, defaulting to `DEFAULT_FALLBACK_MODEL` (`gemini-3.7-flash`), same `GEMINI_API_KEY`
+2. Each model from `gemini_models.fallback_models()` in turn: `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.5-flash` by default, or the comma-separated `GEMINI_FALLBACK_MODELS` env var. All use the same `GEMINI_API_KEY`. The lighter, faster models come before `gemini-3.5-flash`, which took ~19s in a live test.
 
-Each model is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-tier daily cap counts failed attempts). Any failure of the first (the module's error type, whether from an API error, missing credentials, an empty body, or an unparseable/invalid response) moves to the second; the first valid response wins and the second is never called otherwise. If both fail, the module's own error is raised with both messages joined, and callers degrade exactly as before. An injected `client` (tests) is used alone, with no fallback.
+Each model is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-tier daily cap counts failed attempts). Any failure of a model (the module's error type, whether from an API error, missing credentials, an empty body, or an unparseable/invalid response) moves to the next; the first valid response wins and later models are never called. If all fail, the module's own error is raised with each model's name and failure joined, and callers degrade exactly as before. An injected `client` (tests) is used alone, with no fallback.
 
-**Model name:** the default was verified live: `gemini-3.7-flash` is in the account's `models.list` and returned a valid structured response. A first guess, `gemini-3.8-flash-lite`, does not exist (`404 NOT_FOUND` on Render). Another candidate, `gemini-3.5-flash`, returned a `503` at the same moment as the primary, so capacity is not guaranteed to differ between models.
+**Failure cooldown (`ticker_dashboard.check_for_ticker_valuation`):** a total failure sets a process-local timestamp; for `VALUATION_FAILURE_COOLDOWN` (15 minutes) afterward the AI isn't called again and the cached valuation (or the pending placeholder) is returned. Without it, every page load during an outage would spend one request per model. Held in memory rather than Redis: a restart just permits one more attempt.
+
+**Model choice, from live calls:** at the same moment `gemini-3.8-flash`, `gemini-3.7-flash` returned `503` while `3.6-flash`, `3.5-flash`, `3.5-flash-lite`, `3-flash-preview` and `flash-latest` answered; `2.5-flash` and `2.5-flash-lite` return `404` (no longer available), and an earlier guess, `gemini-3.8-flash-lite`, never existed. Availability varies over time (an earlier test had `3.5-flash` overloaded and `3.7-flash` fine), which is the reason for a longer chain rather than one chosen fallback. Verified end to end: with `3.8`, `3.7` and `3.6` all returning `503`, `interpret()` returned a valid result from `3.5-flash-lite`.
 
 **Providers tried and dropped:** GitHub Models (every request to `models.github.ai`, any path, with or without a token, from the dev sandbox, a local terminal, and Render, returned a bare `HTTP 200`, `content-type: text/plain`, body `OK` from a genuine GitHub IP and certificate) and Claude via the Anthropic Messages API (works with an `ANTHROPIC_API_KEY`, but is billed per use through the Console, separately from a claude.ai subscription, which doesn't include API access). Neither is in the code.
 
-**Tests:** see Story 15 in `docs/v2_task_breakdown.md`. Full suite (352 tests) passes.
+**Tests:** see Story 15 in `docs/v2_task_breakdown.md`. Full suite (377 tests) passes.

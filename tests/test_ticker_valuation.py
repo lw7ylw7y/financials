@@ -13,8 +13,8 @@ for _p in (
     sys.path.insert(0, _p)
 
 from google.genai import errors
+from gemini_models import DEFAULT_FALLBACK_MODELS
 from ticker_valuation import (
-    DEFAULT_FALLBACK_MODEL,
     MODEL,
     TickerValuationError,
     build_user_prompt,
@@ -214,19 +214,23 @@ class TestInterpretTickerValuation(unittest.TestCase):
                 interpret_ticker_valuation(CARDS_BY_GROUP, client=None)
 
 
-class TestSecondGeminiModelFallback(unittest.TestCase):
-    def test_second_gemini_model_is_used_when_the_first_fails(self):
+class TestGeminiModelFallbackChain(unittest.TestCase):
+    def called_models(self, client):
+        return [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
+
+    def test_each_fallback_model_is_tried_in_order_until_one_succeeds(self):
         client = Mock()
         client.models.generate_content.side_effect = [
+            make_api_error(),
+            make_api_error(),
             make_api_error(),
             SimpleNamespace(text=valuation_response_json()),
         ]
         with patch("ticker_valuation.genai.Client", return_value=client):
             interpret_ticker_valuation(CARDS_BY_GROUP)
-        models = [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
-        self.assertEqual(models, [MODEL, DEFAULT_FALLBACK_MODEL])
+        self.assertEqual(self.called_models(client), [MODEL, *DEFAULT_FALLBACK_MODELS[:3]])
 
-    def test_second_model_is_not_called_when_the_first_succeeds(self):
+    def test_later_models_are_not_called_once_one_succeeds(self):
         client = fake_client(text=valuation_response_json())
         with patch("ticker_valuation.genai.Client", return_value=client):
             interpret_ticker_valuation(CARDS_BY_GROUP)
@@ -238,12 +242,22 @@ class TestSecondGeminiModelFallback(unittest.TestCase):
             interpret_ticker_valuation(CARDS_BY_GROUP, client=client)
         client.models.generate_content.assert_called_once()
 
-    def test_raises_when_both_models_fail(self):
+    def test_raises_after_trying_every_model_and_names_each_in_the_error(self):
+        client = fake_client(side_effect=make_api_error())
+        with patch("ticker_valuation.genai.Client", return_value=client):
+            with self.assertRaises(TickerValuationError) as raised:
+                interpret_ticker_valuation(CARDS_BY_GROUP)
+        self.assertEqual(self.called_models(client), [MODEL, *DEFAULT_FALLBACK_MODELS])
+        for model in (MODEL, *DEFAULT_FALLBACK_MODELS):
+            self.assertIn(model, str(raised.exception))
+
+    @patch.dict(os.environ, {"GEMINI_FALLBACK_MODELS": "model-a, model-b"})
+    def test_fallback_models_are_configurable(self):
         client = fake_client(side_effect=make_api_error())
         with patch("ticker_valuation.genai.Client", return_value=client):
             with self.assertRaises(TickerValuationError):
                 interpret_ticker_valuation(CARDS_BY_GROUP)
-        self.assertEqual(client.models.generate_content.call_count, 2)
+        self.assertEqual(self.called_models(client), [MODEL, "model-a", "model-b"])
 
 
 if __name__ == "__main__":

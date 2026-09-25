@@ -78,8 +78,8 @@ digest contains:
   inversion streak for the yield curve spread (`heuristics.py`). Each
   call is attempted once, with no retries (the free tier's daily quota
   counts failed attempts, so retrying against an outage only burns it);
-  on any failure the same prompt goes to a second Gemini model
-  (`GEMINI_FALLBACK_MODEL`). If that fails too, the email sends anyway
+  on any failure the same prompt goes to each of several fallback Gemini
+  models in turn (`GEMINI_FALLBACK_MODELS`). If all fail, the email sends anyway
   without the AI section (and its disclaimer line).
 - **Story 5 — table:** every indicator's latest/prior value and date,
   grouped by Leading/Coincident/Lagging (`post_release.build_table`),

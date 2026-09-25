@@ -136,6 +136,11 @@ _TICKER_VALUATION_CACHE_KEY = "ticker_valuation_cache"
 # *sending* an email, reusing whatever AI response already exists),
 # this one gates the AI call itself.
 MIN_VALUATION_INTERVAL = timedelta(hours=6)
+# After every model has failed, the AI call is not retried for this long, so
+# each page load during an outage doesn't spend one request per model on the
+# shared free-tier quota. Held in process memory: a restart just retries once.
+VALUATION_FAILURE_COOLDOWN = timedelta(minutes=15)
+_valuation_failed_at: datetime | None = None
 
 # The fund groups -- as opposed to `bonds` (fixed income, no equity
 # P/E to speak of) or `individual` (already gets a real per-company P/E
@@ -817,8 +822,10 @@ def check_for_ticker_valuation(
     the page keeps showing a stale-but-valid AI read rather than an
     error or a blank section. If nothing has ever been generated
     successfully, degrades to the same pending placeholder
-    `get_initial_ticker_valuation` returns.
+    `get_initial_ticker_valuation` returns. A failure also starts a
+    `VALUATION_FAILURE_COOLDOWN` during which the AI isn't called again.
     """
+    global _valuation_failed_at
     now = now or datetime.now(timezone.utc)
     cached = load_ticker_valuation()
 
@@ -827,15 +834,24 @@ def check_for_ticker_valuation(
         if now - generated_at < MIN_VALUATION_INTERVAL:
             return {**cached, "pending": False}
 
+    if _valuation_failed_at is not None and now - _valuation_failed_at < VALUATION_FAILURE_COOLDOWN:
+        return _cached_or_pending(cached)
+
     try:
         config = config if config is not None else load_ticker_config()
         cards_by_group = _build_valuation_cards(config, load_ticker_state())
         result = interpret_fn(cards_by_group)
         result["generated_at"] = now.isoformat()
         save_ticker_valuation(result)
+        _valuation_failed_at = None
         return {**result, "pending": False}
     except TickerValuationError as e:
         logger.error("ticker valuation failed error=%s", e)
-        if cached is not None:
-            return {**cached, "pending": False}
-        return {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}
+        _valuation_failed_at = now
+        return _cached_or_pending(cached)
+
+
+def _cached_or_pending(cached: dict | None) -> dict:
+    if cached is not None:
+        return {**cached, "pending": False}
+    return {"overview": None, "groups": [], "individual_by_verdict": {}, "pending": True}

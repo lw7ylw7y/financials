@@ -289,13 +289,16 @@ Dependency-driven:
 - `tests/test_ticker_dashboard.py`: config load/add/remove restore group order via the embedded `order` index even from a deliberately-scrambled mocked hash; add/remove read and write only their own group's field; a malformed/non-string symbol is skipped with a warning; ticker cache round-trips via `hset_json`/`hgetall_json`, degrades to `{}`/`None` on a simulated Redis outage rather than raising; market-news cache same pattern via `get_json`/`set_json` — done
 - Manual: none needed beyond the live verification already performed in Story 12's own work (the real Upstash instance round-trips for `ticker_config`/`ticker_cache` were confirmed live before this story; this story is a pure code-path deletion on top of that, verified by the full test suite passing unmodified in behavior, not a new live-data change)
 
-### Story 15 — AI Calls Fall Back to a Second Gemini Model
+### Story 15 — AI Calls Fall Back Through Other Gemini Models
 
 | Task | Status |
 |---|---|
-| 15.1 `interpret.py` / `ticker_valuation.py` — split the Gemini call into a per-model helper and add `_run_with_fallbacks`: `gemini-3.8-flash` → `GEMINI_FALLBACK_MODEL` (default `gemini-3.7-flash`); an injected `client` runs alone | done — the fallback model was verified live against the account's model list and a real structured-output call |
-| 15.2 Tests: `TestSecondGeminiModelFallback` in `tests/test_interpret.py` and `tests/test_ticker_valuation.py` | done |
-| 15.3 Try further fallback providers (GitHub Models, then Claude via the Anthropic API) | dropped — `models.github.ai` returned a bare `HTTP 200 text/plain OK` on every path from every environment, and the Anthropic API needs separately billed Console credits (a claude.ai subscription doesn't cover it); both were removed rather than kept as dead code |
+| 15.1 `src/web/gemini_models.py` — the ordered default fallback list and `fallback_models()` (comma-separated `GEMINI_FALLBACK_MODELS` override) | done |
+| 15.2 `interpret.py` / `ticker_valuation.py` — split the Gemini call into a per-model helper and add `_run_with_fallbacks`: `gemini-3.8-flash` → each fallback model in turn; an injected `client` runs alone; the error names every model and its failure | done — verified live: with the primary and two fallbacks returning `503`, `gemini-3.5-flash-lite` answered |
+| 15.3 `ticker_dashboard.check_for_ticker_valuation` — `VALUATION_FAILURE_COOLDOWN` (15 min, process memory) after a total failure | done |
+| 15.4 Tests: `tests/test_gemini_models.py` (new), `TestGeminiModelFallbackChain` in `tests/test_interpret.py` and `tests/test_ticker_valuation.py`, cooldown tests in `tests/test_ticker_dashboard.py` | done |
+| 15.5 Try further fallback providers (GitHub Models, then Claude via the Anthropic API) | dropped — `models.github.ai` returned a bare `HTTP 200 text/plain OK` on every path from every environment, and the Anthropic API needs separately billed Console credits (a claude.ai subscription doesn't cover it); both were removed rather than kept as dead code |
 
 **Tests**
-- Second model used when the first fails (and called with the expected model names, in order), not called when the first succeeds, an injected client never falls back, both failing raises the module's error after exactly two calls
+- Chain order (each fallback tried in order until one succeeds, later ones never called after a success), an injected client never falls back, every model failing raises an error naming each model, `GEMINI_FALLBACK_MODELS` overrides the list, blank/unset uses the defaults
+- Cooldown: a total failure blocks further AI calls for 15 minutes (returning the cached valuation, or the pending placeholder if none), the AI is tried again afterward, and a success clears it

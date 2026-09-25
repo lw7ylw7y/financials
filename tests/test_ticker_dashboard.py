@@ -12,6 +12,7 @@ for _p in (
 ):
     sys.path.insert(0, _p)
 
+import ticker_dashboard
 from kv_store import KvStoreError
 from ticker_dashboard import (
     TickerConfigError,
@@ -940,6 +941,11 @@ class TestGetInitialTickerValuation(unittest.TestCase):
 
 
 class TestCheckForTickerValuation(unittest.TestCase):
+    def setUp(self):
+        # The failure cooldown lives in module state; isolate every test from it.
+        ticker_dashboard._valuation_failed_at = None
+        self.addCleanup(setattr, ticker_dashboard, "_valuation_failed_at", None)
+
     def test_calls_ai_and_persists_when_nothing_cached_yet(self):
         store = {}
 
@@ -1008,6 +1014,77 @@ class TestCheckForTickerValuation(unittest.TestCase):
             result = check_for_ticker_valuation(config={}, interpret_fn=failing_interpret)
 
         self.assertTrue(result["pending"])
+
+    def test_failure_starts_a_cooldown_during_which_the_ai_is_not_called(self):
+        now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+        calls = []
+
+        def failing_interpret(cards_by_group):
+            calls.append(1)
+            raise TickerValuationError("every model failed")
+
+        with mock.patch("ticker_dashboard.get_json", return_value=None), mock.patch(
+            "ticker_dashboard.hgetall_json", return_value={}
+        ):
+            check_for_ticker_valuation(now=now, config={}, interpret_fn=failing_interpret)
+            during = check_for_ticker_valuation(
+                now=now + timedelta(minutes=5), config={}, interpret_fn=failing_interpret
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(during["pending"])
+
+    def test_cooldown_returns_the_cached_valuation_when_there_is_one(self):
+        now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+        cached = {**SAMPLE_VALUATION_RESULT, "generated_at": "2020-01-01T00:00:00+00:00"}
+
+        def failing_interpret(cards_by_group):
+            raise TickerValuationError("every model failed")
+
+        with mock.patch("ticker_dashboard.get_json", return_value=cached), mock.patch(
+            "ticker_dashboard.hgetall_json", return_value={}
+        ):
+            check_for_ticker_valuation(now=now, config={}, interpret_fn=failing_interpret)
+            during = check_for_ticker_valuation(
+                now=now + timedelta(minutes=5), config={}, interpret_fn=failing_interpret
+            )
+
+        self.assertFalse(during["pending"])
+        self.assertEqual(during["overview"], "Bonds look cheapest.")
+
+    def test_ai_is_tried_again_once_the_cooldown_has_passed(self):
+        now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+        calls = []
+
+        def flaky_interpret(cards_by_group):
+            calls.append(1)
+            if len(calls) == 1:
+                raise TickerValuationError("every model failed")
+            return dict(SAMPLE_VALUATION_RESULT)
+
+        with mock.patch("ticker_dashboard.get_json", return_value=None), mock.patch(
+            "ticker_dashboard.hgetall_json", return_value={}
+        ), mock.patch("ticker_dashboard.set_json"):
+            check_for_ticker_valuation(now=now, config={}, interpret_fn=flaky_interpret)
+            later = check_for_ticker_valuation(
+                now=now + timedelta(minutes=16), config={}, interpret_fn=flaky_interpret
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(later["pending"])
+
+    def test_success_clears_the_cooldown(self):
+        now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+        ticker_dashboard._valuation_failed_at = now - timedelta(minutes=20)
+
+        with mock.patch("ticker_dashboard.get_json", return_value=None), mock.patch(
+            "ticker_dashboard.hgetall_json", return_value={}
+        ), mock.patch("ticker_dashboard.set_json"):
+            check_for_ticker_valuation(
+                now=now, config={}, interpret_fn=lambda cards_by_group: dict(SAMPLE_VALUATION_RESULT)
+            )
+
+        self.assertIsNone(ticker_dashboard._valuation_failed_at)
 
     def test_builds_valuation_cards_from_cached_snapshots_not_a_live_fetch(self):
         captured = {}

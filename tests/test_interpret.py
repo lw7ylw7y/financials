@@ -12,11 +12,13 @@ for _p in (
     os.path.join(_SRC, "storage"),
     os.path.join(_SRC, "digest"),
     os.path.join(_SRC, "mailer"),
+    os.path.join(_SRC, "web"),
 ):
     sys.path.insert(0, _p)
 
 from google.genai import errors
-from interpret import DEFAULT_FALLBACK_MODEL, MODEL, InterpretationError, build_user_prompt, interpret
+from gemini_models import DEFAULT_FALLBACK_MODELS
+from interpret import MODEL, InterpretationError, build_user_prompt, interpret
 
 INDICATORS_CONTEXT = [
     {
@@ -128,19 +130,23 @@ class TestInterpret(unittest.TestCase):
                 interpret(INDICATORS_CONTEXT, UPDATED_KEYS, client=None)
 
 
-class TestSecondGeminiModelFallback(unittest.TestCase):
-    def test_second_gemini_model_is_used_when_the_first_fails(self):
+class TestGeminiModelFallbackChain(unittest.TestCase):
+    def called_models(self, client):
+        return [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
+
+    def test_each_fallback_model_is_tried_in_order_until_one_succeeds(self):
         client = Mock()
         client.models.generate_content.side_effect = [
+            make_api_error(),
+            make_api_error(),
             make_api_error(),
             SimpleNamespace(text=json.dumps({"summary": "ok", "directional_read": "bullish"})),
         ]
         with patch("interpret.genai.Client", return_value=client):
             interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
-        models = [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
-        self.assertEqual(models, [MODEL, DEFAULT_FALLBACK_MODEL])
+        self.assertEqual(self.called_models(client), [MODEL, *DEFAULT_FALLBACK_MODELS[:3]])
 
-    def test_second_model_is_not_called_when_the_first_succeeds(self):
+    def test_later_models_are_not_called_once_one_succeeds(self):
         client = fake_client(text=json.dumps({"summary": "ok", "directional_read": "bullish"}))
         with patch("interpret.genai.Client", return_value=client):
             interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
@@ -152,12 +158,22 @@ class TestSecondGeminiModelFallback(unittest.TestCase):
             interpret(INDICATORS_CONTEXT, UPDATED_KEYS, client=client)
         client.models.generate_content.assert_called_once()
 
-    def test_raises_when_both_models_fail(self):
+    def test_raises_after_trying_every_model_and_names_each_in_the_error(self):
+        client = fake_client(side_effect=make_api_error())
+        with patch("interpret.genai.Client", return_value=client):
+            with self.assertRaises(InterpretationError) as raised:
+                interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
+        self.assertEqual(self.called_models(client), [MODEL, *DEFAULT_FALLBACK_MODELS])
+        for model in (MODEL, *DEFAULT_FALLBACK_MODELS):
+            self.assertIn(model, str(raised.exception))
+
+    @patch.dict(os.environ, {"GEMINI_FALLBACK_MODELS": "model-a, model-b"})
+    def test_fallback_models_are_configurable(self):
         client = fake_client(side_effect=make_api_error())
         with patch("interpret.genai.Client", return_value=client):
             with self.assertRaises(InterpretationError):
                 interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
-        self.assertEqual(client.models.generate_content.call_count, 2)
+        self.assertEqual(self.called_models(client), [MODEL, "model-a", "model-b"])
 
 
 if __name__ == "__main__":

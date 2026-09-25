@@ -15,19 +15,20 @@ earlier reads.
 
 import logging
 import os
+import sys
 from typing import Literal
 
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+
+from gemini_models import fallback_models
+
 logger = logging.getLogger(__name__)
 
 MODEL = "gemini-3.8-flash"
-# Free-tier quotas and serving capacity are tracked per model, so a
-# different model often still answers while `MODEL` is overloaded or
-# out of quota. Overridable via GEMINI_FALLBACK_MODEL.
-DEFAULT_FALLBACK_MODEL = "gemini-3.7-flash"
 # No retries: the free tier's 20-requests/day cap counts every attempt,
 # including failed ones, so retrying against a sustained backend outage
 # (the observed real-world failure mode) burns through the day's whole
@@ -137,14 +138,14 @@ def _interpret_with_gemini(prompt: str, client: genai.Client | None, model: str 
 
 
 def _run_with_fallbacks(prompt: str, client: genai.Client | None) -> dict:
-    """Gemini, then a second Gemini model; the first
+    """Gemini, then each fallback Gemini model in turn; the first
     usable result wins. An explicitly injected `client` is used alone."""
-    fallback_model = os.environ.get("GEMINI_FALLBACK_MODEL") or DEFAULT_FALLBACK_MODEL
-    sources = [("Gemini", lambda: _interpret_with_gemini(prompt, client))]
+    sources = [(MODEL, lambda: _interpret_with_gemini(prompt, client))]
     if client is None:
-        sources.append(
-            (f"Gemini {fallback_model}", lambda: _interpret_with_gemini(prompt, None, fallback_model))
-        )
+        sources += [
+            (model, lambda model=model: _interpret_with_gemini(prompt, None, model))
+            for model in fallback_models()
+        ]
 
     failures = []
     for name, attempt in sources:
@@ -152,7 +153,7 @@ def _run_with_fallbacks(prompt: str, client: genai.Client | None) -> dict:
             return attempt()
         except InterpretationError as e:
             logger.warning("%s interpretation failed: %s", name, e)
-            failures.append(str(e))
+            failures.append(f"{name}: {e}")
     raise InterpretationError("; ".join(failures))
 
 
@@ -163,7 +164,7 @@ def interpret(
 ) -> dict:
     """Return {"summary": str, "directional_read": "bullish"|"bearish"|"neutral"}.
 
-    Tries Gemini first, then a second Gemini model
+    Tries Gemini first, then each fallback Gemini model in turn
     if each fails for any reason (the free tier's sustained 503s are
     the usual cause). An explicitly injected `client` is used alone,
     with no fallback.
