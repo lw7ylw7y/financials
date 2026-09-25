@@ -468,23 +468,18 @@ Verified directly against the real Upstash instance, not just reasoned about: co
 **Tests:** `tests/test_ticker_dashboard.py`'s four ETF-fallback-specific tests (`test_falls_back_to_etf_pe_for_equity_fund_groups`, `test_no_yahoo_fallback_exists_for_peg_ratio`, `test_does_not_fall_back_to_etf_pe_for_bonds_or_individual`, `test_does_not_fall_back_when_finnhub_already_has_a_pe_ratio`, `test_etf_pe_fallback_failure_degrades_to_none_without_erroring_the_card`) were replaced with one (`test_etf_group_pe_ratio_stays_none_when_finnhub_has_none`) asserting the new, simpler behavior; every other test's now-nonexistent `fetch_etf_pe_fn=lambda s: None` no-op argument was removed. Full suite (350 tests) passes.
 
 
-### 11.17 AI fallback chain: second Gemini model, then Claude — implemented
+### 11.17 AI fallback: a second Gemini model — implemented
 
-**Why:** a live incident had Gemini's free tier returning `503 UNAVAILABLE` on nearly every call, leaving both AI sections empty. Quota and capacity are per model on Gemini's side, and Claude (Anthropic) is an independent provider, so a chain of sources survives a single-source outage.
+**Why:** a live incident had Gemini's free tier returning `503 UNAVAILABLE` on nearly every call, leaving both AI sections empty. Quota and capacity are per model on Gemini's side, so a second model often still answers.
 
 **Chain (`interpret.py`, `ticker_valuation.py`, each with its own `_run_with_fallbacks`):**
 1. `MODEL` (`gemini-3.8-flash`)
 2. `GEMINI_FALLBACK_MODEL` env var, defaulting to `DEFAULT_FALLBACK_MODEL` (`gemini-3.7-flash`), same `GEMINI_API_KEY`
-3. Claude via `claude_client.generate_json`
 
-Each source is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-tier daily cap counts failed attempts). Any failure of a source (the module's error type, whether from an API error, missing credentials, an empty body, or an unparseable/invalid response) moves to the next; the first valid response wins and later sources are never called. If all fail, the module's own error is raised with every source's message joined, and callers degrade exactly as before. An injected `client` (tests) is used alone, with no fallback.
+Each model is attempted once (`MAX_ATTEMPTS = 1`; no retries, since the free-tier daily cap counts failed attempts). Any failure of the first (the module's error type, whether from an API error, missing credentials, an empty body, or an unparseable/invalid response) moves to the second; the first valid response wins and the second is never called otherwise. If both fail, the module's own error is raised with both messages joined, and callers degrade exactly as before. An injected `client` (tests) is used alone, with no fallback.
 
-**`src/web/claude_client.py`:** POSTs to `https://api.anthropic.com/v1/messages` (`x-api-key`, `anthropic-version: 2023-06-01`) with plain `requests`, matching the other clients, rather than adding the Anthropic SDK as a dependency. The model is `CLAUDE_FALLBACK_MODEL`, else `claude-haiku-4-5-20251001` (the cheapest current model, plenty for a short structured task). The pydantic schema is embedded in the system prompt and the JSON object is cut from the first `{` to the last `}` of the reply, so a code fence around it doesn't matter; the caller validates the result with its own pydantic model, exactly as for a Gemini response. Any request error, non-JSON body, or missing JSON raises `ClaudeApiError`. `json()` decode errors are caught before the generic request-error branch, since `requests`' `JSONDecodeError` subclasses both.
+**Model name:** the default was verified live: `gemini-3.7-flash` is in the account's `models.list` and returned a valid structured response. A first guess, `gemini-3.8-flash-lite`, does not exist (`404 NOT_FOUND` on Render). Another candidate, `gemini-3.5-flash`, returned a `503` at the same moment as the primary, so capacity is not guaranteed to differ between models.
 
-**Cost/auth:** `ANTHROPIC_API_KEY` comes from the Anthropic Console and is billed per use, separately from any claude.ai subscription. It only fires when both Gemini calls have already failed, and the valuation is throttled to once per 6 hours, so usage should be a handful of small requests per day at most. The key is needed on Render/local and as a GitHub Actions secret.
+**Providers tried and dropped:** GitHub Models (every request to `models.github.ai`, any path, with or without a token, from the dev sandbox, a local terminal, and Render, returned a bare `HTTP 200`, `content-type: text/plain`, body `OK` from a genuine GitHub IP and certificate) and Claude via the Anthropic Messages API (works with an `ANTHROPIC_API_KEY`, but is billed per use through the Console, separately from a claude.ai subscription, which doesn't include API access). Neither is in the code.
 
-**A GitHub Models step was tried first and removed:** every request to `models.github.ai` (any path, with or without a token, from the dev sandbox, the user's own terminal, and Render) returned a bare `HTTP 200`, `content-type: text/plain`, body `OK`, from a genuine GitHub IP and certificate, so the Models service was never reachable. The second Gemini model's default was also corrected once: the first guess, `gemini-3.8-flash-lite`, returned `404 NOT_FOUND` live; `gemini-3.7-flash` was verified against the account's model list and a real structured-output call.
-
-**Status of live verification:** the Claude step is covered by mocked tests only until an `ANTHROPIC_API_KEY` is configured.
-
-**Tests:** see Story 15 in `docs/v2_task_breakdown.md`. Full suite (359 tests) passes.
+**Tests:** see Story 15 in `docs/v2_task_breakdown.md`. Full suite (352 tests) passes.

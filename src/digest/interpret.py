@@ -15,16 +15,11 @@ earlier reads.
 
 import logging
 import os
-import sys
 from typing import Literal
 
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
-
-import claude_client
 
 logger = logging.getLogger(__name__)
 
@@ -141,24 +136,15 @@ def _interpret_with_gemini(prompt: str, client: genai.Client | None, model: str 
     return _parse(response.text, "Gemini")
 
 
-def _interpret_with_claude(prompt: str) -> dict:
-    try:
-        text = claude_client.generate_json(SYSTEM_PROMPT, prompt, Interpretation)
-    except claude_client.ClaudeApiError as e:
-        raise InterpretationError(str(e)) from e
-    return _parse(text, "Claude")
-
-
 def _run_with_fallbacks(prompt: str, client: genai.Client | None) -> dict:
-    """Gemini, then a second Gemini model, then Claude; the first
+    """Gemini, then a second Gemini model; the first
     usable result wins. An explicitly injected `client` is used alone."""
     fallback_model = os.environ.get("GEMINI_FALLBACK_MODEL") or DEFAULT_FALLBACK_MODEL
     sources = [("Gemini", lambda: _interpret_with_gemini(prompt, client))]
     if client is None:
-        sources += [
-            (f"Gemini {fallback_model}", lambda: _interpret_with_gemini(prompt, None, fallback_model)),
-            ("Claude", lambda: _interpret_with_claude(prompt)),
-        ]
+        sources.append(
+            (f"Gemini {fallback_model}", lambda: _interpret_with_gemini(prompt, None, fallback_model))
+        )
 
     failures = []
     for name, attempt in sources:
@@ -177,7 +163,7 @@ def interpret(
 ) -> dict:
     """Return {"summary": str, "directional_read": "bullish"|"bearish"|"neutral"}.
 
-    Tries Gemini first, then a second Gemini model, then Claude
+    Tries Gemini first, then a second Gemini model
     if each fails for any reason (the free tier's sustained 503s are
     the usual cause). An explicitly injected `client` is used alone,
     with no fallback.

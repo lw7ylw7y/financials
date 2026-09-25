@@ -105,7 +105,7 @@ v1's entire product surface is a single digest email — there is no webpage/das
 |---|---|---|
 | Macro indicators (all v1 indicators) | FRED | Free, official, no rate-limit concerns |
 | Economic release calendar (next-release countdown) | FRED release calendar | Needed for CPI/jobs report/FOMC dates |
-| AI interpretation of indicators | Gemini API (free tier), falling back to a second Gemini model, then a Claude model | Plain-English summary + directional read; framed as informational commentary, not advice |
+| AI interpretation of indicators | Gemini API (free tier), falling back to a second Gemini model | Plain-English summary + directional read; framed as informational commentary, not advice |
 | *(v2, ticker dashboard)* Price, 52-wk range | Finnhub | Free tier has ~20 min delay; acceptable given Monday-cadence buying. 52-wk range uses `/stock/metric` (`/stock/candle` is paid-tier-only) |
 | *(v2, ticker dashboard)* Percent off 52-week high | *(computed, no new source)* | `(week52_high - price) / week52_high` |
 | *(v2, ticker dashboard)* Change since last close | Finnhub | Returned by the existing quote call (`d`/`dp` fields) |
@@ -151,6 +151,6 @@ v1's entire product surface is a single digest email — there is no webpage/das
 - **Storage:** Commit-based data file (JSON) written back into the repo each run — no separate database to manage
 - **Email:** Gmail SMTP with an app password
 - **Data:** FRED API (all 8 v1 indicators + release calendar)
-- **AI interpretation:** Gemini API (`gemini-3.8-flash`, free tier); on any failure, a second Gemini model, then a Claude model (Anthropic API, paid per use), before degrading to no AI section / the last cached result
+- **AI interpretation:** Gemini API (`gemini-3.8-flash`, free tier); on any failure, a second Gemini model, before degrading to no AI section / the last cached result
 
 Fully free, and reliable regardless of whether your own laptop is on. Known limitation: GitHub's scheduled workflows aren't perfectly precise (can be delayed by minutes) and, under heavy platform load, can occasionally drop a scheduled run entirely — a low risk for a job that only needs to run every few hours for monthly-cadence indicators. If this becomes a problem in practice, revisit AWS EventBridge/Lambda for the scheduler.

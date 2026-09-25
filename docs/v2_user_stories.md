@@ -209,19 +209,16 @@ v2 is two web pages: a read-only Indicator Digest Page (mirrors the v1 email) an
 - [x] Any AI failure, including a quota/rate-limit error, falls back to the last successfully cached valuation shown as-is, never an error state — confirmed live against a real `429 RESOURCE_EXHAUSTED` response. With nothing ever cached, degrades to a muted "not yet available" placeholder instead
 - [x] Has its own background-check route (`/api/tickers/valuation/check`), checked independently of any ticker group's or market news' own check, folded into the same "Checking for updates..." indicator
 
-### Story 15 — AI Calls Fall Back to Other Free Models
-**As** the investor, **I want** the AI sections to keep working when the primary Gemini model is overloaded or out of quota, **so that** a sustained Gemini outage doesn't leave the digest and valuation sections empty.
+### Story 15 — AI Calls Fall Back to a Second Gemini Model
+**As** the investor, **I want** the AI sections to keep working when the primary Gemini model is overloaded or out of quota, **so that** a single-model outage doesn't leave the digest and valuation sections empty.
 
-**Why:** Gemini's free tier returned `503 UNAVAILABLE` almost continuously during a real incident, making both AI sections useless. Free-tier quota and serving capacity are tracked per model, and Claude (Anthropic) is a separate provider, so falling through a chain of independent sources makes a single-source outage survivable.
+**Why:** Gemini's free tier returned `503 UNAVAILABLE` almost continuously during a real incident, making both AI sections useless. Free-tier quota and serving capacity are tracked per model, so a second model often still answers.
 
 **Acceptance Criteria**
 - [x] When the primary Gemini call fails for any reason (API error, quota `429`, overload `503`, missing key, empty or unparseable response), the same prompt is retried on a second Gemini model (`gemini-3.7-flash` by default, `GEMINI_FALLBACK_MODEL` overrides it), using the same `GEMINI_API_KEY`
-- [x] If that also fails, the prompt is retried against Claude (`claude-haiku-4-5-20251001` by default, `CLAUDE_FALLBACK_MODEL` overrides it), authenticated by `ANTHROPIC_API_KEY`
-- [x] The first source to return a valid response wins; a later source is never called once an earlier one succeeded
-- [x] If every source fails, behavior is unchanged from before: the digest omits the AI section and the ticker valuation degrades to the last cached valuation
-- [x] Every source is called at most once per request (no retries), so failures don't burn quota
-- [x] `ANTHROPIC_API_KEY` is optional: with no key the Claude step fails immediately and the chain simply ends
-- [x] The scheduled workflow receives the key via an `ANTHROPIC_API_KEY` GitHub Actions secret
+- [x] The second model is never called when the first succeeded
+- [x] If both fail, behavior is unchanged from before: the digest omits the AI section and the ticker valuation degrades to the last cached valuation
+- [x] Each model is called at most once per request (no retries), so failures don't burn quota
 
 ---
 ## Cross-Cutting Non-Functional Criteria (apply to all stories above)

@@ -209,23 +209,13 @@ class TestInterpretTickerValuation(unittest.TestCase):
         with patch(
             "ticker_valuation.genai.Client",
             side_effect=ValueError("No API key was provided."),
-        ), patch.dict(os.environ, {}, clear=True):
+        ):
             with self.assertRaises(TickerValuationError):
                 interpret_ticker_valuation(CARDS_BY_GROUP, client=None)
 
 
-class TestClaudeFallback(unittest.TestCase):
-    @patch("ticker_valuation.claude_client.generate_json")
-    def test_falls_back_when_gemini_fails(self, mock_fallback):
-        mock_fallback.return_value = valuation_response_json()
-        gemini = fake_client(side_effect=make_api_error())
-        with patch("ticker_valuation.genai.Client", return_value=gemini):
-            result = interpret_ticker_valuation(CARDS_BY_GROUP)
-        self.assertIn("overview", result)
-        mock_fallback.assert_called_once()
-
-    @patch("ticker_valuation.claude_client.generate_json")
-    def test_second_gemini_model_is_tried_before_claude(self, mock_claude):
+class TestSecondGeminiModelFallback(unittest.TestCase):
+    def test_second_gemini_model_is_used_when_the_first_fails(self):
         client = Mock()
         client.models.generate_content.side_effect = [
             make_api_error(),
@@ -235,21 +225,25 @@ class TestClaudeFallback(unittest.TestCase):
             interpret_ticker_valuation(CARDS_BY_GROUP)
         models = [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
         self.assertEqual(models, [MODEL, DEFAULT_FALLBACK_MODEL])
-        mock_claude.assert_not_called()
 
-    @patch("ticker_valuation.claude_client.generate_json")
-    def test_injected_client_never_falls_back(self, mock_fallback):
+    def test_second_model_is_not_called_when_the_first_succeeds(self):
+        client = fake_client(text=valuation_response_json())
+        with patch("ticker_valuation.genai.Client", return_value=client):
+            interpret_ticker_valuation(CARDS_BY_GROUP)
+        client.models.generate_content.assert_called_once()
+
+    def test_injected_client_never_falls_back(self):
+        client = fake_client(side_effect=make_api_error())
         with self.assertRaises(TickerValuationError):
-            interpret_ticker_valuation(CARDS_BY_GROUP, client=fake_client(side_effect=make_api_error()))
-        mock_fallback.assert_not_called()
+            interpret_ticker_valuation(CARDS_BY_GROUP, client=client)
+        client.models.generate_content.assert_called_once()
 
-    @patch("ticker_valuation.claude_client.generate_json")
-    def test_raises_when_both_fail(self, mock_fallback):
-        mock_fallback.return_value = "not json"
-        gemini = fake_client(side_effect=make_api_error())
-        with patch("ticker_valuation.genai.Client", return_value=gemini):
+    def test_raises_when_both_models_fail(self):
+        client = fake_client(side_effect=make_api_error())
+        with patch("ticker_valuation.genai.Client", return_value=client):
             with self.assertRaises(TickerValuationError):
                 interpret_ticker_valuation(CARDS_BY_GROUP)
+        self.assertEqual(client.models.generate_content.call_count, 2)
 
 
 if __name__ == "__main__":

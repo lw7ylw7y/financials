@@ -123,25 +123,13 @@ class TestInterpret(unittest.TestCase):
         with patch(
             "interpret.genai.Client",
             side_effect=ValueError("No API key was provided."),
-        ), patch.dict(os.environ, {}, clear=True):
+        ):
             with self.assertRaises(InterpretationError):
                 interpret(INDICATORS_CONTEXT, UPDATED_KEYS, client=None)
 
 
-class TestClaudeFallback(unittest.TestCase):
-    GOOD = json.dumps({"summary": "ok", "directional_read": "neutral"})
-
-    @patch("interpret.claude_client.generate_json")
-    def test_falls_back_when_gemini_fails(self, mock_fallback):
-        mock_fallback.return_value = self.GOOD
-        gemini = fake_client(side_effect=make_api_error())
-        with patch("interpret.genai.Client", return_value=gemini):
-            result = interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
-        self.assertEqual(result["directional_read"], "neutral")
-        mock_fallback.assert_called_once()
-
-    @patch("interpret.claude_client.generate_json")
-    def test_second_gemini_model_is_tried_before_claude(self, mock_claude):
+class TestSecondGeminiModelFallback(unittest.TestCase):
+    def test_second_gemini_model_is_used_when_the_first_fails(self):
         client = Mock()
         client.models.generate_content.side_effect = [
             make_api_error(),
@@ -151,21 +139,25 @@ class TestClaudeFallback(unittest.TestCase):
             interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
         models = [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
         self.assertEqual(models, [MODEL, DEFAULT_FALLBACK_MODEL])
-        mock_claude.assert_not_called()
 
-    @patch("interpret.claude_client.generate_json")
-    def test_injected_client_never_falls_back(self, mock_fallback):
+    def test_second_model_is_not_called_when_the_first_succeeds(self):
+        client = fake_client(text=json.dumps({"summary": "ok", "directional_read": "bullish"}))
+        with patch("interpret.genai.Client", return_value=client):
+            interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
+        client.models.generate_content.assert_called_once()
+
+    def test_injected_client_never_falls_back(self):
+        client = fake_client(side_effect=make_api_error())
         with self.assertRaises(InterpretationError):
-            interpret(INDICATORS_CONTEXT, UPDATED_KEYS, client=fake_client(side_effect=make_api_error()))
-        mock_fallback.assert_not_called()
+            interpret(INDICATORS_CONTEXT, UPDATED_KEYS, client=client)
+        client.models.generate_content.assert_called_once()
 
-    @patch("interpret.claude_client.generate_json")
-    def test_raises_when_both_fail(self, mock_fallback):
-        mock_fallback.return_value = "not json"
-        gemini = fake_client(side_effect=make_api_error())
-        with patch("interpret.genai.Client", return_value=gemini):
+    def test_raises_when_both_models_fail(self):
+        client = fake_client(side_effect=make_api_error())
+        with patch("interpret.genai.Client", return_value=client):
             with self.assertRaises(InterpretationError):
                 interpret(INDICATORS_CONTEXT, UPDATED_KEYS)
+        self.assertEqual(client.models.generate_content.call_count, 2)
 
 
 if __name__ == "__main__":

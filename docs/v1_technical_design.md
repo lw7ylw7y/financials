@@ -212,7 +212,6 @@ Stored as GitHub Actions repository secrets (never committed to the repo):
 | `GMAIL_APP_PASSWORD` | Gmail app password (not your login password) |
 | `RECIPIENT_EMAIL` | Where alerts get sent (your inbox) |
 | `GEMINI_API_KEY` | Gemini API access for interpretation |
-| `ANTHROPIC_API_KEY` | Optional; Claude fallback when both Gemini calls fail (Anthropic Console key, billed per use) |
 
 ## 9. Error Handling & Idempotency Summary
 
